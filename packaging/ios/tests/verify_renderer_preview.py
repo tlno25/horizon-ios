@@ -13,11 +13,14 @@ def validate(payload: object) -> str:
     mode = payload.get('smoke_mode')
     if type(mode) is not int or mode != 1:
         raise ValueError('iOS did not enable Horizon renderer diagnostic mode')
+    stage = payload.get('renderer_stage', '')
+    if not isinstance(stage, str) or len(stage) > 1024:
+        raise ValueError('Invalid Horizon renderer startup stage')
     state = payload.get('renderer_preview')
     if type(state) is not int or state != 3:
+        error = payload.get('error') or 'Horizon renderer did not present a frame'
         raise ValueError(
-            payload.get('error') or
-            f'Horizon renderer did not present a frame (renderer_preview={state})'
+            f'{error} (renderer_preview={state}, last_stage={stage or "not reported"})'
         )
     return 'Horizon boot renderer presented a frame'
 

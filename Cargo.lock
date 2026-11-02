@@ -1879,6 +1879,7 @@ dependencies = [
  "horizon-client",
  "horizon-client-input",
  "horizon-core",
+ "log",
  "pollster",
  "raw-window-handle",
  "wgpu",

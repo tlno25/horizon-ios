@@ -25,7 +25,8 @@ elif args[:2]==['simctl','launch']:
     status.write_text(json.dumps({'state':2,'error':'','engine':1,
           'player':'Player00001','core_load':0,
           'renderer_preview':int(os.environ['MOCK_PREVIEW']),
-          'smoke_mode':int(os.environ.get('MOCK_ACK', '1'))}))
+          'smoke_mode':int(os.environ.get('MOCK_ACK', '1')),
+          'renderer_stage':'Horizon renderer: creating the pipelines'}))
 elif args[:3]==['simctl','io',os.environ['HORIZON_IOS_SIMULATOR_UDID']]:
     pathlib.Path(args[-1]).write_bytes(b'png mock')
 elif args[:3]==['simctl','spawn',os.environ['HORIZON_IOS_SIMULATOR_UDID']]:

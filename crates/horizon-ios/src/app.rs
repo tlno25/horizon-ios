@@ -18,6 +18,36 @@ use metal_probe::MetalProbe;
 
 static EVENT_PROXY: OnceLock<EventLoopProxy<()>> = OnceLock::new();
 
+/// Expose the existing shared renderer's startup checkpoints on iOS.
+/// These messages are emitted by `gfx::startup_step`, which precedes device
+/// selection, swapchain configuration and pipeline compilation. UIKit can
+/// otherwise block in GPU setup before an async UI notification runs.
+struct RendererStartupLogger;
+static STARTUP_LOGGER: RendererStartupLogger = RendererStartupLogger;
+
+impl log::Log for RendererStartupLogger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if !self.enabled(record.metadata()) || crate::RENDERER_SWITCH.state() != 2 {
+            return;
+        }
+        let message = record.args().to_string();
+        if message.starts_with("Horizon renderer:") {
+            report_renderer_stage(&message);
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+fn report_renderer_stage(message: &str) {
+    eprintln!("Horizon iOS renderer stage: {message}");
+    unsafe { horizon_ios_renderer_stage_changed(message.as_ptr(), message.len()) };
+}
+
 pub(super) fn renderer_events_available() -> bool {
     EVENT_PROXY.get().is_some()
 }
@@ -33,6 +63,8 @@ unsafe extern "C" {
     /// The parent remains owned by Winit; Swift must not release it.
     fn horizon_ios_mount_home(view_controller: *mut c_void);
     fn horizon_ios_graphics_changed(state: u32);
+    /// Swift copies these temporary bytes and persists the stage synchronously.
+    fn horizon_ios_renderer_stage_changed(message: *const u8, length: usize);
     /// Synchronously snapshot a renderer stage before expensive Metal setup.
     fn horizon_ios_renderer_status_changed();
     fn horizon_ios_touch_changed();
@@ -124,6 +156,7 @@ impl Shell {
         if !crate::RENDERER_SWITCH.start() {
             return;
         }
+        report_renderer_stage("Horizon renderer: handoff started");
         // Save stage 2 synchronously. The first full Horizon GPU pipeline
         // creation may block UIKit; dispatch_async would lose this evidence.
         unsafe { horizon_ios_renderer_status_changed() };
@@ -132,12 +165,15 @@ impl Shell {
             unsafe { horizon_ios_renderer_status_changed() };
             return;
         };
+        report_renderer_stage("Horizon renderer: releasing Metal probe");
         self.metal = None;
         crate::set_graphics_state(1);
+        report_renderer_stage("Horizon renderer: creating boot HUD atlas");
         // Use the exact boot renderer shared with the desktop/Android title
         // screen, not another test WGPU pipeline. Its first drawn frame does
         // not initialize a Minecraft world.
         let atlas = horizon_client::hud::HudAtlas::boot();
+        report_renderer_stage("Horizon renderer: opening GPU device and pipelines");
         let loaded = horizon_client::game_startup::loading_renderer(
             window.clone(),
             false,
@@ -148,10 +184,12 @@ impl Shell {
         );
         match loaded {
             Ok(renderer) => {
+                report_renderer_stage("Horizon renderer: GPU initialization complete");
                 self.horizon = Some(renderer);
                 window.request_redraw();
             }
             Err(error) => {
+                report_renderer_stage("Horizon renderer: GPU initialization failed");
                 report_graphics_error(&format!("Horizon loading renderer: {error}"));
                 crate::RENDERER_SWITCH.finished(false);
                 unsafe { horizon_ios_renderer_status_changed() };
@@ -356,6 +394,9 @@ impl ApplicationHandler for Shell {
 
 pub(super) fn run() -> Result<(), EventLoopError> {
     crate::clipboard_bridge::install();
+    if log::set_logger(&STARTUP_LOGGER).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
+    }
     let event_loop = EventLoop::builder().build()?;
     let _ = EVENT_PROXY.set(event_loop.create_proxy());
     let mut shell = Shell {

@@ -206,6 +206,12 @@ marker during UIKit mount and explicitly enables the Rust diagnostic, which
 is more reliable when `simctl` does not propagate environment variables.
 The app writes `smoke_mode=1` into its status JSON to acknowledge this opt-in;
 `verify_renderer_preview.py` refuses success if the flag was not observed.
+The diagnostic additionally writes `renderer_stage` synchronously before
+potentially blocking operations (boot HUD creation and WGPU initialization).
+A small iOS logger forwards the shared `gfx::startup_step` milestones such as
+adapter selection, surface configuration, pipeline creation, and first-frame
+stages. This distinguishes a slow GPU pipeline compilation from a missing
+handoff; even if UIKit stalls, the latest stage remains in the cached JSON.
 The app first presents the Metal probe frame, then transfers that same Winit window
 to the shared Horizon GPU boot renderer. This needs **no Minecraft assets**
 and never starts gameplay. It records `horizon-ios-boot-renderer-status.json`

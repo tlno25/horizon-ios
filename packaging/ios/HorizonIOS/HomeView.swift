@@ -13,6 +13,7 @@ private extension Notification.Name {
 // Main-thread-only: Rust reports an error synchronously before the SwiftUI
 // view may exist; it remains available to the first HomeView instance.
 private var mostRecentGraphicsError = ""
+private var mostRecentRendererStage = ""
 private var mostRecentResourceMessage = ""
 private var mostRecentCoreLoadMessage = ""
 
@@ -65,6 +66,7 @@ private func saveGraphicsStatus() {
         "engine": Int(horizon_ios_engine_state()),
         "core_load": Int(horizon_ios_core_load_state()),
         "renderer_preview": Int(horizon_ios_renderer_preview_state()),
+        "renderer_stage": mostRecentRendererStage,
         "smoke_mode": Int(horizon_ios_renderer_smoke_enabled()),
         "player": horizon_ios_player_name().map { String(cString: $0) } ?? ""
     ]
@@ -83,6 +85,7 @@ private struct HomeView: View {
     @State private var engineState = horizon_ios_engine_state()
     @State private var coreLoadState = horizon_ios_core_load_state()
     @State private var rendererPreviewState = horizon_ios_renderer_preview_state()
+    @State private var rendererStage = mostRecentRendererStage
     @State private var coreLoadMessage = mostRecentCoreLoadMessage
     @State private var loadingCore = false
     @State private var playerName = horizon_ios_player_name().map { String(cString: $0) } ?? ""
@@ -169,6 +172,7 @@ private struct HomeView: View {
         engineState = horizon_ios_engine_state()
         coreLoadState = horizon_ios_core_load_state()
         rendererPreviewState = horizon_ios_renderer_preview_state()
+        rendererStage = mostRecentRendererStage
         playerName = horizon_ios_player_name().map { String(cString: $0) } ?? ""
         graphicsError = mostRecentGraphicsError
         activeTouchCount = horizon_ios_touch_count()
@@ -254,6 +258,12 @@ private struct HomeView: View {
                     LabeledContent("Game assets", value: engineLabel)
                     LabeledContent("Game CPU data", value: coreLoadLabel)
                     LabeledContent("Renderer", value: rendererPreviewLabel)
+                    if !rendererStage.isEmpty {
+                        Text(rendererStage)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
                     if !playerName.isEmpty {
                         LabeledContent("Local player", value: playerName)
                     }
@@ -363,6 +373,24 @@ private struct HomeView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .horizonGraphicsChanged)) { _ in
             refreshStatus()
+        }
+    }
+}
+
+/// Exposes the native game's existing GPU startup checkpoints. Persisting
+/// synchronously is essential: a stalled main thread cannot execute an
+/// asynchronous status update before the Simulator snapshot is collected.
+@_cdecl("horizon_ios_renderer_stage_changed")
+public func horizon_ios_renderer_stage_changed(_ bytes: UnsafePointer<UInt8>?, _ length: Int) {
+    guard let bytes, length > 0, length <= 1024 else { return }
+    let message = String(decoding: UnsafeBufferPointer(start: bytes, count: length), as: UTF8.self)
+    if Thread.isMainThread {
+        mostRecentRendererStage = message
+        saveGraphicsStatus()
+    } else {
+        DispatchQueue.main.async {
+            mostRecentRendererStage = message
+            saveGraphicsStatus()
         }
     }
 }

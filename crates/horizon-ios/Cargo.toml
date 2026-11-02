@@ -20,6 +20,7 @@ winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 raw-window-handle = "0.6"
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "metal", "wgsl"] }
 pollster = "0.4"
+log = "0.4"
 
 [lints]
 workspace = true

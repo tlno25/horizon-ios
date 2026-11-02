@@ -26,6 +26,19 @@ class BootPreviewStatusTests(unittest.TestCase):
                     'core_load': 0
                 })
 
+    def test_incomplete_renderer_reports_last_gpu_startup_stage(self):
+        with self.assertRaisesRegex(ValueError, 'creating the pipelines'):
+            validate({'state': 2, 'engine': 1, 'player': 'Player12345',
+                      'error': '', 'smoke_mode': 1, 'renderer_preview': 2,
+                      'renderer_stage': 'Horizon renderer: creating the pipelines'})
+
+    def test_rejects_invalid_gpu_stage_payload(self):
+        for stage in (None, 7, 'x' * 1025):
+            with self.subTest(stage=stage), self.assertRaises(ValueError):
+                validate({'state': 2, 'engine': 1, 'player': 'Player12345',
+                          'error': '', 'smoke_mode': 1, 'renderer_preview': 3,
+                          'renderer_stage': stage})
+
     def test_cannot_report_success_without_app_acknowledging_diagnostic_mode(self):
         for ack in (0, None, True, "1", -1):
             with self.subTest(ack=ack), self.assertRaises(ValueError):

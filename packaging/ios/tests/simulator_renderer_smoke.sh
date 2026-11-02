@@ -21,14 +21,25 @@ for runtime,devices in inventory["devices"].items():
 raise SystemExit("No available iPhone Simulator")
 ')"
 fi
-trap 'xcrun simctl shutdown "$audid" >/dev/null 2>&1 || true' EXIT
+# Preserve the actual boot-screen screenshot and native logging even if
+# rendering fails or the app crashes before it can write a status file.
+capture_diagnostics() {
+    local prefix="${RUNNER_TEMP:-/tmp}/horizon-ios-boot-renderer"
+    xcrun simctl io "$audid" screenshot "${prefix}-screenshot.png" >/dev/null 2>&1 || true
+    xcrun simctl spawn "$audid" log show --style compact --last 8m \
+        --predicate 'process == "HorizonIOS" AND (eventMessage CONTAINS[c] "Horizon" OR eventMessage CONTAINS[c] "wgpu" OR eventMessage CONTAINS[c] "panic")' \
+        > "${prefix}-native.log" 2>&1 || true
+    xcrun simctl shutdown "$audid" >/dev/null 2>&1 || true
+}
+trap capture_diagnostics EXIT
 xcrun simctl boot "$audid" || true
 xcrun simctl bootstatus "$audid" -b
 xcrun simctl install "$audid" "$app"
-SIMCTL_CHILD_HORIZON_IOS_RENDERER_SMOKE=1 xcrun simctl launch "$audid" com.example.horizonios
-
 app_data="$(xcrun simctl get_app_container "$audid" com.example.horizonios data)"
 source_status="$app_data/Library/Caches/horizon-ios-graphics.json"
+# Never accept a successful preview signal from a previous test run.
+rm -f "$source_status"
+SIMCTL_CHILD_HORIZON_IOS_RENDERER_SMOKE=1 xcrun simctl launch "$audid" com.example.horizonios
 output="${RUNNER_TEMP:-/tmp}/horizon-ios-boot-renderer-status.json"
 # Full Horizon pipelines can take longer than the simple Metal clear. The
 # preview reports both success and failed-but-recovered states into JSON.

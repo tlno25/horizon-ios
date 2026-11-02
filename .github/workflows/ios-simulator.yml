@@ -124,7 +124,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: horizon-ios-boot-renderer-status
-          path: ${{ runner.temp }}/horizon-ios-boot-renderer-*.json
+          path: |
+            ${{ runner.temp }}/horizon-ios-boot-renderer-*.json
+            ${{ runner.temp }}/horizon-ios-boot-renderer-*.log
+            ${{ runner.temp }}/horizon-ios-boot-renderer-*.png
           if-no-files-found: ignore
           retention-days: 14
 

@@ -23,6 +23,10 @@ static TOUCH_STATE: OnceLock<std::sync::Mutex<TouchInput>> = OnceLock::new();
 static ENGINE_HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
 #[cfg(target_os = "ios")]
 static RESOURCE_IMPORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(target_os = "ios")]
+static CORE_LOAD: CoreLoadGate = CoreLoadGate::new();
+#[cfg(target_os = "ios")]
+static CORE_ASSETS: OnceLock<horizon_client::assets::Assets> = OnceLock::new();
 
 /// Returns the ABI revision supported by this static library.
 #[unsafe(no_mangle)]
@@ -165,6 +169,61 @@ pub extern "C" fn horizon_ios_engine_state() -> u32 {
     ENGINE_STATE.load(Ordering::Acquire)
 }
 
+/// 0=not started, 1=loading, 2=block registry loaded, 3=failed.
+/// State 2 does not mean a game world is running.
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_core_load_state() -> u32 {
+    #[cfg(target_os = "ios")]
+    {
+        return CORE_LOAD.state();
+    }
+    #[cfg(not(target_os = "ios"))]
+    0
+}
+
+/// Execute the first real CPU asset loading stage used by the native game.
+/// May take time: call only from a background worker, never the UIKit thread.
+/// One successful load is cached for the lifetime of the process; an invalid
+/// resource bundle can be fixed and retried. No Winit event loop is created.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_load_core_assets() -> i32 {
+    if !CORE_LOAD.try_begin() {
+        return if CORE_LOAD.state() == 2 { 0 } else { -2 };
+    }
+    let result = std::panic::catch_unwind(|| -> Result<_, String> {
+        let home = ENGINE_HOME
+            .get()
+            .ok_or("Engine home has not been prepared")?;
+        let _guard = RESOURCE_IMPORT.lock().map_err(|error| error.to_string())?;
+        if !horizon_client::resource_install::ready(home) {
+            return Err("Import prepared game resources before loading the registry".into());
+        }
+        let root = home
+            .join(".local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        horizon_client::game_startup::load_core_registry(&root).map_err(|error| error.to_string())
+    });
+    let (success, message) = match result {
+        Ok(Ok(assets)) => {
+            let count = assets.registry.len();
+            if CORE_ASSETS.set(assets).is_err() {
+                (false, "Game data has already been loaded".to_owned())
+            } else {
+                (true, format!("Loaded {count} block registry states"))
+            }
+        }
+        Ok(Err(error)) => (false, error),
+        Err(_) => (false, "Block registry loading panicked".to_owned()),
+    };
+    CORE_LOAD.finish(success);
+    // Rust strings are borrowed only for the duration of this synchronous
+    // callback. Swift copies the text before dispatching to UIKit's thread.
+    let message: String = message.chars().take(2048).collect();
+    app::report_core_load_result(&message, success);
+    if success { 0 } else { -1 }
+}
+
 /// Stable Rust-owned UTF-8 player name, or NULL before profile preflight.
 #[unsafe(no_mangle)]
 pub extern "C" fn horizon_ios_player_name() -> *const c_char {
@@ -294,6 +353,6 @@ pub use probe_lifecycle::ProbeLifecycle;
 mod clipboard_bridge;
 
 mod engine_bootstrap;
-pub use engine_bootstrap::{EnginePreparation, prepare_engine_directory};
+pub use engine_bootstrap::{CoreLoadGate, EnginePreparation, prepare_engine_directory};
 mod touch_input;
 pub use touch_input::{TouchInput, TouchPhase};

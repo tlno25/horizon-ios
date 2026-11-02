@@ -5,7 +5,12 @@ from verify_graphics_status import validate
 
 class GraphicsStatusTests(unittest.TestCase):
     def test_metal_ready(self):
-        self.assertEqual(validate({"state": 2, "error": "", "engine": 1, "player": "Player00001"}), "Metal ready")
+        self.assertEqual(validate({"state": 2, "error": "", "engine": 1, "player": "Player00001", "core_load": 0}), "Metal ready")
+
+    def test_core_load_status_must_be_numeric_when_reported(self):
+        for status in ("2", None, True, 7, -1):
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                validate({"state": 2, "error": "", "engine": 1, "player": "Player00001", "core_load": status})
 
     def test_engine_profile_must_be_initialized_before_gpu_smoke_passes(self):
         for engine, player in ((0, ""), (3, "Player00001"), (1, ""), (2, "")):

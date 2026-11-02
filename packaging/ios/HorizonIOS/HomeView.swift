@@ -7,12 +7,14 @@ private extension Notification.Name {
     static let horizonGraphicsChanged = Notification.Name("HorizonGraphicsChanged")
     static let horizonResourceImportChanged = Notification.Name("HorizonResourceImportChanged")
     static let horizonTouchChanged = Notification.Name("HorizonTouchChanged")
+    static let horizonCoreLoadChanged = Notification.Name("HorizonCoreLoadChanged")
 }
 
 // Main-thread-only: Rust reports an error synchronously before the SwiftUI
 // view may exist; it remains available to the first HomeView instance.
 private var mostRecentGraphicsError = ""
 private var mostRecentResourceMessage = ""
+private var mostRecentCoreLoadMessage = ""
 
 /// The iOS sandbox is owned by Swift/UIKit, not inferred by a desktop-style
 /// current working directory in the Rust game. Preflight is idempotent.
@@ -42,6 +44,7 @@ private func saveGraphicsStatus() {
         "state": Int(horizon_ios_graphics_state()),
         "error": mostRecentGraphicsError,
         "engine": Int(horizon_ios_engine_state()),
+        "core_load": Int(horizon_ios_core_load_state()),
         "player": horizon_ios_player_name().map { String(cString: $0) } ?? ""
     ]
     do {
@@ -57,6 +60,9 @@ private struct HomeView: View {
     @State private var bridgeState = horizon_ios_state()
     @State private var graphicsState = horizon_ios_graphics_state()
     @State private var engineState = horizon_ios_engine_state()
+    @State private var coreLoadState = horizon_ios_core_load_state()
+    @State private var coreLoadMessage = mostRecentCoreLoadMessage
+    @State private var loadingCore = false
     @State private var playerName = horizon_ios_player_name().map { String(cString: $0) } ?? ""
     @State private var graphicsError = mostRecentGraphicsError
     @State private var showResourceImporter = false
@@ -93,10 +99,35 @@ private struct HomeView: View {
         }
     }
 
+    private var coreLoadLabel: String {
+        switch coreLoadState {
+        case 1: return "Loading game block registry"
+        case 2: return "Game block registry loaded"
+        case 3: return "Game data load failed"
+        default: return "Not started"
+        }
+    }
+
+    /// The shared native client's first CPU loading stage: block states,
+    /// metadata and tags, not the WGPU renderer or world simulation.
+    private func loadGameRegistry() {
+        guard engineState == 2, !loadingCore, coreLoadState != 2 else { return }
+        loadingCore = true
+        coreLoadMessage = "Reading prepared game data…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = horizon_ios_load_core_assets()
+            DispatchQueue.main.async {
+                loadingCore = false
+                refreshStatus()
+            }
+        }
+    }
+
     private func refreshStatus() {
         bridgeState = horizon_ios_state()
         graphicsState = horizon_ios_graphics_state()
         engineState = horizon_ios_engine_state()
+        coreLoadState = horizon_ios_core_load_state()
         playerName = horizon_ios_player_name().map { String(cString: $0) } ?? ""
         graphicsError = mostRecentGraphicsError
         activeTouchCount = horizon_ios_touch_count()
@@ -180,6 +211,7 @@ private struct HomeView: View {
                     LabeledContent("App shell", value: stateLabel)
                     LabeledContent("GPU", value: graphicsLabel)
                     LabeledContent("Game assets", value: engineLabel)
+                    LabeledContent("Game CPU data", value: coreLoadLabel)
                     if !playerName.isEmpty {
                         LabeledContent("Local player", value: playerName)
                     }
@@ -224,6 +256,20 @@ private struct HomeView: View {
                                 })
                     }
                     .frame(height: 76)
+                    if engineState == 2 && coreLoadState != 2 {
+                        Button("Load game block registry", action: loadGameRegistry)
+                            .buttonStyle(.borderedProminent)
+                            .disabled(loadingCore)
+                    }
+                    if loadingCore {
+                        ProgressView("Loading game block registry")
+                    }
+                    if !coreLoadMessage.isEmpty {
+                        Text(coreLoadMessage)
+                            .font(.footnote)
+                            .foregroundColor(coreLoadState == 3 ? .red : .secondary)
+                            .textSelection(.enabled)
+                    }
                     if importingResources {
                         ProgressView("Importing game resources")
                     }
@@ -244,6 +290,10 @@ private struct HomeView: View {
             }
         }
         .fileImporter(isPresented: $showResourceImporter, allowedContentTypes: [.zip], onCompletion: selectResourceArchive)
+        .onReceive(NotificationCenter.default.publisher(for: .horizonCoreLoadChanged)) { _ in
+            coreLoadMessage = mostRecentCoreLoadMessage
+            refreshStatus()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .horizonTouchChanged)) { _ in
             refreshStatus()
         }
@@ -274,6 +324,20 @@ public func horizon_ios_graphics_changed(_ state: UInt32) {
     DispatchQueue.main.async {
         saveGraphicsStatus()
         NotificationCenter.default.post(name: .horizonGraphicsChanged, object: nil)
+    }
+}
+
+/// Called by the worker that loaded Horizon's actual block registry.
+/// Rust borrows this string; copy it before dispatching UI notifications.
+@_cdecl("horizon_ios_core_load_result")
+public func horizon_ios_core_load_result(_ bytes: UnsafePointer<UInt8>?,
+                                        _ length: Int, _ succeeded: Int32) {
+    guard let bytes, length > 0, length <= 4096 else { return }
+    let message = String(decoding: UnsafeBufferPointer(start: bytes, count: length), as: UTF8.self)
+    DispatchQueue.main.async {
+        mostRecentCoreLoadMessage = succeeded == 1 ? message : "Game data load failed: \(message)"
+        saveGraphicsStatus()
+        NotificationCenter.default.post(name: .horizonCoreLoadChanged, object: nil)
     }
 }
 

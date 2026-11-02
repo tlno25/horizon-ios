@@ -31,6 +31,10 @@ const char *horizon_ios_player_name(void);
 int32_t horizon_ios_prepare_engine(const uint8_t *home_utf8, size_t home_bytes);
 /* Must run off the main thread. The caller retains the selected ZIP. */
 int32_t horizon_ios_import_resources(const uint8_t *archive_utf8, size_t archive_bytes);
+/* Block registry load: 0=idle, 1=loading, 2=ready, 3=failed.
+   Calls are synchronous and must run on a worker, not the UIKit thread. */
+uint32_t horizon_ios_core_load_state(void);
+int32_t horizon_ios_load_core_assets(void);
 int32_t horizon_ios_shutdown(void);
 
 /* iOS-only: starts Winit/UIApplicationMain on the main thread. */

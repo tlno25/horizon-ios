@@ -25,6 +25,7 @@ unsafe extern "C" {
     fn horizon_ios_report_graphics_error(message: *const u8, length: usize);
     /// Swift copies the diagnostic before this synchronous callback returns.
     fn horizon_ios_resource_import_result(message: *const u8, length: usize, succeeded: i32);
+    fn horizon_ios_core_load_result(message: *const u8, length: usize, succeeded: i32);
 }
 
 pub(super) unsafe fn graphics_changed(state: u32) {
@@ -35,6 +36,10 @@ pub(super) fn report_resource_import_result(message: &str, success: bool) {
     unsafe {
         horizon_ios_resource_import_result(message.as_ptr(), message.len(), i32::from(success));
     }
+}
+
+pub(super) fn report_core_load_result(message: &str, success: bool) {
+    unsafe { horizon_ios_core_load_result(message.as_ptr(), message.len(), i32::from(success)) };
 }
 
 pub(super) fn notify_touch_changed() {

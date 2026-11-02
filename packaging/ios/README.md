@@ -49,8 +49,8 @@ Apple ID in an appropriate sideloading tool) is required. No Apple signing
 credentials are stored in this repository or Actions workflow.
 
 The IPA currently contains the Horizon shell, Metal integration probe,
-shared client profile and private game resource importer, **not playable
-Minecraft**. Minecraft engine loading and gameplay will be added in
+shared client profile, private resource importer and opt-in block registry
+loading stage, **not playable Minecraft**. Minecraft engine loading and gameplay will be added in
 later iterations. Neither GitHub nor your Windows/Linux computer needs a
 local Xcode installation to produce the unsigned IPA through Actions.
 
@@ -101,6 +101,19 @@ Simulator builds. Replace it and configure code signing before device testing.
   imported files live inside `Application Support/Horizon/.local/horizon-client/<version>/`.
   Importing a manifest does **not** validate all Minecraft assets or start a
   game world. ZIP files are never bundled into the public GitHub IPA.
+- **Core game CPU data** now has a separate opt-in loading stage. After
+  importing prepared resources, the SwiftUI **Load game block registry**
+  action invokes `horizon_ios_load_core_assets()` on a worker. The exact
+  `horizon_client::game_startup::load_core_registry()` function is now used
+  by both iOS and desktop/Android `game.rs::load_core`, sharing the same pinned
+  resource-version, `facts.json` and block-tag validations. It returns an
+  explicit success/error status and keeps the loaded registry in the process
+  for subsequent game startup. Invalid/missing game files do not count as a
+  successful load, even when `horizon-resources.json` exists. The load is
+  single-flight; failed attempts may be retried, successful loads cannot
+  repeatedly leak registries. **This only prepares CPU game metadata**:
+  creating a world and rendering gameplay still requires integration with
+  the existing `loading_app` Winit event loop.
 - Winit now forwards native UIKit touch phases into the portable Rust
   multitouch recorder. It tracks up to ten active fingers, clamps physical
   coordinates, and cancels outstanding touches when suspended. SwiftUI has

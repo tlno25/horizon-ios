@@ -18937,7 +18937,7 @@ fn load_core(
     parallel: bool,
     progress: &Progress,
 ) -> std::result::Result<std::result::Result<CoreTables, String>, String> {
-    let assets = match Assets::load(root) {
+    let assets = match horizon_client::game_startup::load_core_registry(root) {
         Ok(assets) => assets,
         Err(e) => return Ok(Err(e.to_string())),
     };

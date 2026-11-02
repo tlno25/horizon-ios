@@ -30,3 +30,37 @@ pub fn prepare_engine_directory(
         resources_ready: resources_ready(home),
     })
 }
+
+/// A single-flight gate for the first real game CPU resource loading stage.
+/// A failed attempt can retry after the user replaces their resource files.
+#[derive(Debug, Default)]
+pub struct CoreLoadGate(std::sync::atomic::AtomicU32);
+
+impl CoreLoadGate {
+    pub const fn new() -> Self {
+        Self(std::sync::atomic::AtomicU32::new(0))
+    }
+
+    #[must_use]
+    pub fn state(&self) -> u32 {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn try_begin(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.0
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+            || self
+                .0
+                .compare_exchange(3, 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+    }
+
+    pub fn finish(&self, success: bool) {
+        self.0.store(
+            if success { 2 } else { 3 },
+            std::sync::atomic::Ordering::Release,
+        );
+    }
+}

@@ -66,6 +66,7 @@ pub mod friends_screen;
 pub mod furnace;
 pub mod game_mode_switcher;
 pub mod game_rules_screen;
+pub mod game_startup;
 pub mod gizmos;
 pub mod gossip;
 pub mod health;

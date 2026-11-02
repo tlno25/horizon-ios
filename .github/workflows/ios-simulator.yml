@@ -53,6 +53,7 @@ jobs:
           cargo test --locked -p horizon-ios
           cargo test --locked -p horizon-client-input --lib
           cargo test --locked --no-default-features -p horizon-client --lib resource_install::tests::
+          cargo test --locked --no-default-features -p horizon-client --lib game_startup::tests::
       - name: Test iOS CI validators (graphics + unsigned IPA)
         run: python3 -m unittest discover -s packaging/ios/tests -p 'test_*.py'
       - name: Verify iOS dependency isolation

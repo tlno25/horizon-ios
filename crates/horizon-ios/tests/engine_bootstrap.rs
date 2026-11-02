@@ -65,3 +65,24 @@ fn rejects_relative_paths_and_missing_player_names() {
         .is_err()
     );
 }
+
+#[test]
+fn core_registry_load_gate_rejects_parallel_work_and_allows_retry() {
+    let gate = horizon_ios::CoreLoadGate::default();
+    assert_eq!(gate.state(), 0);
+    assert!(gate.try_begin());
+    assert!(
+        !gate.try_begin(),
+        "only one worker may initialize the registry"
+    );
+    assert_eq!(gate.state(), 1);
+    gate.finish(false);
+    assert_eq!(gate.state(), 3);
+    assert!(gate.try_begin(), "failed resource data can be retried");
+    gate.finish(true);
+    assert_eq!(gate.state(), 2);
+    assert!(
+        !gate.try_begin(),
+        "successful initialization must not leak another registry"
+    );
+}

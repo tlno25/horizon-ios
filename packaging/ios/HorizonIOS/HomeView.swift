@@ -10,6 +10,25 @@ private extension Notification.Name {
 // view may exist; it remains available to the first HomeView instance.
 private var mostRecentGraphicsError = ""
 
+/// The iOS sandbox is owned by Swift/UIKit, not inferred by a desktop-style
+/// current working directory in the Rust game. Preflight is idempotent.
+private func prepareSharedEngine() {
+    guard Thread.isMainThread else { return }
+    guard let support = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                  in: .userDomainMask).first else {
+        NSLog("Horizon iOS: cannot locate application-support directory")
+        return
+    }
+    let home = support.appendingPathComponent("Horizon", isDirectory: true)
+    let bytes = Array(home.path.utf8)
+    let result = bytes.withUnsafeBufferPointer { buffer in
+        horizon_ios_prepare_engine(buffer.baseAddress, buffer.count)
+    }
+    if result != 0 {
+        NSLog("Horizon iOS: shared engine profile preflight failed")
+    }
+}
+
 /// Leave a machine-readable signal for CI. simctl launch alone is not proof
 /// that the renderer initialized or presented a valid Metal surface.
 private func saveGraphicsStatus() {
@@ -17,7 +36,9 @@ private func saveGraphicsStatus() {
     guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
     let status: [String: Any] = [
         "state": Int(horizon_ios_graphics_state()),
-        "error": mostRecentGraphicsError
+        "error": mostRecentGraphicsError,
+        "engine": Int(horizon_ios_engine_state()),
+        "player": horizon_ios_player_name().map { String(cString: $0) } ?? ""
     ]
     do {
         try FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
@@ -31,6 +52,8 @@ private func saveGraphicsStatus() {
 private struct HomeView: View {
     @State private var bridgeState = horizon_ios_state()
     @State private var graphicsState = horizon_ios_graphics_state()
+    @State private var engineState = horizon_ios_engine_state()
+    @State private var playerName = horizon_ios_player_name().map { String(cString: $0) } ?? ""
     @State private var graphicsError = mostRecentGraphicsError
 
     private var stateLabel: String {
@@ -51,9 +74,20 @@ private struct HomeView: View {
         }
     }
 
+    private var engineLabel: String {
+        switch engineState {
+        case 1: return "Waiting for game resources"
+        case 2: return "Resource manifest found"
+        case 3: return "Profile initialization failed"
+        default: return "Not checked"
+        }
+    }
+
     private func refreshStatus() {
         bridgeState = horizon_ios_state()
         graphicsState = horizon_ios_graphics_state()
+        engineState = horizon_ios_engine_state()
+        playerName = horizon_ios_player_name().map { String(cString: $0) } ?? ""
         graphicsError = mostRecentGraphicsError
     }
 
@@ -73,6 +107,10 @@ private struct HomeView: View {
                     LabeledContent("Rust ABI", value: String(horizon_ios_abi_version()))
                     LabeledContent("App shell", value: stateLabel)
                     LabeledContent("GPU", value: graphicsLabel)
+                    LabeledContent("Game assets", value: engineLabel)
+                    if !playerName.isEmpty {
+                        LabeledContent("Local player", value: playerName)
+                    }
                     if graphicsState == 3 && !graphicsError.isEmpty {
                         Text(graphicsError)
                             .font(.footnote.monospaced())
@@ -82,7 +120,7 @@ private struct HomeView: View {
                     Button("Refresh status", action: refreshStatus)
                         .buttonStyle(.bordered)
 
-                    Text("The blue background is rendered by WGPU/Metal. The Minecraft engine is not running yet.")
+                    Text("The blue background is rendered by WGPU/Metal. The shared Horizon client now initializes its local profile and checks its resource manifest, but Minecraft gameplay has not started.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -137,6 +175,8 @@ public func horizon_ios_mount_home(_ parentPointer: UnsafeMutableRawPointer?) {
         return
     }
 
+    prepareSharedEngine()
+    saveGraphicsStatus()
     let parent = Unmanaged<UIViewController>.fromOpaque(parentPointer).takeUnretainedValue()
     // The Metal surface may have recreated its CAMetalLayer after backgrounding.
     // Reorder the existing overlay above it rather than installing another one.

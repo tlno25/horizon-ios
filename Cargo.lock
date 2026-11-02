@@ -1876,6 +1876,7 @@ dependencies = [
 name = "horizon-ios"
 version = "0.1.0"
 dependencies = [
+ "horizon-client",
  "horizon-client-input",
  "horizon-core",
  "pollster",

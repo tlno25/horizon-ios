@@ -13,6 +13,8 @@ crate-type = ["staticlib", "rlib"]
 horizon-core = { path = "../horizon-core" }
 
 [target.'cfg(target_os = "ios")'.dependencies]
+# First real shared game integration: persistent player profile and resource preflight.
+horizon-client = { path = "../horizon-client", default-features = false }
 horizon-client-input = { path = "../horizon-client-input" }
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 raw-window-handle = "0.6"

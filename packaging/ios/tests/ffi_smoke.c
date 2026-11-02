@@ -5,6 +5,8 @@
 int main(void) {
     assert(horizon_ios_abi_version() == 1);
     assert(horizon_ios_graphics_state() == 0);
+    assert(horizon_ios_engine_state() == 0);
+    assert(horizon_ios_player_name() == NULL);
     const char *version = horizon_ios_game_version();
     assert(version != NULL && strcmp(version, "26.3") == 0);
 
@@ -15,5 +17,6 @@ int main(void) {
     assert(horizon_ios_state() == 1);
     assert(horizon_ios_shutdown() == 0);
     assert(horizon_ios_state() == 0);
+    assert(horizon_ios_engine_state() == 0);
     return 0;
 }

@@ -15,6 +15,12 @@ def validate(payload: object) -> str:
         raise ValueError("Graphics status file needs numeric 'state' and string 'error'")
     if state != 2:
         raise ValueError(error or f"Metal graphics not ready (state={state})")
+    engine = payload.get("engine")
+    player = payload.get("player")
+    if type(engine) is not int or engine not in (1, 2):
+        raise ValueError(f"Shared game engine profile not initialized (state={engine})")
+    if not isinstance(player, str) or not player or len(player) > 16:
+        raise ValueError("Shared game engine profile has no valid player name")
     return "Metal ready"
 
 

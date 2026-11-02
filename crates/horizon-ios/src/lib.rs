@@ -13,6 +13,10 @@ static SHELL_STATE: AtomicU32 = AtomicU32::new(0);
 static GAME_VERSION: OnceLock<CString> = OnceLock::new();
 // 0 = not attempted, 1 = initializing, 2 = ready, 3 = failed, 4 = suspended.
 static GRAPHICS_STATE: AtomicU32 = AtomicU32::new(0);
+// 0 = not checked, 1 = missing resources, 2 = manifest found, 3 = error.
+// Neither 1 nor 2 means gameplay has started.
+static ENGINE_STATE: AtomicU32 = AtomicU32::new(0);
+static PLAYER_NAME: OnceLock<CString> = OnceLock::new();
 
 /// Returns the ABI revision supported by this static library.
 #[unsafe(no_mangle)]
@@ -48,6 +52,7 @@ pub extern "C" fn horizon_ios_state() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn horizon_ios_shutdown() -> i32 {
     SHELL_STATE.store(0, Ordering::Release);
+    ENGINE_STATE.store(0, Ordering::Release);
     0
 }
 
@@ -71,6 +76,62 @@ pub extern "C" fn horizon_ios_graphics_state() -> u32 {
 fn set_graphics_state(state: u32) {
     if GRAPHICS_STATE.swap(state, Ordering::AcqRel) != state {
         unsafe { app::graphics_changed(state) };
+    }
+}
+
+/// Game engine preflight state; 2 indicates a prepared resource manifest is
+/// present, **not** that a game world has started.
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_engine_state() -> u32 {
+    ENGINE_STATE.load(Ordering::Acquire)
+}
+
+/// Stable Rust-owned UTF-8 player name, or NULL before profile preflight.
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_player_name() -> *const c_char {
+    PLAYER_NAME
+        .get()
+        .map_or(std::ptr::null(), |name| name.as_ptr())
+}
+
+/// Native iOS host supplies its application-support directory (UTF-8 bytes).
+/// Returns 0 on successful preflight even when proprietary game assets are
+/// absent; errors return -1. Does not start a second UIKit event loop.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn horizon_ios_prepare_engine(home: *const u8, length: usize) -> i32 {
+    let operation = || -> Result<_, String> {
+        if home.is_null() || length == 0 || length > 4096 {
+            return Err("Invalid native application-support directory".into());
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(home, length) };
+        let path = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+        let prepared = prepare_engine_directory(
+            std::path::Path::new(path),
+            |directory| Ok(horizon_client::offline_name::load_or_create(directory)),
+            horizon_client::resource_install::ready,
+        )?;
+        let player =
+            CString::new(prepared.player_name).map_err(|_| "Invalid player name".to_owned())?;
+        let _ = PLAYER_NAME.set(player);
+        ENGINE_STATE.store(
+            if prepared.resources_ready { 2 } else { 1 },
+            Ordering::Release,
+        );
+        Ok(())
+    };
+    match std::panic::catch_unwind(operation) {
+        Ok(Ok(())) => 0,
+        Ok(Err(error)) => {
+            ENGINE_STATE.store(3, Ordering::Release);
+            eprintln!("Horizon iOS engine preflight: {error}");
+            -1
+        }
+        Err(_) => {
+            ENGINE_STATE.store(3, Ordering::Release);
+            eprintln!("Horizon iOS engine preflight panicked");
+            -1
+        }
     }
 }
 
@@ -101,3 +162,6 @@ pub use probe_lifecycle::ProbeLifecycle;
 
 #[cfg(any(test, target_os = "ios"))]
 mod clipboard_bridge;
+
+mod engine_bootstrap;
+pub use engine_bootstrap::{EnginePreparation, prepare_engine_directory};

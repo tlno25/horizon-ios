@@ -1,9 +1,11 @@
 # Horizon iOS development shell (vertical slice in progress)
 
 This app is the iOS port of the **Horizon Rust engine**, not Pomme/Client.
-The current SwiftUI home screen is only a shell. It **does not launch
-Minecraft**. A small experimental WGPU/Metal integration probe clears the
-background blue, behind the translucent SwiftUI panel.
+The SwiftUI home screen is still a shell; it **does not launch playable
+Minecraft**. The iOS static library now links the shared `horizon-client`
+engine, checks the native resource manifest and initializes the persistent
+local player name in the application-support sandbox. A WGPU/Metal integration
+probe clears the background blue behind the SwiftUI panel.
 
 ## Building entirely on GitHub Actions (no Mac or Xcode needed locally)
 
@@ -24,8 +26,9 @@ run page, open the **Artifacts** section and download:
   iPhone/iPad). Extract the nested ZIP to inspect/use the app bundle on a Mac.
 - `horizon-ios-simulator-preview`: optional screenshot from the Simulator run.
   The simulator job writes `Library/Caches/horizon-ios-graphics.json`
-  inside the app container and checks for a ready GPU (`state=2`). A valid
-  screenshot alone cannot make a failed Metal initialization pass CI.
+  inside the app container and checks for a ready GPU (`state=2`) **and** an
+  initialized game profile (engine state 1 or 2, nonempty player name). A valid
+  screenshot alone cannot hide a failed Metal or profile initialization.
 
 **An unsigned real-device IPA is now built by default** on pushes to the `ios`
 branch and on manual workflow runs (the `build_device` checkbox is enabled by
@@ -45,8 +48,8 @@ installed as-is. A separate signing process (for example using your own
 Apple ID in an appropriate sideloading tool) is required. No Apple signing
 credentials are stored in this repository or Actions workflow.
 
-The IPA currently contains the Horizon shell/Metal integration probe, **not
-playable Minecraft**. Minecraft engine loading and gameplay will be added in
+The IPA currently contains the Horizon shell, Metal integration probe and
+shared client profile/resource preflight, **not playable Minecraft**. Minecraft engine loading and gameplay will be added in
 later iterations. Neither GitHub nor your Windows/Linux computer needs a
 local Xcode installation to produce the unsigned IPA through Actions.
 
@@ -87,11 +90,19 @@ Simulator builds. Replace it and configure code signing before device testing.
   is not resolved, and iOS uses the same physical-key fallback as Android
   because Winit does not expose `key_without_modifiers` on either platform.
 - The shared `horizon-client` library passed an iOS Simulator type-check on
-  the macOS engine-compatibility workflow. Its startup/render loop is not yet
-  linked into the Horizon iOS application; the Linux cross-compile attempt
-  could not run Apple's native build tools (`xcrun`).
-- The bridge exposes the ABI version, Minecraft version and *shell* status
-  only. State `ready` means the shell exists, **not** that the game is running.
+  the macOS engine-compatibility workflow and is now linked into the iOS app's
+  static library. On UIKit's main thread, Swift supplies the absolute
+  `Application Support/Horizon` sandbox home path to Rust, which uses
+  `horizon_client::offline_name::load_or_create` to persist the local profile
+  and `horizon_client::resource_install::ready` to detect a prepared game
+  resource manifest. The event loop and game renderer are **not** started.
+- `horizon_ios_engine_state`: 0 = not checked, 1 = game assets missing,
+  2 = resource manifest found, 3 = preflight failed. States 1 and 2 mean the
+  profile/bootstrap completed, **never** that gameplay is running.
+- A manifest alone is not a proof of complete, valid Minecraft assets.
+  The native game loader's resource validation remains future work.
+- The bridge exposes separate shell, Metal and resource-preparation states;
+  none asserts that a Minecraft game world is running.
 - On suspend it drops the GPU probe and updates shell state; on resume it
   recreates the surface and device. Renderer output is not game content.
 - The GPU state is `Metal ready` only **after** a WGPU frame is successfully
@@ -114,8 +125,8 @@ packaging/ios/tests/check_portability.sh
 
 ## Shared game engine portability check
 
-The main Simulator workflow builds only the native iOS shell, not the full
-Minecraft client. The separate **Horizon iOS Engine Compatibility** workflow
+The main Simulator workflow links the shared Rust client library but still
+runs only the iOS bootstrap and Metal drawing probe, not gameplay. The separate **Horizon iOS Engine Compatibility** workflow
 is a manually triggered macOS job that type-checks `horizon-client --lib`
 with no optional audio/controllers against the actual iOS SDK. It reports the
 next Rust/iOS source incompatibilities without blocking the already working
@@ -129,12 +140,13 @@ is unaffected by the additional shared-engine portability check.
 
 ## Next milestone
 
-Run the WGPU/Metal surface creation, one-frame clear, resize and
-foreground/background recovery probe in the iOS Simulator. Then confirm that
-the Winit GPU view and SwiftUI host can coexist on iPhone and iPad without
-duplicate UIKit lifecycles. Only after validation should the shared Rust game
-start interface be extracted. Android crates and the `android` branch remain
-untouched by this shell work.
+The WGPU/Metal one-frame clear and iOS Simulator run are verified, and the
+shared client library now provides native profile/resource preflight. Next:
+connect resource preparation to the sandbox, extract the native game's
+`loading_app` startup interface from its desktop binary, and adapt input,
+world/renderer and lifecycle events without creating a second UIKit event
+loop. Exercise rotation and background recovery on an actual iPhone/iPad.
+The Android crate and the `android` branch remain untouched.
 
 ### Continuous integration
 

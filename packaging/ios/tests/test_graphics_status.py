@@ -5,7 +5,12 @@ from verify_graphics_status import validate
 
 class GraphicsStatusTests(unittest.TestCase):
     def test_metal_ready(self):
-        self.assertEqual(validate({"state": 2, "error": ""}), "Metal ready")
+        self.assertEqual(validate({"state": 2, "error": "", "engine": 1, "player": "Player00001"}), "Metal ready")
+
+    def test_engine_profile_must_be_initialized_before_gpu_smoke_passes(self):
+        for engine, player in ((0, ""), (3, "Player00001"), (1, ""), (2, "")):
+            with self.subTest(engine=engine, player=player), self.assertRaises(ValueError):
+                validate({"state": 2, "error": "", "engine": engine, "player": player})
 
     def test_metal_failed_with_native_message(self):
         with self.assertRaisesRegex(ValueError, "Metal initialization: No compatible"):

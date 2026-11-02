@@ -33,7 +33,7 @@ xcrun simctl launch "$udid" com.example.horizonios
 sleep 3
 xcrun simctl io "$udid" screenshot "${RUNNER_TEMP:-/tmp}/horizon-ios-smoke.png"
 # Capture native diagnostic logs for problems which do not prevent launch.
-# The Flutter/SwiftUI overlay can show GPU failures while the app process stays
+# The SwiftUI overlay can show GPU failures while the app process stays
 # alive, so a successful simctl launch alone is insufficient rendering evidence.
 log_file="${RUNNER_TEMP:-/tmp}/horizon-ios-simulator-native.log"
 xcrun simctl spawn "$udid" log show --style compact --last 5m \

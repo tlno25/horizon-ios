@@ -367,6 +367,18 @@ private struct HomeView: View {
     }
 }
 
+/// Synchronous checkpoint for the expensive native renderer handoff.
+/// We must save the current stage before `loading_renderer` can block UIKit;
+/// dispatching that write would make a stalled initialization look idle.
+@_cdecl("horizon_ios_renderer_status_changed")
+public func horizon_ios_renderer_status_changed() {
+    guard Thread.isMainThread else { return }
+    saveGraphicsStatus()
+    DispatchQueue.main.async {
+        NotificationCenter.default.post(name: .horizonGraphicsChanged, object: nil)
+    }
+}
+
 /// Called by Rust on Winit's main thread whenever GPU status changes.
 /// Notification delivery is deferred to avoid re-entering SwiftUI during Winit callbacks.
 @_cdecl("horizon_ios_graphics_changed")

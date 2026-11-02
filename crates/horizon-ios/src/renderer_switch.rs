@@ -35,6 +35,13 @@ impl RendererSwitch {
             .is_ok()
     }
 
+    /// Called directly from the first successful Metal probe presentation.
+    /// iOS may coalesce an additional `request_redraw` issued while handling
+    /// `RedrawRequested`, so the handoff request is made in the same event.
+    pub fn request_smoke_after_probe_frame(&self, enabled: bool, presented: bool) -> bool {
+        enabled && presented && self.request(true, true)
+    }
+
     pub fn start(&self) -> bool {
         self.0
             .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)

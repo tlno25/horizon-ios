@@ -53,3 +53,17 @@ fn only_one_concurrent_thread_can_request_window_handoff() {
         1
     );
 }
+
+#[test]
+fn smoke_switch_is_requested_in_the_same_successful_probe_frame() {
+    let switching = RendererSwitch::new();
+    assert!(!switching.request_smoke_after_probe_frame(false, true));
+    assert!(!switching.request_smoke_after_probe_frame(true, false));
+    assert_eq!(switching.state(), 0);
+    assert!(switching.request_smoke_after_probe_frame(true, true));
+    assert_eq!(switching.state(), 1);
+    assert!(!switching.request_smoke_after_probe_frame(true, true));
+    assert!(switching.start());
+    switching.finished(true);
+    assert_eq!(switching.state(), 3);
+}

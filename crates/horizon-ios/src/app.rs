@@ -33,6 +33,8 @@ unsafe extern "C" {
     /// The parent remains owned by Winit; Swift must not release it.
     fn horizon_ios_mount_home(view_controller: *mut c_void);
     fn horizon_ios_graphics_changed(state: u32);
+    /// Synchronously snapshot a renderer stage before expensive Metal setup.
+    fn horizon_ios_renderer_status_changed();
     fn horizon_ios_touch_changed();
     /// Swift copies the UTF-8 bytes before this callback returns.
     fn horizon_ios_report_graphics_error(message: *const u8, length: usize);
@@ -122,8 +124,12 @@ impl Shell {
         if !crate::RENDERER_SWITCH.start() {
             return;
         }
+        // Save stage 2 synchronously. The first full Horizon GPU pipeline
+        // creation may block UIKit; dispatch_async would lose this evidence.
+        unsafe { horizon_ios_renderer_status_changed() };
         let Some(window) = self.window.as_ref().cloned() else {
             crate::RENDERER_SWITCH.finished(false);
+            unsafe { horizon_ios_renderer_status_changed() };
             return;
         };
         self.metal = None;
@@ -148,6 +154,7 @@ impl Shell {
             Err(error) => {
                 report_graphics_error(&format!("Horizon loading renderer: {error}"));
                 crate::RENDERER_SWITCH.finished(false);
+                unsafe { horizon_ios_renderer_status_changed() };
                 self.start_metal();
                 window.request_redraw();
             }
@@ -167,6 +174,7 @@ impl Shell {
             Ok(true) => {
                 if self.lifecycle.present_frame() {
                     crate::RENDERER_SWITCH.finished(true);
+                    unsafe { horizon_ios_renderer_status_changed() };
                     crate::set_graphics_state(2);
                 }
             }
@@ -179,6 +187,7 @@ impl Shell {
                 report_graphics_error(&format!("Horizon first frame: {error}"));
                 self.horizon = None;
                 crate::RENDERER_SWITCH.finished(false);
+                unsafe { horizon_ios_renderer_status_changed() };
                 self.start_metal();
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -278,6 +287,7 @@ impl ApplicationHandler for Shell {
                 if self.horizon.is_some() {
                     self.draw_horizon();
                 } else if let Some(metal) = &self.metal {
+                    let mut handoff_after_present = false;
                     match metal.draw() {
                         Ok(true) => {
                             if self.lifecycle.present_frame() {
@@ -286,7 +296,12 @@ impl ApplicationHandler for Shell {
                                     || crate::horizon_ios_renderer_smoke_enabled() != 0)
                                     && crate::RENDERER_SWITCH.state() == 0
                                 {
-                                    window.request_redraw();
+                                    // On iOS a redraw requested from inside
+                                    // RedrawRequested can be coalesced. Start
+                                    // the handoff in this same event instead
+                                    // of assuming a second event will arrive.
+                                    handoff_after_present = crate::RENDERER_SWITCH
+                                        .request_smoke_after_probe_frame(true, true);
                                 }
                             }
                         }
@@ -296,6 +311,9 @@ impl ApplicationHandler for Shell {
                             crate::set_graphics_state(3);
                             self.metal = None;
                         }
+                    }
+                    if handoff_after_present {
+                        self.try_horizon_renderer();
                     }
                 }
             }

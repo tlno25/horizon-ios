@@ -21,6 +21,9 @@ def validate(payload: object) -> str:
         raise ValueError(f"Shared game engine profile not initialized (state={engine})")
     if not isinstance(player, str) or not player or len(player) > 16:
         raise ValueError("Shared game engine profile has no valid player name")
+    preview = payload.get("renderer_preview", 0)
+    if type(preview) is not int or preview not in (0, 1, 2, 3, 4):
+        raise ValueError(f"Invalid renderer handoff state (renderer_preview={preview})")
     core = payload.get("core_load", 0)
     if type(core) is not int or core not in (0, 1, 2, 3):
         raise ValueError(f"Invalid core game data state (core_load={core})")

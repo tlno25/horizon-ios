@@ -3,17 +3,30 @@
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use winit::application::ApplicationHandler;
 use winit::error::EventLoopError;
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
 #[path = "metal_probe.rs"]
 mod metal_probe;
 use crate::ProbeLifecycle;
+use horizon_client::{gfx::Renderer, graphics::GraphicsApi, hud::HudBatch};
 use metal_probe::MetalProbe;
+
+static EVENT_PROXY: OnceLock<EventLoopProxy<()>> = OnceLock::new();
+
+pub(super) fn renderer_events_available() -> bool {
+    EVENT_PROXY.get().is_some()
+}
+
+pub(super) fn request_renderer_event() -> bool {
+    EVENT_PROXY
+        .get()
+        .is_some_and(|proxy| proxy.send_event(()).is_ok())
+}
 
 unsafe extern "C" {
     /// Swift installs a UIHostingController as a child of Winit's controller.
@@ -55,6 +68,7 @@ fn report_graphics_error(message: &str) {
 struct Shell {
     window: Option<Arc<Window>>,
     metal: Option<MetalProbe>,
+    horizon: Option<Renderer>,
     lifecycle: ProbeLifecycle,
 }
 
@@ -76,7 +90,10 @@ impl Shell {
 
     fn start_metal(&mut self) {
         let Some(window) = &self.window else { return };
-        if self.metal.is_some() || self.lifecycle.drawable_size().is_none() {
+        if self.metal.is_some()
+            || self.horizon.is_some()
+            || self.lifecycle.drawable_size().is_none()
+        {
             return;
         }
         crate::set_graphics_state(1);
@@ -91,6 +108,79 @@ impl Shell {
                 report_graphics_error(&format!("Metal initialization: {error}"));
                 crate::set_graphics_state(3);
                 // Do not exit UIKit; the SwiftUI shell should remain usable.
+            }
+        }
+    }
+    /// This is opt-in because the full Horizon renderer creates many GPU
+    /// pipelines. Keep the working Metal probe as the default smoke target.
+    /// The probe's surface must be dropped *before* creating the real renderer
+    /// on the same UIKit Winit window.
+    fn try_horizon_renderer(&mut self) {
+        if !crate::RENDERER_SWITCH.start() {
+            return;
+        }
+        let Some(window) = self.window.as_ref().cloned() else {
+            crate::RENDERER_SWITCH.finished(false);
+            return;
+        };
+        self.metal = None;
+        crate::set_graphics_state(1);
+        // Use the exact boot renderer shared with the desktop/Android title
+        // screen, not another test WGPU pipeline. Its first drawn frame does
+        // not initialize a Minecraft world.
+        let atlas = horizon_client::hud::HudAtlas::boot();
+        let loaded = pollster::block_on(horizon_client::game_startup::loading_renderer(
+            window.clone(),
+            false,
+            Some(&atlas),
+            None,
+            None,
+            GraphicsApi::Auto,
+        ));
+        match loaded {
+            Ok(renderer) => {
+                self.horizon = Some(renderer);
+                window.request_redraw();
+            }
+            Err(error) => {
+                report_graphics_error(&format!("Horizon loading renderer: {error}"));
+                crate::RENDERER_SWITCH.finished(false);
+                self.start_metal();
+                window.request_redraw();
+            }
+        }
+        // Refresh SwiftUI even before the first real frame is presented.
+        unsafe { graphics_changed(crate::horizon_ios_graphics_state()) };
+    }
+
+    fn draw_horizon(&mut self) {
+        let Some(renderer) = self.horizon.as_mut() else {
+            return;
+        };
+        let batch = HudBatch::new([renderer.config.width, renderer.config.height]);
+        let frame = horizon_client::game_startup::loading_frame(&batch);
+        let result = renderer.render(&frame);
+        match result {
+            Ok(true) => {
+                if self.lifecycle.present_frame() {
+                    crate::RENDERER_SWITCH.finished(true);
+                    crate::set_graphics_state(2);
+                }
+            }
+            Ok(false) => {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            Err(error) => {
+                report_graphics_error(&format!("Horizon first frame: {error}"));
+                self.horizon = None;
+                crate::RENDERER_SWITCH.finished(false);
+                self.start_metal();
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+                unsafe { graphics_changed(crate::horizon_ios_graphics_state()) };
             }
         }
     }
@@ -132,12 +222,16 @@ impl ApplicationHandler for Shell {
         crate::clear_touches();
         // Drop the surface and all GPU objects before UIKit enters background.
         self.metal = None;
+        self.horizon = None;
+        crate::RENDERER_SWITCH.reset();
         crate::set_graphics_state(4);
         crate::shell_suspended();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        let Some(window) = &self.window else { return };
+        let Some(window) = self.window.as_ref().cloned() else {
+            return;
+        };
         if window.id() != id {
             return;
         }
@@ -151,7 +245,12 @@ impl ApplicationHandler for Shell {
                 if previously_presented && !self.lifecycle.has_presented_frame() {
                     crate::set_graphics_state(1);
                 }
-                if let Some(metal) = &mut self.metal {
+                if let Some(renderer) = &mut self.horizon {
+                    if self.lifecycle.drawable_size().is_some() {
+                        renderer.resize(size.width, size.height);
+                        window.request_redraw();
+                    }
+                } else if let Some(metal) = &mut self.metal {
                     if self.lifecycle.drawable_size().is_some() {
                         metal.resize(size.width, size.height);
                         window.request_redraw();
@@ -163,7 +262,10 @@ impl ApplicationHandler for Shell {
                 }
             }
             WindowEvent::RedrawRequested if self.lifecycle.drawable_size().is_some() => {
-                if let Some(metal) = &self.metal {
+                self.try_horizon_renderer();
+                if self.horizon.is_some() {
+                    self.draw_horizon();
+                } else if let Some(metal) = &self.metal {
                     match metal.draw() {
                         Ok(true) => {
                             if self.lifecycle.present_frame() {
@@ -201,8 +303,15 @@ impl ApplicationHandler for Shell {
         }
     }
 
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.metal = None;
+        self.horizon = None;
         self.window = None;
         let _ = crate::horizon_ios_shutdown();
         crate::set_graphics_state(0);
@@ -212,6 +321,7 @@ impl ApplicationHandler for Shell {
 pub(super) fn run() -> Result<(), EventLoopError> {
     crate::clipboard_bridge::install();
     let event_loop = EventLoop::builder().build()?;
+    let _ = EVENT_PROXY.set(event_loop.create_proxy());
     let mut shell = Shell::default();
     let _ = crate::horizon_ios_initialize();
     event_loop.run_app(&mut shell)

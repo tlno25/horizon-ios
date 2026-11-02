@@ -27,6 +27,8 @@ static RESOURCE_IMPORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static CORE_LOAD: CoreLoadGate = CoreLoadGate::new();
 #[cfg(target_os = "ios")]
 static CORE_ASSETS: OnceLock<horizon_client::assets::Assets> = OnceLock::new();
+#[cfg(target_os = "ios")]
+static RENDERER_SWITCH: RendererSwitch = RendererSwitch::new();
 
 /// Returns the ABI revision supported by this static library.
 #[unsafe(no_mangle)]
@@ -64,6 +66,8 @@ pub extern "C" fn horizon_ios_shutdown() -> i32 {
     SHELL_STATE.store(0, Ordering::Release);
     ENGINE_STATE.store(0, Ordering::Release);
     #[cfg(target_os = "ios")]
+    RENDERER_SWITCH.reset();
+    #[cfg(target_os = "ios")]
     clear_touches();
     0
 }
@@ -88,6 +92,39 @@ pub extern "C" fn horizon_ios_graphics_state() -> u32 {
 fn set_graphics_state(state: u32) {
     if GRAPHICS_STATE.swap(state, Ordering::AcqRel) != state {
         unsafe { app::graphics_changed(state) };
+    }
+}
+
+/// 0=Metal probe, 1=requested, 2=constructing the real boot renderer,
+/// 3=actual Horizon renderer presented a frame, 4=renderer failed.
+/// State 3 does NOT imply gameplay has started.
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_renderer_preview_state() -> u32 {
+    #[cfg(target_os = "ios")]
+    {
+        return RENDERER_SWITCH.state();
+    }
+    #[cfg(not(target_os = "ios"))]
+    0
+}
+
+/// Request transfer from Metal's bootstrap probe to Horizon's *real*
+/// loading renderer, reusing the existing UIKit Winit window and event loop.
+/// Must be called from the UI; requests are delivered through Winit's proxy.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_preview_game_renderer() -> i32 {
+    if !app::renderer_events_available() {
+        return -2;
+    }
+    if !RENDERER_SWITCH.request(CORE_LOAD.state() == 2, horizon_ios_graphics_state() == 2) {
+        return -1;
+    }
+    if app::request_renderer_event() {
+        0
+    } else {
+        RENDERER_SWITCH.reset();
+        -2
     }
 }
 
@@ -356,3 +393,5 @@ mod engine_bootstrap;
 pub use engine_bootstrap::{CoreLoadGate, EnginePreparation, prepare_engine_directory};
 mod touch_input;
 pub use touch_input::{TouchInput, TouchPhase};
+mod renderer_switch;
+pub use renderer_switch::RendererSwitch;

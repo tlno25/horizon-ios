@@ -7,6 +7,11 @@ class GraphicsStatusTests(unittest.TestCase):
     def test_metal_ready(self):
         self.assertEqual(validate({"state": 2, "error": "", "engine": 1, "player": "Player00001", "core_load": 0}), "Metal ready")
 
+    def test_renderer_preview_state_must_be_valid(self):
+        for status in ("3", None, True, -1, 5):
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                validate({"state": 2, "error": "", "engine": 1, "player": "Player00001", "renderer_preview": status})
+
     def test_core_load_status_must_be_numeric_when_reported(self):
         for status in ("2", None, True, 7, -1):
             with self.subTest(status=status), self.assertRaises(ValueError):

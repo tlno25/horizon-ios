@@ -6,6 +6,7 @@ fn exposes_version_and_idempotent_shell_lifecycle() {
     assert_eq!(horizon_ios::horizon_ios_abi_version(), 1);
     // Metal is unavailable on Linux and is never initialized by this FFI test.
     assert_eq!(horizon_ios::horizon_ios_graphics_state(), 0);
+    assert_eq!(horizon_ios::horizon_ios_renderer_preview_state(), 0);
     assert_eq!(horizon_ios::horizon_ios_engine_state(), 0);
     assert_eq!(horizon_ios::horizon_ios_core_load_state(), 0);
     assert_eq!(horizon_ios::horizon_ios_touch_count(), 0);

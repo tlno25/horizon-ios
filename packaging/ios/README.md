@@ -49,8 +49,8 @@ Apple ID in an appropriate sideloading tool) is required. No Apple signing
 credentials are stored in this repository or Actions workflow.
 
 The IPA currently contains the Horizon shell, Metal integration probe,
-shared client profile, private resource importer and opt-in block registry
-loading stage, **not playable Minecraft**. Minecraft engine loading and gameplay will be added in
+shared client profile, private resource importer, block registry loading and
+an opt-in shared Horizon renderer preview, **not playable Minecraft**. Minecraft engine loading and gameplay will be added in
 later iterations. Neither GitHub nor your Windows/Linux computer needs a
 local Xcode installation to produce the unsigned IPA through Actions.
 
@@ -101,6 +101,18 @@ Simulator builds. Replace it and configure code signing before device testing.
   imported files live inside `Application Support/Horizon/.local/horizon-client/<version>/`.
   Importing a manifest does **not** validate all Minecraft assets or start a
   game world. ZIP files are never bundled into the public GitHub IPA.
+- **Horizon renderer preview** is another opt-in, after successful game
+  registry loading. The desktop/Android boot-renderer constructor and empty
+  loading frame now live in `horizon_client::game_startup`, and the iOS shell
+  can replace its working blue Metal probe with these **real Horizon GPU
+  pipelines on the same Winit window and event loop**. The switch is
+  single-flight and releases the probe's surface before opening the Horizon
+  renderer. If creation or rendering fails, it reports the error and attempts
+  to restore the probe. Background/suspend also drops the renderer and returns
+  to the probe on resume. No game world, engine ticks, or interactive title
+  have been attached; this is a renderer integration diagnostic, not gameplay.
+  The existing Simulator and device IPA workflows keep using the stable
+  Metal probe by default.
 - **Core game CPU data** now has a separate opt-in loading stage. After
   importing prepared resources, the SwiftUI **Load game block registry**
   action invokes `horizon_ios_load_core_assets()` on a worker. The exact

@@ -45,6 +45,7 @@ private func saveGraphicsStatus() {
         "error": mostRecentGraphicsError,
         "engine": Int(horizon_ios_engine_state()),
         "core_load": Int(horizon_ios_core_load_state()),
+        "renderer_preview": Int(horizon_ios_renderer_preview_state()),
         "player": horizon_ios_player_name().map { String(cString: $0) } ?? ""
     ]
     do {
@@ -61,6 +62,7 @@ private struct HomeView: View {
     @State private var graphicsState = horizon_ios_graphics_state()
     @State private var engineState = horizon_ios_engine_state()
     @State private var coreLoadState = horizon_ios_core_load_state()
+    @State private var rendererPreviewState = horizon_ios_renderer_preview_state()
     @State private var coreLoadMessage = mostRecentCoreLoadMessage
     @State private var loadingCore = false
     @State private var playerName = horizon_ios_player_name().map { String(cString: $0) } ?? ""
@@ -123,11 +125,30 @@ private struct HomeView: View {
         }
     }
 
+    private var rendererPreviewLabel: String {
+        switch rendererPreviewState {
+        case 1: return "Handoff requested"
+        case 2: return "Initializing Horizon renderer"
+        case 3: return "Horizon renderer presented a frame"
+        case 4: return "Failed; using Metal probe"
+        default: return "Metal probe"
+        }
+    }
+
+    private func previewGameRenderer() {
+        let result = horizon_ios_preview_game_renderer()
+        if result != 0 {
+            mostRecentGraphicsError = "Cannot start Horizon renderer preview (code \(result))"
+        }
+        refreshStatus()
+    }
+
     private func refreshStatus() {
         bridgeState = horizon_ios_state()
         graphicsState = horizon_ios_graphics_state()
         engineState = horizon_ios_engine_state()
         coreLoadState = horizon_ios_core_load_state()
+        rendererPreviewState = horizon_ios_renderer_preview_state()
         playerName = horizon_ios_player_name().map { String(cString: $0) } ?? ""
         graphicsError = mostRecentGraphicsError
         activeTouchCount = horizon_ios_touch_count()
@@ -212,10 +233,11 @@ private struct HomeView: View {
                     LabeledContent("GPU", value: graphicsLabel)
                     LabeledContent("Game assets", value: engineLabel)
                     LabeledContent("Game CPU data", value: coreLoadLabel)
+                    LabeledContent("Renderer", value: rendererPreviewLabel)
                     if !playerName.isEmpty {
                         LabeledContent("Local player", value: playerName)
                     }
-                    if graphicsState == 3 && !graphicsError.isEmpty {
+                    if (graphicsState == 3 || rendererPreviewState == 4) && !graphicsError.isEmpty {
                         Text(graphicsError)
                             .font(.footnote.monospaced())
                             .foregroundStyle(.red)
@@ -261,6 +283,14 @@ private struct HomeView: View {
                             .buttonStyle(.borderedProminent)
                             .disabled(loadingCore)
                     }
+                    if coreLoadState == 2 && graphicsState == 2 &&
+                        (rendererPreviewState == 0 || rendererPreviewState == 4) {
+                        Button("Preview Horizon renderer", action: previewGameRenderer)
+                            .buttonStyle(.bordered)
+                    }
+                    if rendererPreviewState == 1 || rendererPreviewState == 2 {
+                        ProgressView("Initializing the Horizon boot renderer")
+                    }
                     if loadingCore {
                         ProgressView("Loading game block registry")
                     }
@@ -280,7 +310,7 @@ private struct HomeView: View {
                             .textSelection(.enabled)
                     }
 
-                    Text("The blue background is rendered by WGPU/Metal. The shared Horizon client now initializes its local profile and checks its resource manifest, but Minecraft gameplay has not started.")
+                    Text("The Metal probe renders the blue background. You can optionally switch to the real Horizon boot renderer after loading game data. This does not start Minecraft gameplay.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

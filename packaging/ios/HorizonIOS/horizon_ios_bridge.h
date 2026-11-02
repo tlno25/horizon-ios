@@ -17,6 +17,11 @@ int32_t horizon_ios_initialize(void);
 uint32_t horizon_ios_state(void);
 /* 0=not started, 1=initializing, 2=ready, 3=failed, 4=suspended */
 uint32_t horizon_ios_graphics_state(void);
+/* 0=Metal probe, 1=requested, 2=constructing, 3=real renderer presented,
+   4=failed and returned to the Metal probe. Never means gameplay is active. */
+uint32_t horizon_ios_renderer_preview_state(void);
+/* Request a single-window Winit handoff to the real Horizon boot renderer. */
+int32_t horizon_ios_preview_game_renderer(void);
 uint32_t horizon_ios_touch_count(void);
 uint64_t horizon_ios_touch_events(void);
 /* Diagnostic SwiftUI touch pad: 0=start, 1=move, 2=end, 3=cancel.

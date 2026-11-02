@@ -1193,6 +1193,11 @@ impl wgpu::rwh::HasDisplayHandle for WindowDisplay {
 /// the renderer's start (#746). macOS has Metal only.
 fn backend_order(api: GraphicsApi, os: &str, wgpu_backend: bool) -> Vec<wgpu::Backends> {
     use wgpu::Backends;
+    // iOS has no Vulkan, OpenGL or DX12; desktop backend preferences must not
+    // prevent choosing the only native iOS renderer.
+    if os == "ios" {
+        return vec![Backends::METAL];
+    }
     if os == "macos" || wgpu_backend {
         return vec![Backends::default()];
     }
@@ -1210,6 +1215,7 @@ fn backends_name(backends: wgpu::Backends) -> &'static str {
         wgpu::Backends::VULKAN => "Vulkan",
         wgpu::Backends::DX12 => "DirectX 12",
         wgpu::Backends::GL => "OpenGL",
+        wgpu::Backends::METAL => "Metal",
         _ => "graphics",
     }
 }
@@ -1441,7 +1447,7 @@ async fn open_backend(
     // stand-in neither clamps nor drops NaN. Subgroups: shader packs' compute programs
     // (`MC_GL_KHR_shader_subgroup_*`); storage buffers in vertex shaders, clearing and
     // atomics on images: their buffers and images.
-    let mobile = cfg!(target_os = "android");
+    let mobile = cfg!(any(target_os = "android", target_os = "ios"));
     let compatibility = crate::android_runtime::compatibility();
     let features = timing::GpuTimer::features(&adapter)
         | if compatibility {
@@ -1483,7 +1489,7 @@ async fn open_backend(
         // Mobile drivers can spend hundreds of milliseconds reserving a new
         // 128-256 MiB pool block. This changes allocation granularity, not
         // resource limits, shader features, texture quality or geometry.
-        memory_hints: if cfg!(target_os = "android") {
+        memory_hints: if mobile {
             wgpu::MemoryHints::MemoryUsage
         } else {
             wgpu::MemoryHints::Performance
@@ -1493,12 +1499,12 @@ async fn open_backend(
         required_limits: limits,
         ..Default::default()
     };
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     let opened = match info.backend {
         wgpu::Backend::Vulkan => horizon_hdr::open_vulkan_device(&adapter, &desc),
         _ => None,
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     let opened = None;
     let opened = match opened {
         Some(opened) => opened,
@@ -8456,6 +8462,11 @@ mod tests {
         );
         assert_eq!(order(GraphicsApi::Dx12, "linux"), [Backends::VULKAN]);
         assert_eq!(order(GraphicsApi::OpenGl, "linux"), [Backends::GL]);
+        // iOS has Metal only, regardless of desktop video-backend settings.
+        for api in GraphicsApi::ALL {
+            assert_eq!(order(api, "ios"), [Backends::METAL]);
+            assert_eq!(backend_order(api, "ios", true), [Backends::METAL]);
+        }
         // WGPU_BACKEND picks the backends itself; macOS has Metal only.
         for api in GraphicsApi::ALL {
             assert_eq!(backend_order(api, "windows", true), [Backends::default()]);

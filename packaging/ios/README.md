@@ -100,6 +100,21 @@ packaging/ios/tests/run_ffi_smoke.sh
 packaging/ios/tests/check_portability.sh
 ```
 
+## Shared game engine portability check
+
+The main Simulator workflow builds only the native iOS shell, not the full
+Minecraft client. The separate **Horizon iOS Engine Compatibility** workflow
+is a manually triggered macOS job that type-checks `horizon-client --lib`
+with no optional audio/controllers against the actual iOS SDK. It reports the
+next Rust/iOS source incompatibilities without blocking the already working
+app build; its compiler log is available as an Actions artifact. The game
+remains unintegrated until this check passes **and** its startup/rendering
+interface is adapted to the Winit/UIKit shell.
+
+The shared client's iOS dependency graph now selects only Metal. Android,
+Windows and Linux retain their original WGPU backends. The native iOS shell
+is unaffected by the additional shared-engine portability check.
+
 ## Next milestone
 
 Run the WGPU/Metal surface creation, one-frame clear, resize and

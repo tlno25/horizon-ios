@@ -14,3 +14,18 @@ if grep -Eq '(^|[[:space:]])arboard v' <<< "$tree"; then
     exit 1
 fi
 echo 'iOS client dependency tree excludes desktop arboard'
+
+# Cargo merges features across transitive dependencies, including the HDR shim.
+# The shared engine's iOS target must not include unused desktop drivers.
+backend_tree="$(cargo tree --locked --target aarch64-apple-ios-sim \
+    --package horizon-client --no-default-features --edges features)"
+if grep -Eq 'wgpu feature "(vulkan|gles|dx12)"' <<< "$backend_tree"; then
+    echo 'ERROR: non-Metal WGPU backend was enabled for the iOS client' >&2
+    grep -E 'wgpu feature "(vulkan|gles|dx12)"' <<< "$backend_tree" >&2
+    exit 1
+fi
+if ! grep -q 'wgpu feature "metal"' <<< "$backend_tree"; then
+    echo 'ERROR: Metal backend was not enabled for the iOS client' >&2
+    exit 1
+fi
+echo 'iOS client depends on WGPU Metal only'

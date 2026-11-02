@@ -1,0 +1,33 @@
+name: Horizon iOS Engine Compatibility
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shared-engine-ios:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the iOS Simulator Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+          targets: aarch64-apple-ios-sim
+      - name: Check the shared Horizon client against the iOS SDK
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo check --locked -p horizon-client --lib --no-default-features \
+            --target aarch64-apple-ios-sim 2>&1 | tee "$RUNNER_TEMP/horizon-ios-engine-check.log"
+      - name: Upload iOS engine compatibility diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-ios-engine-compatibility-log
+          path: ${{ runner.temp }}/horizon-ios-engine-check.log
+          if-no-files-found: ignore
+          retention-days: 14

@@ -195,9 +195,13 @@ The Android crate and the `android` branch remain untouched.
 
 ### Continuous integration
 
-The GitHub workflow `ios-simulator.yml` builds on a macOS Apple Silicon
-runner, uploads the Simulator `.app.zip`, then launches `HorizonIOS` in an
-iPhone simulator and uploads a screenshot. The simulator also performs a
+The GitHub workflow `ios-simulator.yml` builds the **x86_64 iOS Simulator**
+app on `macos-15-intel` (avoiding the GitHub-hosted Apple Silicon runner queue),
+uploads the Simulator `.app.zip`, then launches `HorizonIOS` in an Intel-hosted
+iPhone simulator and uploads a screenshot. The Xcode Rust build phase also
+supports arm64 Simulator on an Apple Silicon Mac; both targets link their own
+architecture-matched static library. This Simulator binary is **not** an IPA
+for an iPhone: real devices still use `aarch64-apple-ios`. The simulator also performs a
 **separate experimental boot-renderer smoke test**: a fresh launch with the
 `HORIZON_IOS_RENDERER_SMOKE=1` environment flag (forwarded using `SIMCTL_CHILD_`)
 **and** a one-shot `Library/Caches/horizon-ios-renderer-smoke.flag` marker

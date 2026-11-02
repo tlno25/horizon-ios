@@ -61,7 +61,10 @@ jobs:
       - name: Verify the Rust C ABI from C
         run: packaging/ios/tests/run_ffi_smoke.sh
   simulator-build:
-    runs-on: macos-15
+    # Intel macOS runners are usually available even when macOS arm64 workers
+    # are capacity-constrained. Test the actual x86_64 Simulator runtime here;
+    # the independent device job still cross-compiles real iPhoneOS arm64.
+    runs-on: macos-15-intel
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -69,8 +72,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.95.0'
-          targets: aarch64-apple-ios-sim
-      - name: Build and link the iOS Simulator app (arm64)
+          targets: x86_64-apple-ios
+      - name: Build and link the iOS Simulator app (x86_64)
         run: |
           xcodebuild \
             -project packaging/ios/HorizonIOS.xcodeproj \
@@ -79,7 +82,7 @@ jobs:
             -configuration Debug \
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
-            ARCHS=arm64 \
+            ARCHS=x86_64 \
             build
       - name: Package the Simulator app
         env:

@@ -65,7 +65,8 @@ impl Shell {
         match MetalProbe::new(window.clone()) {
             Ok(probe) => {
                 self.metal = Some(probe);
-                crate::set_graphics_state(2);
+                // Device creation is not proof that a Metal frame was
+                // presented. Keep state 1 until the next redraw succeeds.
                 window.request_redraw();
             }
             Err(error) => {
@@ -123,7 +124,11 @@ impl ApplicationHandler for Shell {
         }
         match event {
             WindowEvent::Resized(size) => {
+                let previously_presented = self.lifecycle.has_presented_frame();
                 self.lifecycle.resize(size.width, size.height);
+                if previously_presented && !self.lifecycle.has_presented_frame() {
+                    crate::set_graphics_state(1);
+                }
                 if let Some(metal) = &mut self.metal {
                     if self.lifecycle.drawable_size().is_some() {
                         metal.resize(size.width, size.height);
@@ -136,12 +141,20 @@ impl ApplicationHandler for Shell {
                 }
             }
             WindowEvent::RedrawRequested if self.lifecycle.drawable_size().is_some() => {
-                if let Some(metal) = &self.metal
-                    && let Err(error) = metal.draw()
-                {
-                    report_graphics_error(&format!("Metal presentation: {error}"));
-                    crate::set_graphics_state(3);
-                    self.metal = None;
+                if let Some(metal) = &self.metal {
+                    match metal.draw() {
+                        Ok(true) => {
+                            if self.lifecycle.present_frame() {
+                                crate::set_graphics_state(2);
+                            }
+                        }
+                        Ok(false) => window.request_redraw(),
+                        Err(error) => {
+                            report_graphics_error(&format!("Metal presentation: {error}"));
+                            crate::set_graphics_state(3);
+                            self.metal = None;
+                        }
+                    }
                 }
             }
             WindowEvent::CloseRequested => event_loop.exit(),

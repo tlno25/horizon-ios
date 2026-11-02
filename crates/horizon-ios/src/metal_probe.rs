@@ -80,13 +80,15 @@ impl MetalProbe {
         self.surface.configure(&self.device, &self.config);
     }
 
-    pub(super) fn draw(&self) -> Result<(), String> {
+    /// Ok(true): a drawable was presented. Ok(false): the swapchain was
+    /// reconfigured and needs another redraw before the GPU can be marked ready.
+    pub(super) fn draw(&self) -> Result<bool, String> {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.config);
-                return Ok(());
+                return Ok(false);
             }
             other => return Err(format!("Unable to acquire a Metal frame: {other:?}")),
         };
@@ -118,6 +120,6 @@ impl MetalProbe {
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
-        Ok(())
+        Ok(true)
     }
 }

@@ -82,6 +82,10 @@ Simulator builds. Replace it and configure code signing before device testing.
   only. State `ready` means the shell exists, **not** that the game is running.
 - On suspend it drops the GPU probe and updates shell state; on resume it
   recreates the surface and device. Renderer output is not game content.
+- The GPU state is `Metal ready` only **after** a WGPU frame is successfully
+  submitted and presented; merely creating the Metal device does not mark it
+  ready. Resize, suspension, and surface reconfiguration invalidate readiness
+  until the next successful presentation.
 
 The lifecycle/window ownership and Swift callback must be exercised in a real
 Simulator before they are considered validated. The Linux iOS cross-target

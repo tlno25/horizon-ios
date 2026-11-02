@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 private extension Notification.Name {
     static let horizonGraphicsChanged = Notification.Name("HorizonGraphicsChanged")
     static let horizonResourceImportChanged = Notification.Name("HorizonResourceImportChanged")
+    static let horizonTouchChanged = Notification.Name("HorizonTouchChanged")
 }
 
 // Main-thread-only: Rust reports an error synchronously before the SwiftUI
@@ -61,6 +62,9 @@ private struct HomeView: View {
     @State private var showResourceImporter = false
     @State private var importingResources = false
     @State private var resourceMessage = mostRecentResourceMessage
+    @State private var activeTouchCount = horizon_ios_touch_count()
+    @State private var touchEventCount = horizon_ios_touch_events()
+    @State private var diagnosticFingerDown = false
 
     private var stateLabel: String {
         switch bridgeState {
@@ -95,6 +99,18 @@ private struct HomeView: View {
         engineState = horizon_ios_engine_state()
         playerName = horizon_ios_player_name().map { String(cString: $0) } ?? ""
         graphicsError = mostRecentGraphicsError
+        activeTouchCount = horizon_ios_touch_count()
+        touchEventCount = horizon_ios_touch_events()
+    }
+
+    /// Forward diagnostic SwiftUI drag input to the same Rust input recorder
+    /// used by real Winit/UIKit touch events; gameplay bindings come later.
+    private func touchPadEvent(_ phase: UInt32, _ point: CGPoint, _ size: CGSize) {
+        let width = UInt32(max(size.width.rounded(), 1))
+        let height = UInt32(max(size.height.rounded(), 1))
+        _ = horizon_ios_debug_touch(phase, Float(point.x), Float(point.y), width, height)
+        activeTouchCount = horizon_ios_touch_count()
+        touchEventCount = horizon_ios_touch_events()
     }
 
     /// Import the player's private Horizon resource ZIP through iOS Files.
@@ -182,6 +198,32 @@ private struct HomeView: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(importingResources)
                     }
+                    Divider()
+                    Text("Touch input bridge")
+                        .font(.headline)
+                    LabeledContent("Active fingers", value: String(activeTouchCount))
+                    LabeledContent("Input events", value: String(touchEventCount))
+                    GeometryReader { geometry in
+                        RoundedRectangle(cornerRadius: 9)
+                            .fill(Color.primary.opacity(0.06))
+                            .overlay {
+                                Text("Drag or tap to test touch input")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                            .gesture(DragGesture(minimumDistance: 0)
+                                .onChanged { gesture in
+                                    touchPadEvent(diagnosticFingerDown ? 1 : 0,
+                                                  gesture.location, geometry.size)
+                                    diagnosticFingerDown = true
+                                }
+                                .onEnded { gesture in
+                                    touchPadEvent(2, gesture.location, geometry.size)
+                                    diagnosticFingerDown = false
+                                })
+                    }
+                    .frame(height: 76)
                     if importingResources {
                         ProgressView("Importing game resources")
                     }
@@ -202,6 +244,9 @@ private struct HomeView: View {
             }
         }
         .fileImporter(isPresented: $showResourceImporter, allowedContentTypes: [.zip], onCompletion: selectResourceArchive)
+        .onReceive(NotificationCenter.default.publisher(for: .horizonTouchChanged)) { _ in
+            refreshStatus()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .horizonResourceImportChanged)) { _ in
             resourceMessage = mostRecentResourceMessage
             refreshStatus()
@@ -210,6 +255,10 @@ private struct HomeView: View {
             refreshStatus()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            if diagnosticFingerDown {
+                touchPadEvent(3, .zero, CGSize(width: 1, height: 1))
+                diagnosticFingerDown = false
+            }
             refreshStatus()
         }
         .onReceive(NotificationCenter.default.publisher(for: .horizonGraphicsChanged)) { _ in
@@ -225,6 +274,15 @@ public func horizon_ios_graphics_changed(_ state: UInt32) {
     DispatchQueue.main.async {
         saveGraphicsStatus()
         NotificationCenter.default.post(name: .horizonGraphicsChanged, object: nil)
+    }
+}
+
+/// Rust calls this after recording a Winit or diagnostic Swift touch event.
+/// Re-dispatch to avoid mutating SwiftUI inside an event-loop callback.
+@_cdecl("horizon_ios_touch_changed")
+public func horizon_ios_touch_changed() {
+    DispatchQueue.main.async {
+        NotificationCenter.default.post(name: .horizonTouchChanged, object: nil)
     }
 }
 

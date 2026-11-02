@@ -18,6 +18,8 @@ static GRAPHICS_STATE: AtomicU32 = AtomicU32::new(0);
 static ENGINE_STATE: AtomicU32 = AtomicU32::new(0);
 static PLAYER_NAME: OnceLock<CString> = OnceLock::new();
 #[cfg(target_os = "ios")]
+static TOUCH_STATE: OnceLock<std::sync::Mutex<TouchInput>> = OnceLock::new();
+#[cfg(target_os = "ios")]
 static ENGINE_HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
 #[cfg(target_os = "ios")]
 static RESOURCE_IMPORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -57,6 +59,8 @@ pub extern "C" fn horizon_ios_state() -> u32 {
 pub extern "C" fn horizon_ios_shutdown() -> i32 {
     SHELL_STATE.store(0, Ordering::Release);
     ENGINE_STATE.store(0, Ordering::Release);
+    #[cfg(target_os = "ios")]
+    clear_touches();
     0
 }
 
@@ -81,6 +85,77 @@ fn set_graphics_state(state: u32) {
     if GRAPHICS_STATE.swap(state, Ordering::AcqRel) != state {
         unsafe { app::graphics_changed(state) };
     }
+}
+
+/// Number of active touches recorded by the native input bridge.
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_touch_count() -> u32 {
+    #[cfg(target_os = "ios")]
+    {
+        return TOUCH_STATE
+            .get()
+            .and_then(|input| input.lock().ok())
+            .map_or(0, |input| input.active_count() as u32);
+    }
+    #[cfg(not(target_os = "ios"))]
+    0
+}
+
+/// Number of accepted touch transitions since app launch.
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_touch_events() -> u64 {
+    #[cfg(target_os = "ios")]
+    {
+        return TOUCH_STATE
+            .get()
+            .and_then(|input| input.lock().ok())
+            .map_or(0, |input| input.event_count());
+    }
+    #[cfg(not(target_os = "ios"))]
+    0
+}
+
+#[cfg(target_os = "ios")]
+fn update_touch(id: u64, phase: TouchPhase, point: (f32, f32), size: (u32, u32)) -> bool {
+    let input = TOUCH_STATE.get_or_init(|| std::sync::Mutex::new(TouchInput::default()));
+    let accepted = input
+        .lock()
+        .is_ok_and(|mut state| state.handle(id, phase, point, size));
+    if accepted {
+        app::notify_touch_changed();
+    }
+    accepted
+}
+
+#[cfg(target_os = "ios")]
+fn clear_touches() {
+    if let Some(input) = TOUCH_STATE.get() {
+        if let Ok(mut state) = input.lock() {
+            state.clear();
+        }
+        app::notify_touch_changed();
+    }
+}
+
+/// Diagnostic SwiftUI touch pad. Phases: 0=start, 1=move, 2=end, 3=cancel.
+/// The reserved ID cannot collide with Winit's ordinary touch IDs.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_debug_touch(
+    phase: u32,
+    x: f32,
+    y: f32,
+    width: u32,
+    height: u32,
+) -> i32 {
+    let phase = match phase {
+        0 => TouchPhase::Started,
+        1 => TouchPhase::Moved,
+        2 => TouchPhase::Ended,
+        3 => TouchPhase::Cancelled,
+        _ => return -1,
+    };
+    i32::from(update_touch(u64::MAX, phase, (x, y), (width, height)))
 }
 
 /// Game engine preflight state; 2 indicates a prepared resource manifest is
@@ -220,3 +295,5 @@ mod clipboard_bridge;
 
 mod engine_bootstrap;
 pub use engine_bootstrap::{EnginePreparation, prepare_engine_directory};
+mod touch_input;
+pub use touch_input::{TouchInput, TouchPhase};

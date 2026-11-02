@@ -101,6 +101,14 @@ Simulator builds. Replace it and configure code signing before device testing.
   imported files live inside `Application Support/Horizon/.local/horizon-client/<version>/`.
   Importing a manifest does **not** validate all Minecraft assets or start a
   game world. ZIP files are never bundled into the public GitHub IPA.
+- Winit now forwards native UIKit touch phases into the portable Rust
+  multitouch recorder. It tracks up to ten active fingers, clamps physical
+  coordinates, and cancels outstanding touches when suspended. SwiftUI has
+  a **Touch input bridge** diagnostic pad that exercises the same Rust recorder
+  from a tap or drag, with active finger and accepted event counters. This is
+  **not yet** Minecraft movement, camera look, block interaction or a full
+  touch-control overlay. Real Winit touch events are passed through the Rust
+  callback, but gameplay bindings require the `loading_app` integration.
 - The shared `horizon-client` library passed an iOS Simulator type-check on
   the macOS engine-compatibility workflow and is now linked into the iOS app's
   static library. On UIKit's main thread, Swift supplies the absolute

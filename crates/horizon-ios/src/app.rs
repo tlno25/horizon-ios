@@ -20,6 +20,7 @@ unsafe extern "C" {
     /// The parent remains owned by Winit; Swift must not release it.
     fn horizon_ios_mount_home(view_controller: *mut c_void);
     fn horizon_ios_graphics_changed(state: u32);
+    fn horizon_ios_touch_changed();
     /// Swift copies the UTF-8 bytes before this callback returns.
     fn horizon_ios_report_graphics_error(message: *const u8, length: usize);
     /// Swift copies the diagnostic before this synchronous callback returns.
@@ -34,6 +35,10 @@ pub(super) fn report_resource_import_result(message: &str, success: bool) {
     unsafe {
         horizon_ios_resource_import_result(message.as_ptr(), message.len(), i32::from(success));
     }
+}
+
+pub(super) fn notify_touch_changed() {
+    unsafe { horizon_ios_touch_changed() };
 }
 
 fn report_graphics_error(message: &str) {
@@ -119,6 +124,7 @@ impl ApplicationHandler for Shell {
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         self.lifecycle.suspend();
+        crate::clear_touches();
         // Drop the surface and all GPU objects before UIKit enters background.
         self.metal = None;
         crate::set_graphics_state(4);
@@ -134,6 +140,9 @@ impl ApplicationHandler for Shell {
             WindowEvent::Resized(size) => {
                 let previously_presented = self.lifecycle.has_presented_frame();
                 self.lifecycle.resize(size.width, size.height);
+                if self.lifecycle.drawable_size().is_none() {
+                    crate::clear_touches();
+                }
                 if previously_presented && !self.lifecycle.has_presented_frame() {
                     crate::set_graphics_state(1);
                 }
@@ -163,6 +172,23 @@ impl ApplicationHandler for Shell {
                             self.metal = None;
                         }
                     }
+                }
+            }
+            WindowEvent::Touch(touch) => {
+                if let Some(size) = self.lifecycle.drawable_size() {
+                    use winit::event::TouchPhase as WinitPhase;
+                    let phase = match touch.phase {
+                        WinitPhase::Started => crate::TouchPhase::Started,
+                        WinitPhase::Moved => crate::TouchPhase::Moved,
+                        WinitPhase::Ended => crate::TouchPhase::Ended,
+                        WinitPhase::Cancelled => crate::TouchPhase::Cancelled,
+                    };
+                    let _ = crate::update_touch(
+                        touch.id,
+                        phase,
+                        (touch.location.x as f32, touch.location.y as f32),
+                        size,
+                    );
                 }
             }
             WindowEvent::CloseRequested => event_loop.exit(),

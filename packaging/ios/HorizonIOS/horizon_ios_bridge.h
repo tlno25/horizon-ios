@@ -17,6 +17,11 @@ int32_t horizon_ios_initialize(void);
 uint32_t horizon_ios_state(void);
 /* 0=not started, 1=initializing, 2=ready, 3=failed, 4=suspended */
 uint32_t horizon_ios_graphics_state(void);
+uint32_t horizon_ios_touch_count(void);
+uint64_t horizon_ios_touch_events(void);
+/* Diagnostic SwiftUI touch pad: 0=start, 1=move, 2=end, 3=cancel.
+   Actual gameplay touch events also arrive directly from Winit. */
+int32_t horizon_ios_debug_touch(uint32_t phase, float x, float y, uint32_t width, uint32_t height);
 /* 0=not checked, 1=resources missing, 2=manifest found, 3=preflight failed.
    1 and 2 do not mean Minecraft gameplay has started. */
 uint32_t horizon_ios_engine_state(void);

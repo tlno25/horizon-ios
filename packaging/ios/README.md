@@ -109,14 +109,19 @@ Simulator builds. Replace it and configure code signing before device testing.
   detach the probe, validate the prepared surface format and attach the live
   window surface. Backgrounded/stale results are discarded. Preparation and
   surface/first-frame failures are recorded, with Metal-probe fallback.
+  Rust panic payloads from GPU validation and iOS-specific calls are now
+  retained in the `error` JSON property (rather than reduced to a generic
+  "GPU worker panicked" string). The last actual GPU stage remains available
+  in `renderer_stage`, and the RendererCompleted callback does not discard a
+  notification just because the worker is returning from its function.
   This is still a GPU boot-screen diagnostic, **not a running game world**.
 - **Horizon renderer preview** is another opt-in, after successful game
   registry loading. The desktop/Android boot-renderer constructor and empty
   loading frame now live in `horizon_client::game_startup`, and the iOS shell
   can replace its working blue Metal probe with these **real Horizon GPU
   pipelines on the same Winit window and event loop**. The switch is
-  single-flight and releases the probe's surface before opening the Horizon
-  renderer. If creation or rendering fails, it reports the error and attempts
+  single-flight and only releases the probe's surface after offscreen
+  pipeline preparation has completed. If creation or rendering fails, it reports the error and attempts
   to restore the probe. Background/suspend also drops the renderer and returns
   to the probe on resume. No game world, engine ticks, or interactive title
   have been attached; this is a renderer integration diagnostic, not gameplay.

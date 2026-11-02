@@ -26,6 +26,13 @@ class BootPreviewStatusTests(unittest.TestCase):
                     'core_load': 0
                 })
 
+    def test_worker_panic_error_survives_until_simulator_artifact(self):
+        with self.assertRaisesRegex(ValueError, 'unsupported Metal shader binding'):
+            validate({'state': 2, 'engine': 1, 'player': 'Player12345',
+                      'error': 'Horizon boot renderer: Horizon GPU worker panicked: unsupported Metal shader binding',
+                      'smoke_mode': 1, 'renderer_preview': 4,
+                      'renderer_stage': 'Horizon renderer: compiling GPU pipelines offscreen'})
+
     def test_incomplete_renderer_reports_last_gpu_startup_stage(self):
         with self.assertRaisesRegex(ValueError, 'creating the pipelines'):
             validate({'state': 2, 'engine': 1, 'player': 'Player12345',

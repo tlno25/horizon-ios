@@ -198,7 +198,7 @@ impl Shell {
                     )
                     .map_err(|error| error.to_string())
                 }))
-                .unwrap_or_else(|_| Err("Horizon GPU worker panicked".to_owned()));
+                .unwrap_or_else(|payload| Err(crate::describe_renderer_panic(payload.as_ref())));
                 // Wake the *one* UIKit/Winit event loop, never create another.
                 notify_renderer_worker_complete();
                 loaded
@@ -210,7 +210,8 @@ impl Shell {
     }
 
     fn fail_horizon_renderer(&mut self, message: &str) {
-        report_renderer_stage("Horizon renderer: boot renderer preparation failed");
+        // Do not overwrite the last actual GPU stage: it tells us where the
+        // worker panicked, and remains in the Simulator's diagnostic JSON.
         report_graphics_error(message);
         crate::RENDERER_SWITCH.finished(false);
         unsafe { horizon_ios_renderer_status_changed() };
@@ -223,17 +224,13 @@ impl Shell {
 
     /// This runs only on the Winit thread, when the GPU worker wakes it.
     fn complete_horizon_renderer(&mut self) {
-        if !self
-            .renderer_job
-            .as_ref()
-            .is_some_and(JoinHandle::is_finished)
-        {
-            return;
-        }
+        // The RendererCompleted event is sent immediately before the worker
+        // exits. `is_finished` could still be false at event delivery; skipping
+        // it here would lose the only completion notification forever.
         let job = self.renderer_job.take().expect("checked worker exists");
         let loaded = job
             .join()
-            .unwrap_or_else(|_| Err("Horizon GPU worker unexpectedly panicked".to_owned()));
+            .unwrap_or_else(|payload| Err(crate::describe_renderer_panic(payload.as_ref())));
         // A backgrounded or restarted UIKit drawable must never receive the
         // old worker's surface, even if that worker finished successfully.
         if self.lifecycle.drawable_size().is_none() || crate::RENDERER_SWITCH.state() != 2 {

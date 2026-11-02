@@ -58,3 +58,20 @@ impl RendererSwitch {
         self.0.store(0, Ordering::Release);
     }
 }
+
+/// Preserve the actual assertion/validation message when WGPU or UIKit panics
+/// in the offscreen preparation worker, rather than showing an opaque failure.
+/// Bound the text so it remains safe to hand across the Swift diagnostics ABI.
+#[must_use]
+pub fn describe_renderer_panic(payload: &(dyn std::any::Any + Send)) -> String {
+    let message = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("unknown non-string panic payload");
+    // Swift's graphics-error bridge accepts fewer than 4096 UTF-8 bytes.
+    // 950 Unicode scalars occupy at most 3800 bytes, including even a full
+    // four-byte scalar per character plus this error prefix.
+    let message: String = message.chars().take(950).collect();
+    format!("Horizon GPU worker panicked: {message}")
+}

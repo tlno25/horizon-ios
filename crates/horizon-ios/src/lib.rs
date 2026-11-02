@@ -419,4 +419,4 @@ pub use engine_bootstrap::{CoreLoadGate, EnginePreparation, prepare_engine_direc
 mod touch_input;
 pub use touch_input::{TouchInput, TouchPhase};
 mod renderer_switch;
-pub use renderer_switch::RendererSwitch;
+pub use renderer_switch::{RendererSwitch, describe_renderer_panic};

@@ -67,3 +67,24 @@ fn smoke_switch_is_requested_in_the_same_successful_probe_frame() {
     switching.finished(true);
     assert_eq!(switching.state(), 3);
 }
+
+#[test]
+fn gpu_worker_panic_keeps_concrete_rust_and_wgpu_error_messages() {
+    use horizon_ios::describe_renderer_panic;
+    let owned: Box<dyn std::any::Any + Send> =
+        Box::new(String::from("wgpu validation: unsupported binding on iOS"));
+    assert!(describe_renderer_panic(owned.as_ref()).contains("unsupported binding"));
+    let literal: Box<dyn std::any::Any + Send> = Box::new("UIKit must be used on main thread");
+    assert!(describe_renderer_panic(literal.as_ref()).contains("UIKit must be used"));
+    let unknown: Box<dyn std::any::Any + Send> = Box::new(77u8);
+    assert!(describe_renderer_panic(unknown.as_ref()).contains("unknown non-string"));
+}
+
+#[test]
+fn gpu_worker_panic_message_is_bounded_at_unicode_char_boundaries() {
+    use horizon_ios::describe_renderer_panic;
+    let message: Box<dyn std::any::Any + Send> = Box::new("失敗".repeat(3000));
+    let text = describe_renderer_panic(message.as_ref());
+    assert!(text.contains("失敗"));
+    assert!(text.chars().count() <= 1600);
+}

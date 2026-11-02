@@ -119,13 +119,14 @@ pub trait Clipboard {
     fn set(&mut self, text: &str);
 }
 
-/// The system clipboard (`ClipboardManager`). On Wayland, arboard uses the
+/// The system clipboard (`ClipboardManager`). On desktop Wayland, arboard uses the
 /// data-control protocol and falls back to X11 (XWayland) on compositors
 /// without it. When no system clipboard can be reached, text copied in the
-/// game can still be pasted in the game.
+/// game can still be pasted in the game. Android and iOS use platform hooks
+/// (installed by the respective native host) and an in-memory fallback.
 #[derive(Default)]
 pub struct SystemClipboard {
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     system: Option<arboard::Clipboard>,
     /// The text Horizon last copied (`horizon-ctl status`).
     copied: Option<String>,
@@ -136,7 +137,7 @@ impl SystemClipboard {
     pub fn copied(&self) -> Option<&str> {
         self.copied.as_deref()
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     fn system(&mut self) -> Option<&mut arboard::Clipboard> {
         if self.system.is_none() {
             self.system = arboard::Clipboard::new().ok();
@@ -147,9 +148,9 @@ impl SystemClipboard {
 
 impl Clipboard for SystemClipboard {
     fn get(&mut self) -> String {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         return clipboard_get().unwrap_or_else(|| self.copied.clone().unwrap_or_default());
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
             let Some(system) = self.system() else {
                 return self.copied.clone().unwrap_or_default();
@@ -170,9 +171,9 @@ impl Clipboard for SystemClipboard {
             return;
         }
         self.copied = Some(text.to_owned());
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         clipboard_set(text);
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         if let Some(system) = self.system()
             && system.set_text(text.to_owned()).is_err()
         {
@@ -502,7 +503,7 @@ mod tests {
     }
 }
 
-/// Android's native entry point installs these without making the shared lib
+/// Android/iOS native entry points install these without making the shared lib
 /// depend on an Activity or on JNI. Clipboard access is only on explicit edits.
 pub struct ClipboardHooks {
     pub get: fn() -> Option<String>,

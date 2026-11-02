@@ -1,0 +1,128 @@
+name: Horizon iOS Build
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - 'crates/horizon-ios/**'
+      - 'crates/horizon-core/**'
+      - 'packaging/ios/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'third_party/winit/**'
+      - '.github/workflows/ios-simulator.yml'
+  push:
+    branches: [ios]
+    paths:
+      - 'crates/horizon-ios/**'
+      - 'crates/horizon-core/**'
+      - 'packaging/ios/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'third_party/winit/**'
+      - '.github/workflows/ios-simulator.yml'
+  workflow_dispatch:
+    inputs:
+      build_device:
+        description: 'Also build an unsigned iPhone/iPad app for device-side signing'
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  ffi-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - name: Run Rust bridge and shared input tests
+        run: |
+          cargo test --locked -p horizon-ios
+          cargo test --locked -p horizon-client-input --lib
+      - name: Verify iOS dependency isolation
+        run: packaging/ios/tests/check_portability.sh
+      - name: Verify the Rust C ABI from C
+        run: packaging/ios/tests/run_ffi_smoke.sh
+  simulator-build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+          targets: aarch64-apple-ios-sim
+      - name: Build and link the iOS Simulator app (arm64)
+        run: |
+          xcodebuild \
+            -project packaging/ios/HorizonIOS.xcodeproj \
+            -derivedDataPath "$RUNNER_TEMP/HorizonDerivedData" \
+            -scheme HorizonIOS \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            ARCHS=arm64 \
+            build
+      - name: Package the Simulator app
+        env:
+          DERIVED_DATA: ${{ runner.temp }}/HorizonDerivedData
+        run: packaging/ios/package_app.sh simulator
+      - name: Upload Simulator app (unsigned .app.zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-ios-simulator-app
+          path: ${{ runner.temp }}/horizon-ios-artifacts/HorizonIOS-simulator-unsigned.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Launch in iPhone Simulator and capture preview
+        env:
+          DERIVED_DATA: ${{ runner.temp }}/HorizonDerivedData
+        run: packaging/ios/tests/simulator_smoke.sh
+      - name: Upload preview screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-ios-simulator-preview
+          path: ${{ runner.temp }}/horizon-ios-smoke.png
+          if-no-files-found: ignore
+          retention-days: 14
+
+  device-build:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_device == true
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust target for real iOS hardware
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+          targets: aarch64-apple-ios
+      - name: Build unsigned iPhone/iPad app
+        run: |
+          xcodebuild \
+            -project packaging/ios/HorizonIOS.xcodeproj \
+            -derivedDataPath "$RUNNER_TEMP/HorizonDerivedData" \
+            -scheme HorizonIOS \
+            -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            ARCHS=arm64 \
+            build
+      - name: Package the unsigned device app
+        env:
+          DERIVED_DATA: ${{ runner.temp }}/HorizonDerivedData
+        run: packaging/ios/package_app.sh device
+      - name: Upload unsigned iPhone/iPad app
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-ios-device-unsigned-app
+          path: ${{ runner.temp }}/horizon-ios-artifacts/HorizonIOS-device-unsigned.zip
+          if-no-files-found: error
+          retention-days: 14

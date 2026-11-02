@@ -1873,6 +1873,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-ios"
+version = "0.1.0"
+dependencies = [
+ "horizon-client-input",
+ "horizon-core",
+ "pollster",
+ "raw-window-handle",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "horizon-items"
 version = "0.1.0"
 dependencies = [

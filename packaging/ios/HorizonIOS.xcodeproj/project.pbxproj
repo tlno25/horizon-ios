@@ -1,0 +1,165 @@
+// !$*UTF8*$!
+{
+    archiveVersion = 1;
+    classes = {};
+    objectVersion = 60;
+    objects = {
+
+        AA0000000000000000000001 /* Project */ = {
+            isa = PBXProject;
+            attributes = {
+                BuildIndependentTargetsInParallel = 1;
+                LastUpgradeCheck = 1600;
+                TargetAttributes = { AA0000000000000000000005 = { CreatedOnToolsVersion = 16.0; }; };
+            };
+            buildConfigurationList = AA0000000000000000000012;
+            compatibilityVersion = "Xcode 15.0";
+            developmentRegion = en;
+            hasScannedForEncodings = 0;
+            knownRegions = (en, Base);
+            mainGroup = AA0000000000000000000002;
+            productRefGroup = AA0000000000000000000004;
+            projectDirPath = "";
+            projectRoot = "";
+            targets = (AA0000000000000000000005);
+        };
+        AA0000000000000000000002 /* Main group */ = {
+            isa = PBXGroup;
+            children = (AA0000000000000000000003, AA0000000000000000000004);
+            sourceTree = "<group>";
+        };
+        AA0000000000000000000003 /* HorizonIOS */ = {
+            isa = PBXGroup;
+            children = (
+                AA0000000000000000000006,
+                AA0000000000000000000007,
+                AA0000000000000000000008,
+                AA0000000000000000000009,
+                AA000000000000000000000A,
+            );
+            path = HorizonIOS;
+            sourceTree = "<group>";
+        };
+        AA0000000000000000000004 /* Products */ = {
+            isa = PBXGroup;
+            children = (AA000000000000000000000B);
+            name = Products;
+            sourceTree = "<group>";
+        };
+        AA0000000000000000000005 /* HorizonIOS */ = {
+            isa = PBXNativeTarget;
+            buildConfigurationList = AA0000000000000000000013;
+            buildPhases = (
+                AA0000000000000000000011,
+                AA000000000000000000000E,
+                AA000000000000000000000F,
+                AA0000000000000000000010,
+            );
+            buildRules = ();
+            dependencies = ();
+            name = HorizonIOS;
+            productName = HorizonIOS;
+            productReference = AA000000000000000000000B;
+            productType = "com.apple.product-type.application";
+        };
+        AA0000000000000000000006 /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
+        AA0000000000000000000007 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+        AA0000000000000000000008 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+        AA0000000000000000000009 /* C bridge */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = horizon_ios_bridge.h; sourceTree = "<group>"; };
+        AA000000000000000000000A /* Swift bridging header */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "HorizonIOS-Bridging-Header.h"; sourceTree = "<group>"; };
+        AA000000000000000000000B /* HorizonIOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HorizonIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+        AA000000000000000000000C /* main.m build */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000006; };
+        AA000000000000000000000D /* Swift build */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000007; };
+        AA000000000000000000000E /* Sources */ = {
+            isa = PBXSourcesBuildPhase;
+            buildActionMask = 2147483647;
+            files = (AA000000000000000000000C, AA000000000000000000000D);
+            runOnlyForDeploymentPostprocessing = 0;
+        };
+        AA000000000000000000000F /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        AA0000000000000000000010 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        AA0000000000000000000011 /* Build Rust staticlib */ = {
+            isa = PBXShellScriptBuildPhase;
+            alwaysOutOfDate = 1;
+            buildActionMask = 2147483647;
+            files = ();
+            inputPaths = ();
+            name = "Build Rust staticlib";
+            outputPaths = ();
+            runOnlyForDeploymentPostprocessing = 0;
+            shellPath = /bin/bash;
+            shellScript = "set -euo pipefail\n\"${SRCROOT}/build_rust.sh\"\n";
+        };
+        AA0000000000000000000012 /* Project configurations */ = {isa = XCConfigurationList; buildConfigurations = (AA0000000000000000000014, AA0000000000000000000015); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+        AA0000000000000000000013 /* Target configurations */ = {isa = XCConfigurationList; buildConfigurations = (AA0000000000000000000016, AA0000000000000000000017); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+        AA0000000000000000000014 /* Project Debug */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                ALWAYS_SEARCH_USER_PATHS = NO;
+                CLANG_ENABLE_MODULES = YES;
+                CLANG_ENABLE_OBJC_ARC = YES;
+                DEBUG_INFORMATION_FORMAT = dwarf;
+                ENABLE_USER_SCRIPT_SANDBOXING = NO;
+                IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+                SDKROOT = iphoneos;
+                SWIFT_VERSION = 5.0;
+                TARGETED_DEVICE_FAMILY = "1,2";
+            };
+            name = Debug;
+        };
+        AA0000000000000000000015 /* Project Release */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                ALWAYS_SEARCH_USER_PATHS = NO;
+                CLANG_ENABLE_MODULES = YES;
+                CLANG_ENABLE_OBJC_ARC = YES;
+                DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+                ENABLE_USER_SCRIPT_SANDBOXING = NO;
+                IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+                SDKROOT = iphoneos;
+                SWIFT_VERSION = 5.0;
+                TARGETED_DEVICE_FAMILY = "1,2";
+            };
+            name = Release;
+        };
+        AA0000000000000000000016 /* Target Debug */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                ASSETCATALOG_COMPILER_APPICON_NAME = "";
+                CODE_SIGN_STYLE = Automatic;
+                CURRENT_PROJECT_VERSION = 1;
+                GENERATE_INFOPLIST_FILE = NO;
+                INFOPLIST_FILE = HorizonIOS/Info.plist;
+                "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = ("$(inherited)", "$(SRCROOT)/../../target/aarch64-apple-ios/release");
+                "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = ("$(inherited)", "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release");
+                MARKETING_VERSION = 0.1.0;
+                OTHER_LDFLAGS = ("$(inherited)", "-lhorizon_ios", "-framework", "UIKit", "-framework", "Foundation", "-framework", "Metal", "-framework", "QuartzCore", "-framework", "CoreGraphics", "-framework", "CoreFoundation", "-framework", "IOSurface", "-lc++");
+                PRODUCT_BUNDLE_IDENTIFIER = com.example.horizonios;
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SWIFT_OBJC_BRIDGING_HEADER = "HorizonIOS/HorizonIOS-Bridging-Header.h";
+                SUPPORTS_MACCATALYST = NO;
+            };
+            name = Debug;
+        };
+        AA0000000000000000000017 /* Target Release */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                ASSETCATALOG_COMPILER_APPICON_NAME = "";
+                CODE_SIGN_STYLE = Automatic;
+                CURRENT_PROJECT_VERSION = 1;
+                GENERATE_INFOPLIST_FILE = NO;
+                INFOPLIST_FILE = HorizonIOS/Info.plist;
+                "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = ("$(inherited)", "$(SRCROOT)/../../target/aarch64-apple-ios/release");
+                "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = ("$(inherited)", "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release");
+                MARKETING_VERSION = 0.1.0;
+                OTHER_LDFLAGS = ("$(inherited)", "-lhorizon_ios", "-framework", "UIKit", "-framework", "Foundation", "-framework", "Metal", "-framework", "QuartzCore", "-framework", "CoreGraphics", "-framework", "CoreFoundation", "-framework", "IOSurface", "-lc++");
+                PRODUCT_BUNDLE_IDENTIFIER = com.example.horizonios;
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SWIFT_OBJC_BRIDGING_HEADER = "HorizonIOS/HorizonIOS-Bridging-Header.h";
+                SUPPORTS_MACCATALYST = NO;
+            };
+            name = Release;
+        };
+    };
+    rootObject = AA0000000000000000000001;
+}

@@ -1,0 +1,19 @@
+#include "horizon_ios_bridge.h"
+#include <assert.h>
+#include <string.h>
+
+int main(void) {
+    assert(horizon_ios_abi_version() == 1);
+    assert(horizon_ios_graphics_state() == 0);
+    const char *version = horizon_ios_game_version();
+    assert(version != NULL && strcmp(version, "26.3") == 0);
+
+    assert(horizon_ios_shutdown() == 0);
+    assert(horizon_ios_state() == 0);
+    assert(horizon_ios_initialize() == 0);
+    assert(horizon_ios_initialize() == 0);
+    assert(horizon_ios_state() == 1);
+    assert(horizon_ios_shutdown() == 0);
+    assert(horizon_ios_state() == 0);
+    return 0;
+}

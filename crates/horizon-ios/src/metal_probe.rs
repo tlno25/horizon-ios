@@ -35,9 +35,20 @@ impl MetalProbe {
             return Err("An unexpected non-Metal backend was selected".to_owned());
         }
 
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .map_err(|error| format!("Metal device initialization failed: {error}"))?;
+        // The wgpu WebGPU defaults request 16 inter-stage shader variables,
+        // but an iOS Simulator Metal adapter may only support 15. Request the
+        // portable downlevel limits rather than assuming desktop WebGPU limits.
+        // Keep the adapter's real texture resolutions for retina iOS screens.
+        let required_limits = wgpu::Limits::downlevel_defaults()
+            .using_resolution(adapter.limits())
+            .using_alignment(adapter.limits());
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("Horizon iOS Metal probe"),
+            required_limits,
+            ..Default::default()
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&descriptor))
+            .map_err(|error| format!("Metal device initialization failed: {error}"))?;
         let mut config = surface
             .get_default_config(&adapter, size.width, size.height)
             .ok_or_else(|| "Metal surface offers no supported configuration".to_owned())?;

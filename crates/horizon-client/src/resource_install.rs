@@ -109,6 +109,43 @@ pub fn install(bundle: &Bundle, home: &Path, progress: impl Fn(u64, u64)) -> Res
     result
 }
 
+/// Import a resource archive prepared from the player's own Minecraft files.
+/// Uses the same path/symlink/expanded-size checks as the remote installer,
+/// but never contacts a network endpoint or overwrites an installed version.
+/// The caller owns and retains the original archive.
+pub fn import_archive(archive: &Path, home: &Path) -> Result<()> {
+    let meta = fs::metadata(archive)?;
+    if !meta.is_file() || meta.len() == 0 || meta.len() > 4 * 1024 * 1024 * 1024 {
+        return Err("Prepared resources ZIP must be a nonempty file of at most 4 GiB".into());
+    }
+    let versions = home.join(".local/horizon-client");
+    fs::create_dir_all(&versions)?;
+    let target = versions.join(horizon_core::VANILLA_VERSION);
+    if fs::symlink_metadata(&target).is_ok() {
+        return Err("Prepared resources already exist; refusing to overwrite".into());
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let staging = versions.join(format!("import-{}-{now}.partial", std::process::id()));
+    fs::create_dir(&staging)?;
+    let result = (|| -> Result<()> {
+        extract(archive, &staging)?;
+        if !staging.join("horizon-resources.json").is_file() {
+            return Err("Prepared resources ZIP has no root horizon-resources.json".into());
+        }
+        if fs::symlink_metadata(&target).is_ok() {
+            return Err("Prepared resources already exist; refusing to overwrite".into());
+        }
+        fs::rename(&staging, target)?;
+        Ok(())
+    })();
+    if staging.exists() {
+        let _ = fs::remove_dir_all(staging);
+    }
+    result
+}
+
 pub(crate) fn extract(archive: &Path, destination: &Path) -> Result<()> {
     let mut zip = zip::ZipArchive::new(fs::File::open(archive)?)?;
     let mut total = 0u64;
@@ -231,6 +268,69 @@ mod tests {
         assert!(!home.join(".local/horizon-client/download.partial").exists());
         fs::remove_dir_all(home).unwrap();
     }
+    #[test]
+    fn imports_private_prepared_archive_and_keeps_original() {
+        let home = temporary("import-valid");
+        fs::create_dir_all(&home).unwrap();
+        let archive = home.join("prepared.zip");
+        fs::write(&archive, fixture()).unwrap();
+        assert!(!ready(&home));
+        import_archive(&archive, &home).unwrap();
+        assert!(ready(&home));
+        assert!(archive.is_file(), "source files must remain untouched");
+        assert_eq!(
+            fs::read(
+                home.join(".local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+                    .join("assets/example.txt")
+            )
+            .unwrap(),
+            b"private resource"
+        );
+        assert!(
+            import_archive(&archive, &home).is_err(),
+            "must not replace an existing installation"
+        );
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn rejects_import_without_manifest_without_leaving_partial_resources() {
+        let home = temporary("import-invalid");
+        fs::create_dir_all(&home).unwrap();
+        let archive = home.join("bad.zip");
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        writer
+            .start_file("assets/item.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"asset").unwrap();
+        fs::write(&archive, writer.finish().unwrap().into_inner()).unwrap();
+        assert!(import_archive(&archive, &home).is_err());
+        assert!(!ready(&home));
+        assert!(
+            fs::read_dir(home.join(".local/horizon-client"))
+                .unwrap()
+                .next()
+                .is_none(),
+            "partial directories must be removed"
+        );
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn rejects_oversized_or_missing_local_archive() {
+        let home = temporary("import-size");
+        fs::create_dir_all(&home).unwrap();
+        let missing = home.join("not-there.zip");
+        assert!(import_archive(&missing, &home).is_err());
+        let oversized = home.join("too-large.zip");
+        let file = fs::File::create(&oversized).unwrap();
+        file.set_len(4 * 1024 * 1024 * 1024 + 1).unwrap();
+        assert!(import_archive(&oversized, &home).is_err());
+        fs::remove_dir_all(home).unwrap();
+    }
+
     #[test]
     fn unsupported_versions_and_insecure_remote_urls_are_rejected() {
         let mut bundle = Bundle {

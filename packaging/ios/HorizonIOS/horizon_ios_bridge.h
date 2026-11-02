@@ -24,6 +24,8 @@ uint32_t horizon_ios_engine_state(void);
 const char *horizon_ios_player_name(void);
 /* Home is absolute, UTF-8, borrowed for the call only (max 4096 bytes). */
 int32_t horizon_ios_prepare_engine(const uint8_t *home_utf8, size_t home_bytes);
+/* Must run off the main thread. The caller retains the selected ZIP. */
+int32_t horizon_ios_import_resources(const uint8_t *archive_utf8, size_t archive_bytes);
 int32_t horizon_ios_shutdown(void);
 
 /* iOS-only: starts Winit/UIApplicationMain on the main thread. */

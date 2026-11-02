@@ -1,14 +1,17 @@
 import Foundation
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 private extension Notification.Name {
     static let horizonGraphicsChanged = Notification.Name("HorizonGraphicsChanged")
+    static let horizonResourceImportChanged = Notification.Name("HorizonResourceImportChanged")
 }
 
 // Main-thread-only: Rust reports an error synchronously before the SwiftUI
 // view may exist; it remains available to the first HomeView instance.
 private var mostRecentGraphicsError = ""
+private var mostRecentResourceMessage = ""
 
 /// The iOS sandbox is owned by Swift/UIKit, not inferred by a desktop-style
 /// current working directory in the Rust game. Preflight is idempotent.
@@ -55,6 +58,9 @@ private struct HomeView: View {
     @State private var engineState = horizon_ios_engine_state()
     @State private var playerName = horizon_ios_player_name().map { String(cString: $0) } ?? ""
     @State private var graphicsError = mostRecentGraphicsError
+    @State private var showResourceImporter = false
+    @State private var importingResources = false
+    @State private var resourceMessage = mostRecentResourceMessage
 
     private var stateLabel: String {
         switch bridgeState {
@@ -91,6 +97,56 @@ private struct HomeView: View {
         graphicsError = mostRecentGraphicsError
     }
 
+    /// Import the player's private Horizon resource ZIP through iOS Files.
+    /// Coordinate and copy the security-scoped file into our own sandbox,
+    /// then run Rust's existing bounded ZIP extractor off the UIKit thread.
+    private func selectResourceArchive(_ result: Result<URL, Error>) {
+        guard !importingResources, engineState != 2 else { return }
+        switch result {
+        case .failure(let error):
+            resourceMessage = "Cannot open archive: \(error.localizedDescription)"
+        case .success(let url):
+            guard url.startAccessingSecurityScopedResource() else {
+                resourceMessage = "Files could not grant access to the archive"
+                return
+            }
+            importingResources = true
+            resourceMessage = "Importing prepared resources…"
+            DispatchQueue.global(qos: .userInitiated).async {
+                defer { url.stopAccessingSecurityScopedResource() }
+                let staged = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("horizon-\(UUID().uuidString).zip")
+                defer { try? FileManager.default.removeItem(at: staged) }
+
+                var coordinationError: NSError?
+                var copyError: Error?
+                let coordinator = NSFileCoordinator(filePresenter: nil)
+                coordinator.coordinate(readingItemAt: url, options: [], error: &coordinationError) { accessible in
+                    do {
+                        try FileManager.default.copyItem(at: accessible, to: staged)
+                    } catch {
+                        copyError = error
+                    }
+                }
+                if let error = coordinationError ?? (copyError as NSError?) {
+                    DispatchQueue.main.async {
+                        resourceMessage = "Cannot read ZIP: \(error.localizedDescription)"
+                        importingResources = false
+                    }
+                    return
+                }
+                let bytes = Array(staged.path.utf8)
+                _ = bytes.withUnsafeBufferPointer { buffer in
+                    horizon_ios_import_resources(buffer.baseAddress, buffer.count)
+                }
+                DispatchQueue.main.async {
+                    importingResources = false
+                    refreshStatus()
+                }
+            }
+        }
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             // Transparent outside the card, so the blue Metal clear is visible.
@@ -119,6 +175,22 @@ private struct HomeView: View {
                     }
                     Button("Refresh status", action: refreshStatus)
                         .buttonStyle(.bordered)
+                    if engineState == 1 || engineState == 3 {
+                        Button("Import prepared resources ZIP") {
+                            showResourceImporter = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(importingResources)
+                    }
+                    if importingResources {
+                        ProgressView("Importing game resources")
+                    }
+                    if !resourceMessage.isEmpty {
+                        Text(resourceMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
 
                     Text("The blue background is rendered by WGPU/Metal. The shared Horizon client now initializes its local profile and checks its resource manifest, but Minecraft gameplay has not started.")
                         .font(.footnote)
@@ -128,6 +200,11 @@ private struct HomeView: View {
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
                 .padding(16)
             }
+        }
+        .fileImporter(isPresented: $showResourceImporter, allowedContentTypes: [.zip], onCompletion: selectResourceArchive)
+        .onReceive(NotificationCenter.default.publisher(for: .horizonResourceImportChanged)) { _ in
+            resourceMessage = mostRecentResourceMessage
+            refreshStatus()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             refreshStatus()
@@ -162,6 +239,20 @@ public func horizon_ios_report_graphics_error(_ bytes: UnsafePointer<UInt8>?, _ 
     DispatchQueue.main.async {
         saveGraphicsStatus()
         NotificationCenter.default.post(name: .horizonGraphicsChanged, object: nil)
+    }
+}
+
+/// May be invoked on a worker. Copy Rust's temporary bytes before hopping
+/// back to the main actor to notify SwiftUI of the import result.
+@_cdecl("horizon_ios_resource_import_result")
+public func horizon_ios_resource_import_result(_ bytes: UnsafePointer<UInt8>?,
+                                               _ length: Int, _ succeeded: Int32) {
+    guard let bytes, length > 0, length <= 4096 else { return }
+    let message = String(decoding: UnsafeBufferPointer(start: bytes, count: length), as: UTF8.self)
+    DispatchQueue.main.async {
+        mostRecentResourceMessage = succeeded == 1 ? message : "Import failed: \(message)"
+        saveGraphicsStatus()
+        NotificationCenter.default.post(name: .horizonResourceImportChanged, object: nil)
     }
 }
 

@@ -22,10 +22,18 @@ unsafe extern "C" {
     fn horizon_ios_graphics_changed(state: u32);
     /// Swift copies the UTF-8 bytes before this callback returns.
     fn horizon_ios_report_graphics_error(message: *const u8, length: usize);
+    /// Swift copies the diagnostic before this synchronous callback returns.
+    fn horizon_ios_resource_import_result(message: *const u8, length: usize, succeeded: i32);
 }
 
 pub(super) unsafe fn graphics_changed(state: u32) {
     unsafe { horizon_ios_graphics_changed(state) };
+}
+
+pub(super) fn report_resource_import_result(message: &str, success: bool) {
+    unsafe {
+        horizon_ios_resource_import_result(message.as_ptr(), message.len(), i32::from(success));
+    }
 }
 
 fn report_graphics_error(message: &str) {

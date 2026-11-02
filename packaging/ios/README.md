@@ -48,8 +48,9 @@ installed as-is. A separate signing process (for example using your own
 Apple ID in an appropriate sideloading tool) is required. No Apple signing
 credentials are stored in this repository or Actions workflow.
 
-The IPA currently contains the Horizon shell, Metal integration probe and
-shared client profile/resource preflight, **not playable Minecraft**. Minecraft engine loading and gameplay will be added in
+The IPA currently contains the Horizon shell, Metal integration probe,
+shared client profile and private game resource importer, **not playable
+Minecraft**. Minecraft engine loading and gameplay will be added in
 later iterations. Neither GitHub nor your Windows/Linux computer needs a
 local Xcode installation to produce the unsigned IPA through Actions.
 
@@ -89,6 +90,17 @@ Simulator builds. Replace it and configure code signing before device testing.
 - The shared input crate is now cross-checkable for iOS: desktop `arboard`
   is not resolved, and iOS uses the same physical-key fallback as Android
   because Winit does not expose `key_without_modifiers` on either platform.
+- The SwiftUI shell now offers **Import prepared resources ZIP**. Select a ZIP
+  created from the player's legally obtained Minecraft Java Edition files
+  using the Horizon resource preparation pipeline (the ZIP must contain
+  `horizon-resources.json` directly at its root). The Files picker grants
+  temporary access; Swift's `NSFileCoordinator` copies the selected archive to
+  a unique temporary file, and a Rust worker extracts it using the existing
+  path/symlink/size checks. The source ZIP is never modified. The installer
+  rejects duplicates rather than replacing existing installed resources;
+  imported files live inside `Application Support/Horizon/.local/horizon-client/<version>/`.
+  Importing a manifest does **not** validate all Minecraft assets or start a
+  game world. ZIP files are never bundled into the public GitHub IPA.
 - The shared `horizon-client` library passed an iOS Simulator type-check on
   the macOS engine-compatibility workflow and is now linked into the iOS app's
   static library. On UIKit's main thread, Swift supplies the absolute
@@ -142,8 +154,8 @@ is unaffected by the additional shared-engine portability check.
 
 The WGPU/Metal one-frame clear and iOS Simulator run are verified, and the
 shared client library now provides native profile/resource preflight. Next:
-connect resource preparation to the sandbox, extract the native game's
-`loading_app` startup interface from its desktop binary, and adapt input,
+extract the native game's `loading_app` startup interface from its desktop
+binary, then adapt input,
 world/renderer and lifecycle events without creating a second UIKit event
 loop. Exercise rotation and background recovery on an actual iPhone/iPad.
 The Android crate and the `android` branch remain untouched.

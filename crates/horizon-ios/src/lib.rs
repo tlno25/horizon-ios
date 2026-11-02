@@ -17,6 +17,10 @@ static GRAPHICS_STATE: AtomicU32 = AtomicU32::new(0);
 // Neither 1 nor 2 means gameplay has started.
 static ENGINE_STATE: AtomicU32 = AtomicU32::new(0);
 static PLAYER_NAME: OnceLock<CString> = OnceLock::new();
+#[cfg(target_os = "ios")]
+static ENGINE_HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
+#[cfg(target_os = "ios")]
+static RESOURCE_IMPORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Returns the ABI revision supported by this static library.
 #[unsafe(no_mangle)]
@@ -106,14 +110,22 @@ pub unsafe extern "C" fn horizon_ios_prepare_engine(home: *const u8, length: usi
         }
         let bytes = unsafe { std::slice::from_raw_parts(home, length) };
         let path = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+        let home = std::path::Path::new(path);
+        if ENGINE_HOME
+            .get()
+            .is_some_and(|saved| saved.as_path() != home)
+        {
+            return Err("Engine sandbox home cannot change while the app is running".into());
+        }
         let prepared = prepare_engine_directory(
-            std::path::Path::new(path),
+            home,
             |directory| Ok(horizon_client::offline_name::load_or_create(directory)),
             horizon_client::resource_install::ready,
         )?;
         let player =
             CString::new(prepared.player_name).map_err(|_| "Invalid player name".to_owned())?;
         let _ = PLAYER_NAME.set(player);
+        let _ = ENGINE_HOME.set(home.to_path_buf());
         ENGINE_STATE.store(
             if prepared.resources_ready { 2 } else { 1 },
             Ordering::Release,
@@ -130,6 +142,49 @@ pub unsafe extern "C" fn horizon_ios_prepare_engine(home: *const u8, length: usi
         Err(_) => {
             ENGINE_STATE.store(3, Ordering::Release);
             eprintln!("Horizon iOS engine preflight panicked");
+            -1
+        }
+    }
+}
+
+/// Called by Swift after a Files.app ZIP selection. This operation can
+/// extract multiple gigabytes: call it from a worker, not the UIKit thread.
+/// The native callback reports a copied diagnostic string on completion.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn horizon_ios_import_resources(path: *const u8, length: usize) -> i32 {
+    let operation = || -> Result<(), String> {
+        if path.is_null() || length == 0 || length > 4096 {
+            return Err("Invalid ZIP archive path".into());
+        }
+        let raw = unsafe { std::slice::from_raw_parts(path, length) };
+        let text = std::str::from_utf8(raw).map_err(|e| e.to_string())?;
+        let archive = std::path::Path::new(text);
+        if !archive.is_absolute() || text.as_bytes().contains(&0) {
+            return Err("Resource archive path must be absolute UTF-8".into());
+        }
+        let home = ENGINE_HOME.get().ok_or("Engine home was not prepared")?;
+        let _guard = RESOURCE_IMPORT.lock().map_err(|e| e.to_string())?;
+        horizon_client::resource_install::import_archive(archive, home)
+            .map_err(|e| e.to_string())?;
+        if !horizon_client::resource_install::ready(home) {
+            return Err("Imported resources manifest was not found".into());
+        }
+        ENGINE_STATE.store(2, Ordering::Release);
+        Ok(())
+    };
+    let result = match std::panic::catch_unwind(operation) {
+        Ok(value) => value,
+        Err(_) => Err("Resource import panicked".into()),
+    };
+    match result {
+        Ok(()) => {
+            app::report_resource_import_result("Prepared resources imported", true);
+            0
+        }
+        Err(message) => {
+            eprintln!("Horizon iOS resource import: {message}");
+            app::report_resource_import_result(&message, false);
             -1
         }
     }

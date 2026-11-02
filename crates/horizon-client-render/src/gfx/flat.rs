@@ -191,7 +191,11 @@ pub fn is_broken_intel_vulkan(info: &wgpu::AdapterInfo) -> bool {
 fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
     let flags = adapter.get_downlevel_capabilities().flags;
     let limits = device.limits();
-    flags.contains(wgpu::DownlevelFlags::VERTEX_STORAGE | wgpu::DownlevelFlags::COMPUTE_SHADERS)
+    // The flat path creates GPU-written indirect draw buffers even before
+    // any terrain exists. On limited Metal devices, creating such buffers
+    // fails validation. Use the existing per-section direct draw path.
+    flags.contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION)
+        && flags.contains(wgpu::DownlevelFlags::VERTEX_STORAGE | wgpu::DownlevelFlags::COMPUTE_SHADERS)
         && limits.max_storage_buffers_per_shader_stage >= 3
         && limits.max_storage_buffer_binding_size
             >= wgpu::Limits::default().max_storage_buffer_binding_size

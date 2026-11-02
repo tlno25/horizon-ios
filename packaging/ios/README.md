@@ -23,7 +23,9 @@ run page, open the **Artifacts** section and download:
   (an unsigned `HorizonIOS.app` for **arm64 iOS Simulator only**, not a real
   iPhone/iPad). Extract the nested ZIP to inspect/use the app bundle on a Mac.
 - `horizon-ios-simulator-preview`: optional screenshot from the Simulator run.
-  A successful screenshot does not prove that the Metal output is correct.
+  The simulator job writes `Library/Caches/horizon-ios-graphics.json`
+  inside the app container and checks for a ready GPU (`state=2`). A valid
+  screenshot alone cannot make a failed Metal initialization pass CI.
 
 To also compile a native iPhone/iPad build, manually run the workflow with
 **Also build an unsigned iPhone/iPad app** enabled. It uploads
@@ -109,7 +111,8 @@ The GitHub workflow `ios-simulator.yml` builds on a macOS Apple Silicon
 runner, uploads the Simulator `.app.zip`, then launches `HorizonIOS` in an
 iPhone simulator and uploads a screenshot. Optionally it also builds an
 unsigned iOS device-target `.app.zip` on manual dispatch.
-The screenshot and a successful `simctl launch` are **smoke evidence**, not
-proof of correct Metal pixels, background recovery, or iPad behavior. Inspect
+The screenshot and a successful `simctl launch` are **smoke evidence**;
+CI also checks the native GPU state file and fails if Metal does not initialize
+and present. Neither proves correct pixels, background recovery, or iPad behavior. Inspect
 the screenshot and manually exercise rotation/background transitions before
 accepting the vertical slice.

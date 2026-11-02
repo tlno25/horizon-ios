@@ -43,4 +43,9 @@ if [[ -s "$log_file" ]]; then
     echo 'Horizon iOS native GPU diagnostics:'
     tail -35 "$log_file"
 fi
-echo "Simulator launch smoke test passed ($udid); screenshot captured"
+# UIKit can be alive with an unavailable Metal backend; treat that as a
+# failed renderer smoke even though the app's launch and screenshot succeeded.
+app_data="$(xcrun simctl get_app_container "$udid" com.example.horizonios data)"
+status_file="$app_data/Library/Caches/horizon-ios-graphics.json"
+python3 "$(dirname "$0")/verify_graphics_status.py" "$status_file"
+echo "Simulator launch and Metal smoke test passed ($udid); screenshot captured"

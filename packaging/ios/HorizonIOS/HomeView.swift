@@ -10,6 +10,24 @@ private extension Notification.Name {
 // view may exist; it remains available to the first HomeView instance.
 private var mostRecentGraphicsError = ""
 
+/// Leave a machine-readable signal for CI. simctl launch alone is not proof
+/// that the renderer initialized or presented a valid Metal surface.
+private func saveGraphicsStatus() {
+    guard Thread.isMainThread else { return }
+    guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
+    let status: [String: Any] = [
+        "state": Int(horizon_ios_graphics_state()),
+        "error": mostRecentGraphicsError
+    ]
+    do {
+        try FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
+        let data = try JSONSerialization.data(withJSONObject: status, options: [.sortedKeys])
+        try data.write(to: caches.appendingPathComponent("horizon-ios-graphics.json"), options: .atomic)
+    } catch {
+        NSLog("Horizon iOS: cannot save graphics status: %@", error.localizedDescription)
+    }
+}
+
 private struct HomeView: View {
     @State private var bridgeState = horizon_ios_state()
     @State private var graphicsState = horizon_ios_graphics_state()
@@ -90,6 +108,7 @@ private struct HomeView: View {
 @_cdecl("horizon_ios_graphics_changed")
 public func horizon_ios_graphics_changed(_ state: UInt32) {
     DispatchQueue.main.async {
+        saveGraphicsStatus()
         NotificationCenter.default.post(name: .horizonGraphicsChanged, object: nil)
     }
 }
@@ -103,6 +122,7 @@ public func horizon_ios_report_graphics_error(_ bytes: UnsafePointer<UInt8>?, _ 
     mostRecentGraphicsError = text
     NSLog("Horizon iOS graphics: %@", text)
     DispatchQueue.main.async {
+        saveGraphicsStatus()
         NotificationCenter.default.post(name: .horizonGraphicsChanged, object: nil)
     }
 }

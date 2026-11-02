@@ -197,9 +197,22 @@ The Android crate and the `android` branch remain untouched.
 
 The GitHub workflow `ios-simulator.yml` builds on a macOS Apple Silicon
 runner, uploads the Simulator `.app.zip`, then launches `HorizonIOS` in an
-iPhone simulator and uploads a screenshot. Separately it builds and uploads
-`horizon-ios-unsigned.ipa` for real iOS devices on `ios` pushes and by default
-on manual runs.
+iPhone simulator and uploads a screenshot. The simulator also performs a
+**separate experimental boot-renderer smoke test**: a fresh launch with the
+`HORIZON_IOS_RENDERER_SMOKE=1` environment flag (forwarded using `SIMCTL_CHILD_`)
+first presents the Metal probe frame, then transfers that exact Winit window
+to the shared Horizon GPU boot renderer. This needs **no Minecraft assets**
+and never starts gameplay. It records `horizon-ios-boot-renderer-status.json`
+and reports whether `renderer_preview=3` (a real Horizon frame was presented).
+A failed preview is reported as a non-blocking experimental step, so it does
+not mask the separately verified normal launch or block IPA delivery.
+
+Separately the workflow builds and uploads `horizon-ios-unsigned.ipa` for real
+iOS devices on `ios` pushes and by default on manual runs. The device build
+uses `macos-15-intel` to cross-compile an arm64 iPhoneOS binary on an Intel
+Mac, reducing contention with the Apple Silicon Simulator runners. An Intel
+build host does **not** make this an Intel iOS binary: the package validator
+checks the device executable is arm64.
 The screenshot and a successful `simctl launch` are **smoke evidence**;
 CI also checks the native GPU state file and fails if Metal does not initialize
 and present. Neither proves correct pixels, background recovery, or iPad behavior. Inspect

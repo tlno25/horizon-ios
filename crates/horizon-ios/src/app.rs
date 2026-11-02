@@ -70,6 +70,9 @@ struct Shell {
     metal: Option<MetalProbe>,
     horizon: Option<Renderer>,
     lifecycle: ProbeLifecycle,
+    /// CI opt-in: exercise the real Horizon GPU pipeline without distributing
+    /// any proprietary game assets. This is not enabled in normal launches.
+    renderer_smoke: bool,
 }
 
 impl Shell {
@@ -262,6 +265,15 @@ impl ApplicationHandler for Shell {
                 }
             }
             WindowEvent::RedrawRequested if self.lifecycle.drawable_size().is_some() => {
+                // A CLI-only Simulator diagnostic: after a successful Metal
+                // probe frame, try the same renderer the native game uses for
+                // its boot screen. No Minecraft files or game world required.
+                if self.renderer_smoke
+                    && crate::RENDERER_SWITCH.state() == 0
+                    && crate::horizon_ios_graphics_state() == 2
+                {
+                    let _ = crate::RENDERER_SWITCH.request(true, true);
+                }
                 self.try_horizon_renderer();
                 if self.horizon.is_some() {
                     self.draw_horizon();
@@ -270,6 +282,9 @@ impl ApplicationHandler for Shell {
                         Ok(true) => {
                             if self.lifecycle.present_frame() {
                                 crate::set_graphics_state(2);
+                                if self.renderer_smoke && crate::RENDERER_SWITCH.state() == 0 {
+                                    window.request_redraw();
+                                }
                             }
                         }
                         Ok(false) => window.request_redraw(),
@@ -322,7 +337,10 @@ pub(super) fn run() -> Result<(), EventLoopError> {
     crate::clipboard_bridge::install();
     let event_loop = EventLoop::builder().build()?;
     let _ = EVENT_PROXY.set(event_loop.create_proxy());
-    let mut shell = Shell::default();
+    let mut shell = Shell {
+        renderer_smoke: std::env::var("HORIZON_IOS_RENDERER_SMOKE").is_ok_and(|value| value == "1"),
+        ..Shell::default()
+    };
     let _ = crate::horizon_ios_initialize();
     event_loop.run_app(&mut shell)
 }

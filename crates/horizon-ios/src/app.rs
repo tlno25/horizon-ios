@@ -132,14 +132,14 @@ impl Shell {
         // screen, not another test WGPU pipeline. Its first drawn frame does
         // not initialize a Minecraft world.
         let atlas = horizon_client::hud::HudAtlas::boot();
-        let loaded = pollster::block_on(horizon_client::game_startup::loading_renderer(
+        let loaded = horizon_client::game_startup::loading_renderer(
             window.clone(),
             false,
             Some(&atlas),
             None,
             None,
             GraphicsApi::Auto,
-        ));
+        );
         match loaded {
             Ok(renderer) => {
                 self.horizon = Some(renderer);

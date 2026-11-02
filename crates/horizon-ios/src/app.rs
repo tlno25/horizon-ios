@@ -268,7 +268,7 @@ impl ApplicationHandler for Shell {
                 // A CLI-only Simulator diagnostic: after a successful Metal
                 // probe frame, try the same renderer the native game uses for
                 // its boot screen. No Minecraft files or game world required.
-                if self.renderer_smoke
+                if (self.renderer_smoke || crate::horizon_ios_renderer_smoke_enabled() != 0)
                     && crate::RENDERER_SWITCH.state() == 0
                     && crate::horizon_ios_graphics_state() == 2
                 {
@@ -282,7 +282,10 @@ impl ApplicationHandler for Shell {
                         Ok(true) => {
                             if self.lifecycle.present_frame() {
                                 crate::set_graphics_state(2);
-                                if self.renderer_smoke && crate::RENDERER_SWITCH.state() == 0 {
+                                if (self.renderer_smoke
+                                    || crate::horizon_ios_renderer_smoke_enabled() != 0)
+                                    && crate::RENDERER_SWITCH.state() == 0
+                                {
                                     window.request_redraw();
                                 }
                             }

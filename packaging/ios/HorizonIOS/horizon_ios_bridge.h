@@ -20,6 +20,9 @@ uint32_t horizon_ios_graphics_state(void);
 /* 0=Metal probe, 1=requested, 2=constructing, 3=real renderer presented,
    4=failed and returned to the Metal probe. Never means gameplay is active. */
 uint32_t horizon_ios_renderer_preview_state(void);
+/* Private, opt-in Simulator CI diagnostic; never enabled on ordinary launch. */
+void horizon_ios_enable_renderer_smoke(void);
+uint32_t horizon_ios_renderer_smoke_enabled(void);
 /* Request a single-window Winit handoff to the real Horizon boot renderer. */
 int32_t horizon_ios_preview_game_renderer(void);
 uint32_t horizon_ios_touch_count(void);

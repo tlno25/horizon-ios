@@ -35,6 +35,25 @@ private func prepareSharedEngine() {
     }
 }
 
+/// `simctl launch` environment variables can be missing on some simulator
+/// restarts. An explicit sandbox marker makes the renderer diagnostic reliable
+/// without changing regular launches or shipping proprietary game data.
+private func enableRequestedRendererSmoke() {
+    guard Thread.isMainThread,
+          let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
+    let marker = caches.appendingPathComponent("horizon-ios-renderer-smoke.flag")
+    guard FileManager.default.fileExists(atPath: marker.path) else { return }
+    do {
+        let contents = try String(contentsOf: marker, encoding: .utf8)
+        guard contents.trimmingCharacters(in: .whitespacesAndNewlines) == "1" else { return }
+        horizon_ios_enable_renderer_smoke()
+        NSLog("Horizon iOS: explicit boot renderer smoke requested")
+        try FileManager.default.removeItem(at: marker)
+    } catch {
+        NSLog("Horizon iOS: cannot enable boot renderer smoke: %@", error.localizedDescription)
+    }
+}
+
 /// Leave a machine-readable signal for CI. simctl launch alone is not proof
 /// that the renderer initialized or presented a valid Metal surface.
 private func saveGraphicsStatus() {
@@ -46,6 +65,7 @@ private func saveGraphicsStatus() {
         "engine": Int(horizon_ios_engine_state()),
         "core_load": Int(horizon_ios_core_load_state()),
         "renderer_preview": Int(horizon_ios_renderer_preview_state()),
+        "smoke_mode": Int(horizon_ios_renderer_smoke_enabled()),
         "player": horizon_ios_player_name().map { String(cString: $0) } ?? ""
     ]
     do {
@@ -419,6 +439,7 @@ public func horizon_ios_mount_home(_ parentPointer: UnsafeMutableRawPointer?) {
     }
 
     prepareSharedEngine()
+    enableRequestedRendererSmoke()
     saveGraphicsStatus()
     let parent = Unmanaged<UIViewController>.fromOpaque(parentPointer).takeUnretainedValue()
     // The Metal surface may have recreated its CAMetalLayer after backgrounding.

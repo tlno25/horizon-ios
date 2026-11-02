@@ -3,6 +3,8 @@
 
 use std::ffi::{CString, c_char};
 use std::sync::OnceLock;
+#[cfg(target_os = "ios")]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Increment when changing the ABI signatures or meanings.
@@ -29,6 +31,8 @@ static CORE_LOAD: CoreLoadGate = CoreLoadGate::new();
 static CORE_ASSETS: OnceLock<horizon_client::assets::Assets> = OnceLock::new();
 #[cfg(target_os = "ios")]
 static RENDERER_SWITCH: RendererSwitch = RendererSwitch::new();
+#[cfg(target_os = "ios")]
+static RENDERER_SMOKE_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Returns the ABI revision supported by this static library.
 #[unsafe(no_mangle)]
@@ -93,6 +97,27 @@ fn set_graphics_state(state: u32) {
     if GRAPHICS_STATE.swap(state, Ordering::AcqRel) != state {
         unsafe { app::graphics_changed(state) };
     }
+}
+
+/// Explicit CI-only opt-in for a renderer preview without private game files.
+/// Swift only calls this when the simulator has an opt-in marker inside its
+/// private cache folder. Does not change the normal app's default behavior.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_enable_renderer_smoke() {
+    RENDERER_SMOKE_ENABLED.store(true, Ordering::Release);
+}
+
+/// 1 if the private simulator diagnostic marker has been observed by Swift,
+/// 0 otherwise. Distinguishes a renderer failure from a missing test request.
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_renderer_smoke_enabled() -> u32 {
+    #[cfg(target_os = "ios")]
+    {
+        return u32::from(RENDERER_SMOKE_ENABLED.load(Ordering::Acquire));
+    }
+    #[cfg(not(target_os = "ios"))]
+    0
 }
 
 /// 0=Metal probe, 1=requested, 2=constructing the real boot renderer,

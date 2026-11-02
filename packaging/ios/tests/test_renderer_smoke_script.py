@@ -14,15 +14,18 @@ args=sys.argv[1:]
 runner=pathlib.Path(os.environ['RUNNER_TEMP'])
 app_data=runner/'simulator-container'
 status=app_data/'Library/Caches/horizon-ios-graphics.json'
+flag=app_data/'Library/Caches/horizon-ios-renderer-smoke.flag'
 if args[:2]==['simctl','get_app_container']:
     print(app_data)
 elif args[:2]==['simctl','launch']:
     assert os.environ.get('SIMCTL_CHILD_HORIZON_IOS_RENDERER_SMOKE')=='1'
     assert not status.exists(), 'Old cached result was not cleared'
+    assert flag.read_text().strip()=='1', 'No explicit in-container smoke request'
     status.parent.mkdir(parents=True,exist_ok=True)
     status.write_text(json.dumps({'state':2,'error':'','engine':1,
           'player':'Player00001','core_load':0,
-          'renderer_preview':int(os.environ['MOCK_PREVIEW'])}))
+          'renderer_preview':int(os.environ['MOCK_PREVIEW']),
+          'smoke_mode':int(os.environ.get('MOCK_ACK', '1'))}))
 elif args[:3]==['simctl','io',os.environ['HORIZON_IOS_SIMULATOR_UDID']]:
     pathlib.Path(args[-1]).write_bytes(b'png mock')
 elif args[:3]==['simctl','spawn',os.environ['HORIZON_IOS_SIMULATOR_UDID']]:
@@ -36,7 +39,7 @@ else:
 
 
 class RendererSmokeScriptTests(unittest.TestCase):
-    def run_mock(self, state):
+    def run_mock(self, state, ack=1):
         with tempfile.TemporaryDirectory() as work:
             root = pathlib.Path(work)
             app = root / 'derived/Build/Products/Debug-iphonesimulator/HorizonIOS.app'
@@ -50,7 +53,7 @@ class RendererSmokeScriptTests(unittest.TestCase):
             status.write_text(json.dumps({'renderer_preview':3}))
             env = dict(os.environ, PATH=str(mock.parent) + os.pathsep + os.environ['PATH'],
                        DERIVED_DATA=str(root/'derived'), RUNNER_TEMP=str(root),
-                       HORIZON_IOS_SIMULATOR_UDID='fake-iphone', MOCK_PREVIEW=str(state))
+                       HORIZON_IOS_SIMULATOR_UDID='fake-iphone', MOCK_PREVIEW=str(state), MOCK_ACK=str(ack))
             process = subprocess.run(['bash', str(SCRIPT)], env=env,
                                      capture_output=True, text=True, timeout=10)
             diagnostic = root/'horizon-ios-boot-renderer-status.json'
@@ -64,6 +67,11 @@ class RendererSmokeScriptTests(unittest.TestCase):
         result = self.run_mock(3)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('presented a frame', result.stdout)
+
+    def test_inactive_diagnostic_mode_cannot_pass_even_if_preview_state_is_ready(self):
+        result = self.run_mock(3, ack=0)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('diagnostic mode', result.stderr)
 
     def test_failed_renderer_keeps_diagnostics_without_falsely_passing(self):
         result = self.run_mock(4)

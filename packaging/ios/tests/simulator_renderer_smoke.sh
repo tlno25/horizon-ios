@@ -37,8 +37,12 @@ xcrun simctl bootstatus "$audid" -b
 xcrun simctl install "$audid" "$app"
 app_data="$(xcrun simctl get_app_container "$audid" com.example.horizonios data)"
 source_status="$app_data/Library/Caches/horizon-ios-graphics.json"
-# Never accept a successful preview signal from a previous test run.
+# Never accept a successful preview signal from a previous test run. The
+# marker is consumed by the Swift host and forwarded to the Rust Winit shell.
+# A sandbox marker also survives cases where simctl cannot forward env vars.
 rm -f "$source_status"
+mkdir -p "$(dirname "$source_status")"
+printf '1\n' > "$app_data/Library/Caches/horizon-ios-renderer-smoke.flag"
 SIMCTL_CHILD_HORIZON_IOS_RENDERER_SMOKE=1 xcrun simctl launch "$audid" com.example.horizonios
 output="${RUNNER_TEMP:-/tmp}/horizon-ios-boot-renderer-status.json"
 # Full Horizon pipelines can take longer than the simple Metal clear. The

@@ -200,12 +200,21 @@ runner, uploads the Simulator `.app.zip`, then launches `HorizonIOS` in an
 iPhone simulator and uploads a screenshot. The simulator also performs a
 **separate experimental boot-renderer smoke test**: a fresh launch with the
 `HORIZON_IOS_RENDERER_SMOKE=1` environment flag (forwarded using `SIMCTL_CHILD_`)
-first presents the Metal probe frame, then transfers that exact Winit window
+**and** a one-shot `Library/Caches/horizon-ios-renderer-smoke.flag` marker
+created inside that Simulator's private app container. Swift consumes the
+marker during UIKit mount and explicitly enables the Rust diagnostic, which
+is more reliable when `simctl` does not propagate environment variables.
+The app writes `smoke_mode=1` into its status JSON to acknowledge this opt-in;
+`verify_renderer_preview.py` refuses success if the flag was not observed.
+The app first presents the Metal probe frame, then transfers that same Winit window
 to the shared Horizon GPU boot renderer. This needs **no Minecraft assets**
 and never starts gameplay. It records `horizon-ios-boot-renderer-status.json`
 and reports whether `renderer_preview=3` (a real Horizon frame was presented).
 A failed preview is reported as a non-blocking experimental step, so it does
-not mask the separately verified normal launch or block IPA delivery.
+not mask the separately verified normal launch or block IPA delivery. The
+GitHub job can be green even if that experimental step concludes with an
+error; check the step outcome and its JSON status before claiming a Horizon
+renderer frame was presented.
 
 Separately the workflow builds and uploads `horizon-ios-unsigned.ipa` for real
 iOS devices on `ios` pushes and by default on manual runs. The device build

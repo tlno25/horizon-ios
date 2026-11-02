@@ -8,6 +8,10 @@ on:
     paths:
       - 'crates/horizon-ios/**'
       - 'crates/horizon-core/**'
+      - 'crates/horizon-hdr/**'
+      - 'crates/horizon-client-input/**'
+      - 'crates/horizon-client-render/**'
+      - 'crates/horizon-client/**'
       - 'packaging/ios/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -18,6 +22,10 @@ on:
     paths:
       - 'crates/horizon-ios/**'
       - 'crates/horizon-core/**'
+      - 'crates/horizon-hdr/**'
+      - 'crates/horizon-client-input/**'
+      - 'crates/horizon-client-render/**'
+      - 'crates/horizon-client/**'
       - 'packaging/ios/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -26,10 +34,10 @@ on:
   workflow_dispatch:
     inputs:
       build_device:
-        description: 'Also build an unsigned iPhone/iPad app for device-side signing'
+        description: 'Build the unsigned device IPA (enabled by default)'
         type: boolean
         required: false
-        default: false
+        default: true
 
 jobs:
   ffi-smoke:
@@ -44,7 +52,7 @@ jobs:
         run: |
           cargo test --locked -p horizon-ios
           cargo test --locked -p horizon-client-input --lib
-      - name: Test iOS CI graphics status validator
+      - name: Test iOS CI validators (graphics + unsigned IPA)
         run: python3 -m unittest discover -s packaging/ios/tests -p 'test_*.py'
       - name: Verify iOS dependency isolation
         run: packaging/ios/tests/check_portability.sh
@@ -104,7 +112,8 @@ jobs:
           retention-days: 14
 
   device-build:
-    if: github.event_name == 'workflow_dispatch' && inputs.build_device == true
+    # On ios pushes always produce the IPA; manual runs can skip it if desired.
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build_device == true)
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -123,16 +132,18 @@ jobs:
             -configuration Debug \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
             ARCHS=arm64 \
             build
-      - name: Package the unsigned device app
+      - name: Package unsigned device IPA and verify its ZIP payload
         env:
           DERIVED_DATA: ${{ runner.temp }}/HorizonDerivedData
-        run: packaging/ios/package_app.sh device
-      - name: Upload unsigned iPhone/iPad app
+        run: packaging/ios/package_unsigned_ipa.sh
+      - name: Upload horizon-ios-unsigned.ipa
         uses: actions/upload-artifact@v4
         with:
-          name: horizon-ios-device-unsigned-app
-          path: ${{ runner.temp }}/horizon-ios-artifacts/HorizonIOS-device-unsigned.zip
+          name: horizon-ios-unsigned-ipa
+          path: ${{ runner.temp }}/horizon-ios-artifacts/horizon-ios-unsigned.ipa
           if-no-files-found: error
           retention-days: 14

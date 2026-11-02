@@ -27,16 +27,28 @@ run page, open the **Artifacts** section and download:
   inside the app container and checks for a ready GPU (`state=2`). A valid
   screenshot alone cannot make a failed Metal initialization pass CI.
 
-To also compile a native iPhone/iPad build, manually run the workflow with
-**Also build an unsigned iPhone/iPad app** enabled. It uploads
-`horizon-ios-device-unsigned-app`. This ZIP contains the device-target `.app`,
-**not an installable IPA**. To install on a physical iPhone or distribute it,
-Apple code signing (certificate, provisioning profile and an appropriate
-account) must be configured separately. Do not commit signing credentials.
+**An unsigned real-device IPA is now built by default** on pushes to the `ios`
+branch and on manual workflow runs (the `build_device` checkbox is enabled by
+default). Pull requests still build and smoke-test the Simulator app, without
+producing a device IPA. The `device-build` job compiles for `iphoneos` arm64
+with code signing disabled, then packages `Payload/HorizonIOS.app` into the
+exact file **`horizon-ios-unsigned.ipa`**. It checks the arm64 executable,
+unsigned status, bundle structure, permissions, and ZIP integrity before
+uploading the artifact `horizon-ios-unsigned-ipa`.
 
-Since the workflow exists locally but is not yet pushed, GitHub Actions cannot
-run it until it is published to the remote repository. Neither GitHub nor the
-local Windows/Linux computer needs Xcode installed for the Actions build.
+To get it: open [Horizon iOS Build](https://github.com/tlno25/horizon-ios/actions/workflows/ios-simulator.yml),
+open a successful run, then download **`horizon-ios-unsigned-ipa`** from
+**Artifacts**. Extract GitHub's outer artifact ZIP; the contained file is
+`horizon-ios-unsigned.ipa`. The IPA is for actual iPhone/iPad hardware,
+**not the Simulator**. It is intentionally **unsigned**, so it cannot be
+installed as-is. A separate signing process (for example using your own
+Apple ID in an appropriate sideloading tool) is required. No Apple signing
+credentials are stored in this repository or Actions workflow.
+
+The IPA currently contains the Horizon shell/Metal integration probe, **not
+playable Minecraft**. Minecraft engine loading and gameplay will be added in
+later iterations. Neither GitHub nor your Windows/Linux computer needs a
+local Xcode installation to produce the unsigned IPA through Actions.
 
 ## Build on macOS
 
@@ -74,10 +86,10 @@ Simulator builds. Replace it and configure code signing before device testing.
 - The shared input crate is now cross-checkable for iOS: desktop `arboard`
   is not resolved, and iOS uses the same physical-key fallback as Android
   because Winit does not expose `key_without_modifiers` on either platform.
-- A full `horizon-client` iOS cross-compile is **not** yet verified: it was
-  attempted on Linux and stopped in `ring`'s build script, which requires
-  Apple's SDK and `xcrun`. Validate that target in the macOS engine-porting
-  phase rather than treating a Linux compiler failure as a source incompatibility.
+- The shared `horizon-client` library passed an iOS Simulator type-check on
+  the macOS engine-compatibility workflow. Its startup/render loop is not yet
+  linked into the Horizon iOS application; the Linux cross-compile attempt
+  could not run Apple's native build tools (`xcrun`).
 - The bridge exposes the ABI version, Minecraft version and *shell* status
   only. State `ready` means the shell exists, **not** that the game is running.
 - On suspend it drops the GPU probe and updates shell state; on resume it
@@ -128,8 +140,9 @@ untouched by this shell work.
 
 The GitHub workflow `ios-simulator.yml` builds on a macOS Apple Silicon
 runner, uploads the Simulator `.app.zip`, then launches `HorizonIOS` in an
-iPhone simulator and uploads a screenshot. Optionally it also builds an
-unsigned iOS device-target `.app.zip` on manual dispatch.
+iPhone simulator and uploads a screenshot. Separately it builds and uploads
+`horizon-ios-unsigned.ipa` for real iOS devices on `ios` pushes and by default
+on manual runs.
 The screenshot and a successful `simctl launch` are **smoke evidence**;
 CI also checks the native GPU state file and fails if Metal does not initialize
 and present. Neither proves correct pixels, background recovery, or iPad behavior. Inspect

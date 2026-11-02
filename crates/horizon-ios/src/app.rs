@@ -4,6 +4,7 @@
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
 use std::sync::{Arc, OnceLock};
+use std::thread::JoinHandle;
 use winit::application::ApplicationHandler;
 use winit::error::EventLoopError;
 use winit::event::WindowEvent;
@@ -16,12 +17,18 @@ use crate::ProbeLifecycle;
 use horizon_client::{gfx::Renderer, graphics::GraphicsApi, hud::HudBatch};
 use metal_probe::MetalProbe;
 
-static EVENT_PROXY: OnceLock<EventLoopProxy<()>> = OnceLock::new();
+#[derive(Clone, Copy, Debug)]
+enum ShellEvent {
+    Wake,
+    RendererCompleted,
+}
+
+static EVENT_PROXY: OnceLock<EventLoopProxy<ShellEvent>> = OnceLock::new();
 
 /// Expose the existing shared renderer's startup checkpoints on iOS.
 /// These messages are emitted by `gfx::startup_step`, which precedes device
-/// selection, swapchain configuration and pipeline compilation. UIKit can
-/// otherwise block in GPU setup before an async UI notification runs.
+/// selection, swapchain configuration and pipeline compilation. The worker
+/// reports these without blocking the responsive UIKit event loop.
 struct RendererStartupLogger;
 static STARTUP_LOGGER: RendererStartupLogger = RendererStartupLogger;
 
@@ -55,7 +62,13 @@ pub(super) fn renderer_events_available() -> bool {
 pub(super) fn request_renderer_event() -> bool {
     EVENT_PROXY
         .get()
-        .is_some_and(|proxy| proxy.send_event(()).is_ok())
+        .is_some_and(|proxy| proxy.send_event(ShellEvent::Wake).is_ok())
+}
+
+fn notify_renderer_worker_complete() {
+    if let Some(proxy) = EVENT_PROXY.get() {
+        let _ = proxy.send_event(ShellEvent::RendererCompleted);
+    }
 }
 
 unsafe extern "C" {
@@ -103,6 +116,9 @@ struct Shell {
     window: Option<Arc<Window>>,
     metal: Option<MetalProbe>,
     horizon: Option<Renderer>,
+    /// GPU pipelines are compiled offscreen on a worker. Winit/SwiftUI must
+    /// remain responsive during this work; only surface attachment is on UIKit.
+    renderer_job: Option<JoinHandle<Result<Renderer, String>>>,
     lifecycle: ProbeLifecycle,
     /// CI opt-in: exercise the real Horizon GPU pipeline without distributing
     /// any proprietary game assets. This is not enabled in normal launches.
@@ -148,57 +164,105 @@ impl Shell {
             }
         }
     }
-    /// This is opt-in because the full Horizon renderer creates many GPU
-    /// pipelines. Keep the working Metal probe as the default smoke target.
-    /// The probe's surface must be dropped *before* creating the real renderer
-    /// on the same UIKit Winit window.
+    /// Compile Horizon's substantial GPU pipeline set offscreen on a worker.
+    /// Keep presenting the working Metal probe until preparation completes.
+    /// UIKit alone owns the live surface and connects it after the worker wakes
+    /// the existing Winit event loop. No second event loop is ever created.
     fn try_horizon_renderer(&mut self) {
-        if !crate::RENDERER_SWITCH.start() {
+        if self.renderer_job.is_some() || !crate::RENDERER_SWITCH.start() {
             return;
         }
-        report_renderer_stage("Horizon renderer: handoff started");
-        // Save stage 2 synchronously. The first full Horizon GPU pipeline
-        // creation may block UIKit; dispatch_async would lose this evidence.
+        report_renderer_stage("Horizon renderer: background pipeline preparation requested");
         unsafe { horizon_ios_renderer_status_changed() };
         let Some(window) = self.window.as_ref().cloned() else {
-            crate::RENDERER_SWITCH.finished(false);
-            unsafe { horizon_ios_renderer_status_changed() };
+            self.fail_horizon_renderer("Horizon window was not created");
             return;
         };
-        report_renderer_stage("Horizon renderer: releasing Metal probe");
-        self.metal = None;
-        crate::set_graphics_state(1);
-        report_renderer_stage("Horizon renderer: creating boot HUD atlas");
-        // Use the exact boot renderer shared with the desktop/Android title
-        // screen, not another test WGPU pipeline. Its first drawn frame does
-        // not initialize a Minecraft world.
-        let atlas = horizon_client::hud::HudAtlas::boot();
-        report_renderer_stage("Horizon renderer: opening GPU device and pipelines");
-        let loaded = horizon_client::game_startup::loading_renderer(
-            window.clone(),
-            false,
-            Some(&atlas),
-            None,
-            None,
-            GraphicsApi::Auto,
-        );
-        match loaded {
+        let job = std::thread::Builder::new()
+            .name("Horizon iOS GPU preparation".to_owned())
+            .spawn(move || {
+                // A complete boot renderer contains WGPU objects only. The
+                // window surface is neither created nor touched on this thread.
+                // Catch Rust panics so the event loop receives a failure, too.
+                let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    report_renderer_stage("Horizon renderer: preparing boot atlas offscreen");
+                    let atlas = horizon_client::hud::HudAtlas::boot();
+                    report_renderer_stage("Horizon renderer: compiling GPU pipelines offscreen");
+                    horizon_client::game_startup::loading_renderer(
+                        window,
+                        true,
+                        Some(&atlas),
+                        None,
+                        None,
+                        GraphicsApi::Auto,
+                    )
+                    .map_err(|error| error.to_string())
+                }))
+                .unwrap_or_else(|_| Err("Horizon GPU worker panicked".to_owned()));
+                // Wake the *one* UIKit/Winit event loop, never create another.
+                notify_renderer_worker_complete();
+                loaded
+            });
+        match job {
+            Ok(job) => self.renderer_job = Some(job),
+            Err(error) => self.fail_horizon_renderer(&format!("Cannot start GPU worker: {error}")),
+        }
+    }
+
+    fn fail_horizon_renderer(&mut self, message: &str) {
+        report_renderer_stage("Horizon renderer: boot renderer preparation failed");
+        report_graphics_error(message);
+        crate::RENDERER_SWITCH.finished(false);
+        unsafe { horizon_ios_renderer_status_changed() };
+        self.start_metal();
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+        unsafe { graphics_changed(crate::horizon_ios_graphics_state()) };
+    }
+
+    /// This runs only on the Winit thread, when the GPU worker wakes it.
+    fn complete_horizon_renderer(&mut self) {
+        if !self
+            .renderer_job
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            return;
+        }
+        let job = self.renderer_job.take().expect("checked worker exists");
+        let loaded = job
+            .join()
+            .unwrap_or_else(|_| Err("Horizon GPU worker unexpectedly panicked".to_owned()));
+        // A backgrounded or restarted UIKit drawable must never receive the
+        // old worker's surface, even if that worker finished successfully.
+        if self.lifecycle.drawable_size().is_none() || crate::RENDERER_SWITCH.state() != 2 {
+            report_renderer_stage("Horizon renderer: discarding stale GPU preparation");
+            crate::RENDERER_SWITCH.reset();
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+            return;
+        }
+        let result = loaded.and_then(|mut renderer| {
+            report_renderer_stage("Horizon renderer: attaching surface on UIKit thread");
+            self.metal = None;
+            crate::set_graphics_state(1);
+            renderer
+                .attach_prepared_surface()
+                .map_err(|error| error.to_string())?;
+            Ok(renderer)
+        });
+        match result {
             Ok(renderer) => {
                 report_renderer_stage("Horizon renderer: GPU initialization complete");
                 self.horizon = Some(renderer);
-                window.request_redraw();
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
             }
-            Err(error) => {
-                report_renderer_stage("Horizon renderer: GPU initialization failed");
-                report_graphics_error(&format!("Horizon loading renderer: {error}"));
-                crate::RENDERER_SWITCH.finished(false);
-                unsafe { horizon_ios_renderer_status_changed() };
-                self.start_metal();
-                window.request_redraw();
-            }
+            Err(error) => self.fail_horizon_renderer(&format!("Horizon boot renderer: {error}")),
         }
-        // Refresh SwiftUI even before the first real frame is presented.
-        unsafe { graphics_changed(crate::horizon_ios_graphics_state()) };
     }
 
     fn draw_horizon(&mut self) {
@@ -236,7 +300,7 @@ impl Shell {
     }
 }
 
-impl ApplicationHandler for Shell {
+impl ApplicationHandler<ShellEvent> for Shell {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         crate::shell_resumed();
         self.lifecycle.resume();
@@ -377,7 +441,10 @@ impl ApplicationHandler for Shell {
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: ShellEvent) {
+        if matches!(event, ShellEvent::RendererCompleted) {
+            self.complete_horizon_renderer();
+        }
         if let Some(window) = &self.window {
             window.request_redraw();
         }
@@ -397,7 +464,7 @@ pub(super) fn run() -> Result<(), EventLoopError> {
     if log::set_logger(&STARTUP_LOGGER).is_ok() {
         log::set_max_level(log::LevelFilter::Info);
     }
-    let event_loop = EventLoop::builder().build()?;
+    let event_loop = EventLoop::<ShellEvent>::with_user_event().build()?;
     let _ = EVENT_PROXY.set(event_loop.create_proxy());
     let mut shell = Shell {
         renderer_smoke: std::env::var("HORIZON_IOS_RENDERER_SMOKE").is_ok_and(|value| value == "1"),

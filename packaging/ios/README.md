@@ -101,6 +101,15 @@ Simulator builds. Replace it and configure code signing before device testing.
   imported files live inside `Application Support/Horizon/.local/horizon-client/<version>/`.
   Importing a manifest does **not** validate all Minecraft assets or start a
   game world. ZIP files are never bundled into the public GitHub IPA.
+- **Responsive Horizon renderer preparation**: the opt-in preview now
+  compiles the real Horizon boot renderer's WGPU/Metal pipelines **offscreen on
+  a worker**, keeping UIKit and the existing Metal probe responsive instead
+  of synchronously blocking the iOS event loop. The worker notifies the one
+  Winit loop with a distinct `RendererCompleted` event; only that loop may
+  detach the probe, validate the prepared surface format and attach the live
+  window surface. Backgrounded/stale results are discarded. Preparation and
+  surface/first-frame failures are recorded, with Metal-probe fallback.
+  This is still a GPU boot-screen diagnostic, **not a running game world**.
 - **Horizon renderer preview** is another opt-in, after successful game
   registry loading. The desktop/Android boot-renderer constructor and empty
   loading frame now live in `horizon_client::game_startup`, and the iOS shell

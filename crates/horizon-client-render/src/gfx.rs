@@ -3670,6 +3670,56 @@ impl Renderer {
         self.resize(size.width, size.height);
         Ok(())
     }
+    /// Attach an offscreen-prepared renderer to the real window after its GPU
+    /// pipeline compilation finishes on a worker thread. Surface creation and
+    /// presentation stay on Winit's event thread (UIKit on iOS).
+    ///
+    /// The pipeline format was selected before compilation: it must be
+    /// supported by the window's swapchain or attachment must fail explicitly.
+    pub fn attach_prepared_surface(&mut self) -> Result<()> {
+        if self.offscreen.is_none() || self.surface.is_some() {
+            return Err("renderer is not an offscreen-prepared renderer".into());
+        }
+        let surface = self.instance.create_surface(self.window.clone())?;
+        let caps = surface.get_capabilities(&self.adapter);
+        if !caps.formats.contains(&self.config.format) {
+            return Err(format!(
+                "Horizon prepared format {:?} is unsupported by the live surface",
+                self.config.format
+            )
+            .into());
+        }
+        self.config.present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
+            wgpu::PresentMode::Fifo
+        } else {
+            *caps
+                .present_modes
+                .first()
+                .ok_or("surface has no present modes")?
+        };
+        self.config.alpha_mode = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
+            wgpu::CompositeAlphaMode::Opaque
+        } else {
+            *caps
+                .alpha_modes
+                .first()
+                .ok_or("surface has no alpha modes")?
+        };
+        self.present_modes = caps.present_modes;
+        *self
+            .spare_surface
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(surface);
+        self.offscreen = None;
+        self.recreate_surface()?;
+        if self.surface_unconfigured {
+            return Err("the prepared Horizon window surface could not be configured".into());
+        }
+        let size = self.window.inner_size();
+        self.resize(size.width, size.height);
+        Ok(())
+    }
+
     /// Set the live surface aside for a replacement on the same device.
     pub fn release_surface(&mut self) {
         *self

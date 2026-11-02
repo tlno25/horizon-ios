@@ -32,4 +32,15 @@ xcrun simctl launch "$udid" com.example.horizonios
 # Allow one UIKit layout/display cycle before capturing the host + Metal probe.
 sleep 3
 xcrun simctl io "$udid" screenshot "${RUNNER_TEMP:-/tmp}/horizon-ios-smoke.png"
+# Capture native diagnostic logs for problems which do not prevent launch.
+# The Flutter/SwiftUI overlay can show GPU failures while the app process stays
+# alive, so a successful simctl launch alone is insufficient rendering evidence.
+log_file="${RUNNER_TEMP:-/tmp}/horizon-ios-simulator-native.log"
+xcrun simctl spawn "$udid" log show --style compact --last 5m \
+    --predicate 'process == "HorizonIOS" AND eventMessage CONTAINS[c] "Horizon iOS graphics"' \
+    > "$log_file" 2>&1 || true
+if [[ -s "$log_file" ]]; then
+    echo 'Horizon iOS native GPU diagnostics:'
+    tail -35 "$log_file"
+fi
 echo "Simulator launch smoke test passed ($udid); screenshot captured"

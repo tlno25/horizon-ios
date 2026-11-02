@@ -6,9 +6,14 @@ private extension Notification.Name {
     static let horizonGraphicsChanged = Notification.Name("HorizonGraphicsChanged")
 }
 
+// Main-thread-only: Rust reports an error synchronously before the SwiftUI
+// view may exist; it remains available to the first HomeView instance.
+private var mostRecentGraphicsError = ""
+
 private struct HomeView: View {
     @State private var bridgeState = horizon_ios_state()
     @State private var graphicsState = horizon_ios_graphics_state()
+    @State private var graphicsError = mostRecentGraphicsError
 
     private var stateLabel: String {
         switch bridgeState {
@@ -31,6 +36,7 @@ private struct HomeView: View {
     private func refreshStatus() {
         bridgeState = horizon_ios_state()
         graphicsState = horizon_ios_graphics_state()
+        graphicsError = mostRecentGraphicsError
     }
 
     var body: some View {
@@ -49,6 +55,12 @@ private struct HomeView: View {
                     LabeledContent("Rust ABI", value: String(horizon_ios_abi_version()))
                     LabeledContent("App shell", value: stateLabel)
                     LabeledContent("GPU", value: graphicsLabel)
+                    if graphicsState == 3 && !graphicsError.isEmpty {
+                        Text(graphicsError)
+                            .font(.footnote.monospaced())
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                    }
                     Button("Refresh status", action: refreshStatus)
                         .buttonStyle(.bordered)
 
@@ -77,6 +89,19 @@ private struct HomeView: View {
 /// Notification delivery is deferred to avoid re-entering SwiftUI during Winit callbacks.
 @_cdecl("horizon_ios_graphics_changed")
 public func horizon_ios_graphics_changed(_ state: UInt32) {
+    DispatchQueue.main.async {
+        NotificationCenter.default.post(name: .horizonGraphicsChanged, object: nil)
+    }
+}
+
+/// Called on Winit's main thread. Only the copied Swift string escapes the
+/// callback; the borrowed Rust pointer must not be retained.
+@_cdecl("horizon_ios_report_graphics_error")
+public func horizon_ios_report_graphics_error(_ bytes: UnsafePointer<UInt8>?, _ length: Int) {
+    guard Thread.isMainThread, let bytes, length > 0, length < 4_096 else { return }
+    let text = String(decoding: UnsafeBufferPointer(start: bytes, count: length), as: UTF8.self)
+    mostRecentGraphicsError = text
+    NSLog("Horizon iOS graphics: %@", text)
     DispatchQueue.main.async {
         NotificationCenter.default.post(name: .horizonGraphicsChanged, object: nil)
     }

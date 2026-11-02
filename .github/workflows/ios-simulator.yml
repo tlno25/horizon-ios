@@ -84,6 +84,14 @@ jobs:
         env:
           DERIVED_DATA: ${{ runner.temp }}/HorizonDerivedData
         run: packaging/ios/tests/simulator_smoke.sh
+      - name: Upload iOS native diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-ios-simulator-logs
+          path: ${{ runner.temp }}/horizon-ios-simulator-native.log
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Upload preview screenshot
         if: always()
         uses: actions/upload-artifact@v4

@@ -20,10 +20,17 @@ unsafe extern "C" {
     /// The parent remains owned by Winit; Swift must not release it.
     fn horizon_ios_mount_home(view_controller: *mut c_void);
     fn horizon_ios_graphics_changed(state: u32);
+    /// Swift copies the UTF-8 bytes before this callback returns.
+    fn horizon_ios_report_graphics_error(message: *const u8, length: usize);
 }
 
 pub(super) unsafe fn graphics_changed(state: u32) {
     unsafe { horizon_ios_graphics_changed(state) };
+}
+
+fn report_graphics_error(message: &str) {
+    eprintln!("Horizon iOS graphics: {message}");
+    unsafe { horizon_ios_report_graphics_error(message.as_ptr(), message.len()) };
 }
 
 #[derive(Default)]
@@ -62,7 +69,7 @@ impl Shell {
                 window.request_redraw();
             }
             Err(error) => {
-                eprintln!("Horizon iOS Metal probe: {error}");
+                report_graphics_error(&format!("Metal initialization: {error}"));
                 crate::set_graphics_state(3);
                 // Do not exit UIKit; the SwiftUI shell should remain usable.
             }
@@ -132,7 +139,7 @@ impl ApplicationHandler for Shell {
                 if let Some(metal) = &self.metal
                     && let Err(error) = metal.draw()
                 {
-                    eprintln!("Horizon iOS Metal present: {error}");
+                    report_graphics_error(&format!("Metal presentation: {error}"));
                     crate::set_graphics_state(3);
                     self.metal = None;
                 }

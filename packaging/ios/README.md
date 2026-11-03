@@ -32,6 +32,11 @@ inside that `resources` directory. An older import into
 The resources imported into the diagnostic SwiftUI shell's Application Support
 folder are **not shared** with this distinct bundle ID. The build never
 includes Minecraft assets; they must come from the player's own Java Edition.
+Native-game runtime logs and crash reports are written by default under
+`Documents/logs/latest.log` and `Documents/crash-reports/`, accessible from
+Files or Finder/iOS file sharing for troubleshooting; explicitly configured
+`--home` and `HORIZON_HOME` still take precedence. Treat these files as
+private, since crash diagnostics may contain server or local file details.
 
 ### Preparing your own resources on Windows and transferring to iPhone
 

@@ -39,8 +39,17 @@ fn main() {
         .clone()
         .any(|a| a == "--help" || a == "-h" || a == "--launch-api");
     // --home before the log opens in it.
-    if let Some(dir) = game_args.clone().skip_while(|a| *a != "--home").nth(1) {
+    let home_arg = game_args.clone().skip_while(|a| *a != "--home").nth(1);
+    if let Some(dir) = home_arg.as_deref() {
         logging::set_game_home(std::path::absolute(dir).unwrap_or_else(|_| dir.into()));
+    }
+    #[cfg(target_os = "ios")]
+    if let Some(documents) = horizon_client::ios_paths::default_log_home(
+        &std::env::current_dir().expect("iOS Documents was opened at startup"),
+        home_arg.is_some(),
+        std::env::var_os("HORIZON_HOME").is_some_and(|value| !value.is_empty()),
+    ) {
+        logging::set_game_home(documents);
     }
     // The dedicated server logs in its own folder (--game-dir's), as vanilla's does; the game in its home.
     let (home, side, thread) = if args.iter().any(|a| a == "--dedicated") {

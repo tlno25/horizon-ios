@@ -12,6 +12,18 @@ pub fn game_documents_dir(home: &Path) -> Result<PathBuf, &'static str> {
     Ok(home.join("Documents"))
 }
 
+/// Use an app-visible log/crash-report location unless the caller explicitly
+/// chose a different game home. This is evaluated before logging::init, so
+/// every first-launch or graphics failure can be found through iOS Files.
+/// Neither CLI --home nor HORIZON_HOME may be silently overridden.
+pub fn default_log_home(
+    documents: &Path,
+    explicit_cli_home: bool,
+    environment_home: bool,
+) -> Option<PathBuf> {
+    (!explicit_cli_home && !environment_home).then(|| documents.to_path_buf())
+}
+
 /// Files.app exposes the Documents/resources directory when file sharing is
 /// enabled. Accept it only if prepared resources actually exist there;
 /// legacy .local imports remain usable without silently migrating game data.
@@ -39,6 +51,18 @@ mod tests {
     fn finds_documents_beneath_the_absolute_ios_container_home() {
         let home = Path::new("/private/var/mobile/Containers/Data/Application/UUID");
         assert_eq!(game_documents_dir(home).unwrap(), home.join("Documents"),);
+    }
+
+    #[test]
+    fn ios_logs_are_visible_by_default_but_respect_home_overrides() {
+        let documents = Path::new("/private/var/mobile/Containers/Data/Application/UUID/Documents");
+        assert_eq!(
+            default_log_home(documents, false, false),
+            Some(documents.to_path_buf())
+        );
+        assert_eq!(default_log_home(documents, true, false), None);
+        assert_eq!(default_log_home(documents, false, true), None);
+        assert_eq!(default_log_home(documents, true, true), None);
     }
 
     #[test]

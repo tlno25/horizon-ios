@@ -1465,6 +1465,19 @@ impl Loading {
                 self.save_menu_settings();
                 crate::game::exit_app(event_loop);
             }
+            #[cfg(target_os = "ios")]
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                let text = horizon_client::ios_touch::committed_ime_text(&text);
+                if !text.is_empty()
+                    && let Some(title) = &mut self.menu.title
+                {
+                    title.type_text(&text);
+                }
+            }
+            #[cfg(target_os = "ios")]
+            WindowEvent::Ime(winit::event::Ime::Disabled) => {
+                self.ime_allowed = false;
+            }
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer {
                     r.resize(size.width, size.height);
@@ -1634,6 +1647,25 @@ impl Loading {
     }
 
     pub(super) fn draw_menu(&mut self, batch: &mut HudBatch) {
+        #[cfg(target_os = "ios")]
+        {
+            // Winit's iOS view implements UIKeyInput. The main game already
+            // enables IME for focused fields; the loading/title stage must do
+            // the same until the game takes ownership of this window.
+            let title_focused = self
+                .menu
+                .title
+                .as_mut()
+                .is_some_and(|title| title.focused_field().is_some());
+            let wants_keyboard =
+                title_focused || (self.menu.options_open && self.menu.options.typing());
+            if wants_keyboard != self.ime_allowed {
+                if let Some(window) = &self.window {
+                    window.set_ime_allowed(wants_keyboard);
+                    self.ime_allowed = wants_keyboard;
+                }
+            }
+        }
         let logs = horizon_client::logging::recent_lines();
         let Some(gui) = &self.gui else {
             // The pack's screens do not exist yet: the boot screen holds the

@@ -4,6 +4,14 @@
 use crate::{gamepad::PadState, touch::TouchControls, touch_ui::TouchUi};
 use winit::event::TouchPhase;
 
+/// Committed iOS keyboard text may contain IME control characters that are
+/// not valid title-field data. Unicode letters, emoji and composition survive.
+pub fn committed_ime_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_control())
+        .collect()
+}
+
 /// The same controls used by Android feed the game's native controller
 /// mapping. A short tap becomes a single frame of attack/use.
 pub fn poll_gamepad(controls: &mut TouchControls) -> PadState {
@@ -70,6 +78,12 @@ mod tests {
         assert!(!movement_input_enabled(false, false, false, true));
         assert!(!movement_input_enabled(false, true, true, true));
         assert!(!movement_input_enabled(false, true, false, false));
+    }
+
+    #[test]
+    fn committed_ime_text_preserves_unicode_but_excludes_control_input() {
+        assert_eq!(committed_ime_text("テスト\n🙂\0abc\r"), "テスト🙂abc");
+        assert_eq!(committed_ime_text(""), "");
     }
 
     #[test]

@@ -19801,6 +19801,8 @@ struct Loading {
     handle: Option<JoinHandle<()>>,
     shown: bool,
     menu: startup_menu::StartupMenu,
+    #[cfg(target_os = "ios")]
+    ime_allowed: bool,
     error: Option<Box<dyn std::error::Error>>,
 }
 impl Loading {
@@ -20407,6 +20409,8 @@ fn loading_app(
         handle: Some(loader),
         shown: false,
         menu,
+        #[cfg(target_os = "ios")]
+        ime_allowed: false,
         error: None,
     };
     Ok(App::Loading(Box::new(loading)))
@@ -20511,7 +20515,11 @@ pub fn run() -> Result<()> {
         if !options.offscreen && !synchronous_startup(&options) {
             log::error!("Horizon: {error}");
             let settings = Settings::load(&std::env::current_dir()?.join("options.txt"));
-            return no_resources::show(&vanilla_root, &settings);
+            #[cfg(target_os = "ios")]
+            let missing_location = std::path::Path::new("resources");
+            #[cfg(not(target_os = "ios"))]
+            let missing_location = vanilla_root.as_path();
+            return no_resources::show(missing_location, &settings);
         }
         return Err(error.into());
     }

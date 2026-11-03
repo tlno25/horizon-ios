@@ -34,6 +34,14 @@ folder are **not shared** with this distinct bundle ID. The build never
 includes Minecraft assets; they must come from the player's own Java Edition.
 
 **Do not mistake this build target for a finished, playable mobile client.**
+An app launched without prepared resources now shows a native, touch-enabled
+first-run screen telling the player to copy the legally prepared assets to
+`Documents/resources/horizon-resources.json`. The first-run screen uses the
+device viewport and survives iOS surface suspension/resume. The loading/title
+stage requests the native UIKit keyboard when a text field receives focus;
+committed Unicode input uses Horizon's existing title edit path. Exact keyboard
+and orientation behavior still need physical iPhone verification.
+
 The native game and the loading window now request the device's own
 landscape viewport instead of a desktop-sized (1280×720 point) UIKit window.
 The **initial loading/title menu** uses Horizon's existing touch gesture
@@ -44,7 +52,7 @@ pause/inventory), drawing its existing HUD and retaining the user's touch
 control layout. App suspension releases held inputs and suspends its GPU
 surface; resume recreates the surface. These iOS paths still require
 on-device verification, especially menu text entry and multiplayer. Account
-sign-in, a native text keyboard, audio output and actual world gameplay
+sign-in, advanced native text-entry UX, audio output and actual world gameplay
 remain incomplete or unverified. This native game IPA is a feasibility/compile
 milestone, not a claim that worlds can be played on iPhone. The IPA is also
 **unsigned** and must be signed with a valid development/sideloading identity

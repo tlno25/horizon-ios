@@ -130,8 +130,8 @@
                 CURRENT_PROJECT_VERSION = 1;
                 GENERATE_INFOPLIST_FILE = NO;
                 INFOPLIST_FILE = HorizonIOS/Info.plist;
-                "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = ("$(inherited)", "$(SRCROOT)/../../target/aarch64-apple-ios/release");
-                "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = ("$(inherited)", "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release", "$(SRCROOT)/../../target/x86_64-apple-ios/release");
+                "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = ("$(inherited)", "$(SRCROOT)/../../target/aarch64-apple-ios/fast");
+                "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = ("$(inherited)", "$(SRCROOT)/../../target/aarch64-apple-ios-sim/fast", "$(SRCROOT)/../../target/x86_64-apple-ios/fast");
                 MARKETING_VERSION = 0.1.0;
                 OTHER_LDFLAGS = ("$(inherited)", "-lhorizon_ios", "-framework", "UIKit", "-framework", "Foundation", "-framework", "Metal", "-framework", "QuartzCore", "-framework", "CoreGraphics", "-framework", "CoreFoundation", "-framework", "IOSurface", "-lc++");
                 PRODUCT_BUNDLE_IDENTIFIER = com.example.horizonios;

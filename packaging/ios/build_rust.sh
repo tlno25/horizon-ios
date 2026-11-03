@@ -14,4 +14,10 @@ case "${PLATFORM_NAME:-}:${ARCHS:-}" in
     *) echo "HorizonIOS: unsupported platform/architecture: ${PLATFORM_NAME:-unset} / ${ARCHS:-unset}" >&2; exit 1 ;;
 esac
 
-cargo build --locked --release --package horizon-ios --target "$target"
+# Development/CI shells use the repository's fast release-derived profile:
+# no thin LTO and parallel codegen. Production Release keeps full optimization.
+if [[ "${CONFIGURATION:-Release}" == "Debug" ]]; then
+    cargo build --locked --profile fast --package horizon-ios --target "$target"
+else
+    cargo build --locked --release --package horizon-ios --target "$target"
+fi

@@ -33,6 +33,35 @@ The resources imported into the diagnostic SwiftUI shell's Application Support
 folder are **not shared** with this distinct bundle ID. The build never
 includes Minecraft assets; they must come from the player's own Java Edition.
 
+### Preparing your own resources on Windows and transferring to iPhone
+
+The native game IPA cannot include the proprietary Minecraft game files.
+From Windows 11, install the official Minecraft: Java Edition **26.3** with
+its launcher and run it once. You also need Rust, JDK **25** and the matching
+26.3 server JAR obtained from your own licensed Minecraft installation.
+In PowerShell, from a local clone of this project:
+
+```powershell
+cargo run --release -p horizon-prepare -- --prepare --server-jar "$env:USERPROFILE\Downloads\server.jar"
+cargo run --release -p horizon-prepare -- --check
+```
+
+Replace the server JAR path with your actual copy. The importer produces
+`.local\horizon-client\26.3\` on your PC. To transfer it as a single file:
+
+```powershell
+tar -a -cf Horizon-iOS-prepared.zip -C ".local\horizon-client\26.3" .
+```
+
+**Keep this ZIP private**; it contains game files prepared from your
+own Minecraft copy, not open-source Horizon code. Transfer it through the
+iPhone Files app, iCloud Drive or iOS file sharing; extract it in Files
+and make the resulting folder **`On My iPhone > Horizon Game (Experimental)
+> resources`**. The `horizon-resources.json` file must be immediately
+inside `resources/`, not inside another nested ZIP folder. Completely quit
+and reopen the iOS app. This transfer path has not yet been validated on a
+physical iPhone. The separate SwiftUI shell has its own ZIP importer.
+
 **Do not mistake this build target for a finished, playable mobile client.**
 An app launched without prepared resources now shows a native, touch-enabled
 first-run screen telling the player to copy the legally prepared assets to
@@ -75,7 +104,14 @@ It does **not** build a macOS/iOS app or use a macOS runner.
 
 To produce an iPhone/iPad app, open
 [Horizon iOS Manual Build](https://github.com/tlno25/horizon-ios/actions/workflows/ios-simulator.yml),
-select **Run workflow**, choose branch **ios**, and select `build_target`:
+select **Run workflow**, choose branch **ios** for the existing diagnostic
+targets, and select `build_target`. The experimental native game builds are
+currently on branch **`agent/ios-preview-crouch`**, not yet merged into
+`ios`; dispatch them explicitly with GitHub CLI using
+`gh workflow run ios-simulator.yml --repo tlno25/horizon-ios --ref agent/ios-preview-crouch -f build_target=game`
+(or `game-simulator`). The UI's available choices may reflect the default
+branch until the feature is merged.
+
 
 - **device** (default): build an unsigned arm64 iPhone/iPad IPA with Xcode.
   Download the `horizon-ios-unsigned-ipa` artifact, extract GitHub's outer ZIP,

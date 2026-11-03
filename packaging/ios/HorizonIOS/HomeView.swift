@@ -81,6 +81,7 @@ private func saveGraphicsStatus() {
         "engine": Int(horizon_ios_engine_state()),
         "core_load": Int(horizon_ios_core_load_state()),
         "renderer_preview": Int(horizon_ios_renderer_preview_state()),
+        "terrain_preview": Int(horizon_ios_terrain_preview_state()),
         "renderer_stage": mostRecentRendererStage,
         "smoke_mode": Int(horizon_ios_renderer_smoke_enabled()),
         "player": horizon_ios_player_name().map { String(cString: $0) } ?? ""
@@ -100,6 +101,7 @@ private struct HomeView: View {
     @State private var engineState = horizon_ios_engine_state()
     @State private var coreLoadState = horizon_ios_core_load_state()
     @State private var rendererPreviewState = horizon_ios_renderer_preview_state()
+    @State private var terrainPreviewState = horizon_ios_terrain_preview_state()
     @State private var rendererStage = mostRecentRendererStage
     @State private var coreLoadMessage = mostRecentCoreLoadMessage
     @State private var worldInspectionMessage = mostRecentWorldInspectionMessage
@@ -175,6 +177,34 @@ private struct HomeView: View {
         }
     }
 
+    private var terrainPreviewLabel: String {
+        switch terrainPreviewState {
+        case 1: return "Saved CPU terrain is ready"
+        case 2: return "Preview requested"
+        case 3: return "Preparing textured GPU renderer"
+        case 4: return "Showing static terrain (read-only)"
+        case 5: return "Preview failed — retry available"
+        case 6: return "Returning to title"
+        default: return "Not prepared"
+        }
+    }
+
+    private func previewSelectedTerrain() {
+        let code = horizon_ios_preview_selected_terrain()
+        if code != 0 {
+            graphicsError = "Cannot start saved terrain preview (code \(code))"
+        }
+        refreshStatus()
+    }
+
+    private func leaveTerrainPreview() {
+        let code = horizon_ios_leave_terrain_preview()
+        if code != 0 {
+            graphicsError = "Cannot return to title (code \(code))"
+        }
+        refreshStatus()
+    }
+
     private func previewGameRenderer() {
         let result = horizon_ios_preview_game_renderer()
         if result != 0 {
@@ -189,6 +219,7 @@ private struct HomeView: View {
         engineState = horizon_ios_engine_state()
         coreLoadState = horizon_ios_core_load_state()
         rendererPreviewState = horizon_ios_renderer_preview_state()
+        terrainPreviewState = horizon_ios_terrain_preview_state()
         rendererStage = mostRecentRendererStage
         worldInspectionMessage = mostRecentWorldInspectionMessage
         worldInspectionState = mostRecentWorldInspectionState
@@ -277,6 +308,9 @@ private struct HomeView: View {
                     LabeledContent("Game assets", value: engineLabel)
                     LabeledContent("Game CPU data", value: coreLoadLabel)
                     LabeledContent("Renderer", value: rendererPreviewLabel)
+                    if terrainPreviewState != 0 {
+                        LabeledContent("Saved terrain", value: terrainPreviewLabel)
+                    }
                     if !rendererStage.isEmpty {
                         Text(rendererStage)
                             .font(.footnote)
@@ -301,7 +335,7 @@ private struct HomeView: View {
                     if !playerName.isEmpty {
                         LabeledContent("Local player", value: playerName)
                     }
-                    if (graphicsState == 3 || rendererPreviewState == 4) && !graphicsError.isEmpty {
+                    if (graphicsState == 3 || rendererPreviewState == 4 || terrainPreviewState == 5) && !graphicsError.isEmpty {
                         Text(graphicsError)
                             .font(.footnote.monospaced())
                             .foregroundStyle(.red)
@@ -309,9 +343,22 @@ private struct HomeView: View {
                     }
                     Button("Refresh status", action: refreshStatus)
                         .buttonStyle(.bordered)
+                    if (terrainPreviewState == 1 || terrainPreviewState == 5) && rendererPreviewState == 3 {
+                        Button(terrainPreviewState == 5 ? "Retry terrain preview" : "Preview saved terrain") {
+                            previewSelectedTerrain()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    if terrainPreviewState == 2 || terrainPreviewState == 3 || terrainPreviewState == 6 {
+                        ProgressView(terrainPreviewLabel)
+                    }
+                    if terrainPreviewState == 4 {
+                        Button("Back to title", action: leaveTerrainPreview)
+                            .buttonStyle(.borderedProminent)
+                    }
                     if coreLoadState == 2 && rendererPreviewState == 3 {
                         Button("Show game") { setDiagnosticsVisible(false) }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(.bordered)
                     }
                     if engineState == 1 || engineState == 3 {
                         Button("Import prepared resources ZIP") {
@@ -378,7 +425,7 @@ private struct HomeView: View {
                             .textSelection(.enabled)
                     }
 
-                    Text("After loading game data, Preview Horizon renderer shows Horizon's native title. In Show game mode, tap Singleplayer, select a world or swipe the list. Play Selected World checks the save and prepares one chunk's CPU terrain mesh. Terrain display, gameplay and saving are not active yet.")
+                    Text("Load the game data, open the native title, then select a saved world. Preview saved terrain displays one static, read-only chunk with native block textures. Use Diagnostics to return to the title. World simulation, movement and saving are not active.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -443,6 +490,10 @@ public func horizon_ios_renderer_stage_changed(_ bytes: UnsafePointer<UInt8>?, _
 public func horizon_ios_renderer_status_changed() {
     guard Thread.isMainThread else { return }
     saveGraphicsStatus()
+    let terrain = horizon_ios_terrain_preview_state()
+    if terrain == 4 || terrain == 5 {
+        setDiagnosticsVisible(terrain != 4)
+    }
     DispatchQueue.main.async {
         NotificationCenter.default.post(name: .horizonGraphicsChanged, object: nil)
     }

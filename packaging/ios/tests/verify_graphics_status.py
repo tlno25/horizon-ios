@@ -27,6 +27,9 @@ def validate(payload: object) -> str:
     core = payload.get("core_load", 0)
     if type(core) is not int or core not in (0, 1, 2, 3):
         raise ValueError(f"Invalid core game data state (core_load={core})")
+    terrain = payload.get("terrain_preview", 0)
+    if type(terrain) is not int or terrain not in range(7):
+        raise ValueError(f"Invalid read-only terrain preview state (terrain_preview={terrain})")
     return "Metal ready"
 
 

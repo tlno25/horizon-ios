@@ -27,6 +27,9 @@ use metal_probe::MetalProbe;
 enum ShellEvent {
     Wake,
     RendererCompleted,
+    TerrainPreviewRequested,
+    TerrainPreviewCompleted,
+    TerrainPreviewExitRequested,
     WorldInspected {
         generation: u64,
         result: Result<PreparedWorldPreview, String>,
@@ -38,6 +41,15 @@ enum ShellEvent {
 struct PreparedWorldPreview {
     world: horizon_client::game_startup::PreparedWorld,
     terrain: Option<horizon_client::game_startup::PreparedTerrain>,
+}
+
+impl std::fmt::Debug for PreparedWorldPreview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedWorldPreview")
+            .field("world", &self.world)
+            .field("terrain_summary", &self.terrain.as_ref().map(|t| t.summary))
+            .finish()
+    }
 }
 
 static EVENT_PROXY: OnceLock<EventLoopProxy<ShellEvent>> = OnceLock::new();
@@ -80,6 +92,22 @@ pub(super) fn request_renderer_event() -> bool {
     EVENT_PROXY
         .get()
         .is_some_and(|proxy| proxy.send_event(ShellEvent::Wake).is_ok())
+}
+
+pub(super) fn request_terrain_preview_event() -> bool {
+    EVENT_PROXY.get().is_some_and(|proxy| {
+        proxy
+            .send_event(ShellEvent::TerrainPreviewRequested)
+            .is_ok()
+    })
+}
+
+pub(super) fn request_terrain_exit_event() -> bool {
+    EVENT_PROXY.get().is_some_and(|proxy| {
+        proxy
+            .send_event(ShellEvent::TerrainPreviewExitRequested)
+            .is_ok()
+    })
 }
 
 fn notify_renderer_worker_complete() {
@@ -135,9 +163,9 @@ fn report_graphics_error(message: &str) {
     unsafe { horizon_ios_report_graphics_error(message.as_ptr(), message.len()) };
 }
 
-/// Title visuals are the native Horizon title screen, not duplicated SwiftUI
-/// buttons. World selection safely stages read-only terrain CPU data, but the
-/// live game loop and textured GPU terrain remain disabled.
+/// Title visuals come from native Horizon, not duplicated SwiftUI buttons.
+/// After a world has been inspected, users can explicitly switch to a static,
+/// textured GPU preview. Gameplay and saving are still disabled.
 struct PreparedTitle {
     atlas: HudAtlas,
     screen: Title,
@@ -165,6 +193,13 @@ struct Shell {
     /// Native CPU mesh vertices for the initial saved column, staged until
     /// the terrain renderer has the corresponding block sprite atlas.
     terrain: Option<horizon_client::game_startup::PreparedTerrain>,
+    /// Saved first-person camera, supplied only with a validated CPU mesh.
+    terrain_camera: Option<([f64; 3], [f32; 2])>,
+    /// The original title renderer retains its GPU resources while a textured
+    /// terrain replacement is active. Both share one WGPU device.
+    title_renderer: Option<Renderer>,
+    /// Offscreen textured pipeline preparation, no window surface on worker.
+    terrain_job: Option<JoinHandle<Result<Renderer, String>>>,
     /// GPU pipelines are compiled offscreen on a worker. Winit/SwiftUI must
     /// remain responsive during this work; only surface attachment is on UIKit.
     renderer_job: Option<JoinHandle<Result<PreparedRenderer, String>>>,
@@ -193,6 +228,8 @@ impl Shell {
         self.world_inspection_pending = true;
         self.initial_column = None;
         self.terrain = None;
+        self.terrain_camera = None;
+        crate::TERRAIN_PREVIEW.reset();
         self.world_inspection_generation = self.world_inspection_generation.wrapping_add(1);
         let generation = self.world_inspection_generation;
         let saves = home.join("saves");
@@ -457,12 +494,207 @@ impl Shell {
         }
     }
 
+    /// Opt-in static terrain view. Keep drawing the title while the shared
+    /// WGPU device compiles a second textured pipeline on a background thread.
+    fn try_terrain_preview(&mut self) {
+        if crate::TERRAIN_PREVIEW.state() != 2 {
+            return;
+        }
+        if self.terrain_job.is_some()
+            || self.title_renderer.is_some()
+            || self.horizon.is_none()
+            || self.title.is_none()
+            || self.terrain.is_none()
+            || self.initial_column.is_none()
+            || self.terrain_camera.is_none()
+            || self.lifecycle.drawable_size().is_none()
+        {
+            self.fail_terrain_preview("Native terrain preview is unavailable or still preparing");
+            return;
+        }
+        let Some(window) = self.window.as_ref().cloned() else {
+            self.fail_terrain_preview("Cannot start terrain without the iOS window");
+            return;
+        };
+        let context = self
+            .horizon
+            .as_ref()
+            .expect("checked title renderer")
+            .background_context();
+        report_renderer_stage(
+            "Horizon renderer: preparing native terrain sprite pipelines on shared GPU",
+        );
+        if !crate::TERRAIN_PREVIEW.start() {
+            return;
+        }
+        unsafe { horizon_ios_renderer_status_changed() };
+        let job = std::thread::Builder::new()
+            .name("Horizon iOS terrain GPU preparation".to_owned())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let resources = crate::PREVIEW_TERRAIN
+                        .get()
+                        .ok_or("Terrain assets not loaded")?;
+                    horizon_client::game_startup::loading_terrain_renderer_with_context(
+                        window,
+                        &resources.render,
+                        context,
+                    )
+                    .map_err(|error| error.to_string())
+                }))
+                .unwrap_or_else(|payload| Err(crate::describe_renderer_panic(payload.as_ref())));
+                if let Some(proxy) = EVENT_PROXY.get() {
+                    let _ = proxy.send_event(ShellEvent::TerrainPreviewCompleted);
+                }
+                result
+            });
+        match job {
+            Ok(job) => self.terrain_job = Some(job),
+            Err(error) => {
+                self.fail_terrain_preview(&format!("Cannot start terrain GPU worker: {error}"))
+            }
+        }
+    }
+
+    fn fail_terrain_preview(&mut self, message: &str) {
+        report_graphics_error(message);
+        crate::TERRAIN_PREVIEW.failed();
+        unsafe { horizon_ios_renderer_status_changed() };
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    /// Transfer the one live surface to the textured renderer on UIKit's
+    /// event thread, then upload the previously prepared CPU section meshes.
+    fn complete_terrain_preview(&mut self) {
+        let Some(job) = self.terrain_job.take() else {
+            return;
+        };
+        let loaded = job
+            .join()
+            .unwrap_or_else(|payload| Err(crate::describe_renderer_panic(payload.as_ref())));
+        // Suspended / replaced worlds cannot accept a stale GPU result.
+        if crate::TERRAIN_PREVIEW.state() != 3
+            || self.lifecycle.drawable_size().is_none()
+            || self.terrain.is_none()
+            || self.terrain_camera.is_none()
+        {
+            return;
+        }
+        let mut prepared = match loaded {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.fail_terrain_preview(&format!("Native terrain GPU preparation: {error}"));
+                return;
+            }
+        };
+        let Some(mut old_title) = self.horizon.take() else {
+            self.fail_terrain_preview("Native title renderer disappeared during preparation");
+            return;
+        };
+        report_renderer_stage("Horizon renderer: transferring surface and uploading saved terrain");
+        let upload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            prepared
+                .activate_replacement(&mut old_title)
+                .map_err(|error| error.to_string())?;
+            let column = self
+                .initial_column
+                .as_ref()
+                .ok_or("Saved chunk was released")?;
+            let terrain = self.terrain.as_ref().ok_or("Saved mesh was released")?;
+            horizon_client::game_startup::upload_prepared_terrain(&mut prepared, column, terrain);
+            Ok::<(), String>(())
+        }))
+        .unwrap_or_else(|payload| Err(crate::describe_renderer_panic(payload.as_ref())));
+        match upload {
+            Ok(()) => {
+                report_renderer_stage(
+                    "Horizon renderer: native terrain uploaded, awaiting first frame",
+                );
+                self.title_renderer = Some(old_title);
+                self.horizon = Some(prepared);
+                self.title_tap.clear();
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            Err(error) => {
+                // Drop its surface *before* restoring the original title.
+                drop(prepared);
+                match old_title.recreate_surface() {
+                    Ok(()) => self.horizon = Some(old_title),
+                    Err(restore) => {
+                        report_graphics_error(&format!("Cannot restore title surface: {restore}"));
+                        self.title = None;
+                        crate::RENDERER_SWITCH.finished(false);
+                        self.start_metal();
+                    }
+                }
+                self.fail_terrain_preview(&format!("Native terrain GPU upload: {error}"));
+            }
+        }
+    }
+
+    /// Return to the still-prepared title renderer. Never reinterpret a
+    /// preview as a joined or running world; the save remains untouched.
+    fn restore_title_renderer(&mut self) {
+        if crate::TERRAIN_PREVIEW.state() != 6 {
+            return;
+        }
+        self.finish_terrain_preview(true, None);
+    }
+
+    fn finish_terrain_preview(&mut self, requested_exit: bool, error: Option<&str>) {
+        let Some(mut title_renderer) = self.title_renderer.take() else {
+            self.fail_terrain_preview("Title renderer was not retained");
+            return;
+        };
+        // The terrain renderer owns the current surface. Drop it first.
+        self.horizon = None;
+        match title_renderer.recreate_surface() {
+            Ok(()) => {
+                self.horizon = Some(title_renderer);
+                if requested_exit {
+                    crate::TERRAIN_PREVIEW.exit_finished(true);
+                } else {
+                    crate::TERRAIN_PREVIEW.failed();
+                }
+                if let Some(error) = error {
+                    report_graphics_error(error);
+                }
+                unsafe { horizon_ios_renderer_status_changed() };
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            Err(restore) => {
+                self.title = None;
+                crate::RENDERER_SWITCH.finished(false);
+                self.fail_terrain_preview(&format!("Title surface recovery failed: {restore}"));
+                self.start_metal();
+            }
+        }
+    }
+
     fn draw_horizon(&mut self) {
         let Some(renderer) = self.horizon.as_mut() else {
             return;
         };
         let mut batch = HudBatch::new([renderer.config.width, renderer.config.height]);
-        let result = if let Some(title) = self.title.as_mut() {
+        let terrain_active = self.title_renderer.is_some();
+        let result: Result<bool, String> = if terrain_active {
+            // A static view of the saved camera, not a running world.
+            let Some((position, rotation)) = self.terrain_camera else {
+                self.finish_terrain_preview(false, Some("Saved preview camera disappeared"));
+                return;
+            };
+            let frame =
+                horizon_client::game_startup::terrain_preview_frame(&batch, position, rotation);
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| renderer.render(&frame)))
+                .map_err(|panic| crate::describe_renderer_panic(panic.as_ref()))
+                .and_then(|result| result.map_err(|error| error.to_string()))
+        } else if let Some(title) = self.title.as_mut() {
             let elapsed = title.screen.started.elapsed().as_secs_f32();
             let frame = horizon_client::game_startup::loading_title_frame(
                 &mut batch,
@@ -471,14 +703,21 @@ impl Shell {
                 &mut title.rotation,
                 elapsed,
             );
-            renderer.render(&frame)
+            renderer.render(&frame).map_err(|error| error.to_string())
         } else {
             // Resource-free Simulator probe retains its exact old behavior.
-            renderer.render(&horizon_client::game_startup::loading_frame(&batch))
+            renderer
+                .render(&horizon_client::game_startup::loading_frame(&batch))
+                .map_err(|error| error.to_string())
         };
         match result {
             Ok(true) => {
                 if self.lifecycle.present_frame() {
+                    if terrain_active && crate::TERRAIN_PREVIEW.state() == 3 {
+                        if crate::TERRAIN_PREVIEW.presented() {
+                            unsafe { horizon_ios_renderer_status_changed() };
+                        }
+                    }
                     if crate::RENDERER_SWITCH.state() != 3 {
                         crate::RENDERER_SWITCH.finished(true);
                         unsafe { horizon_ios_renderer_status_changed() };
@@ -492,9 +731,18 @@ impl Shell {
                 }
             }
             Err(error) => {
+                if terrain_active {
+                    self.finish_terrain_preview(
+                        false,
+                        Some(&format!("Horizon terrain preview frame: {error}")),
+                    );
+                    return;
+                }
                 report_graphics_error(&format!("Horizon first frame: {error}"));
                 self.horizon = None;
                 self.title = None;
+                self.terrain_camera = None;
+                crate::TERRAIN_PREVIEW.reset();
                 crate::RENDERER_SWITCH.finished(false);
                 unsafe { horizon_ios_renderer_status_changed() };
                 self.start_metal();
@@ -549,6 +797,9 @@ impl ApplicationHandler<ShellEvent> for Shell {
         self.world_inspection_pending = false;
         self.initial_column = None;
         self.terrain = None;
+        self.terrain_camera = None;
+        self.title_renderer = None;
+        crate::TERRAIN_PREVIEW.reset();
         self.world_inspection_generation = self.world_inspection_generation.wrapping_add(1);
         crate::RENDERER_SWITCH.reset();
         crate::set_graphics_state(4);
@@ -661,7 +912,11 @@ impl ApplicationHandler<ShellEvent> for Shell {
                     };
                     let point = (touch.location.x as f32, touch.location.y as f32);
                     if crate::update_touch(touch.id, phase, point, size) {
-                        if self.title.is_some() && self.horizon.is_some() {
+                        if self.title.is_some()
+                            && self.horizon.is_some()
+                            && self.title_renderer.is_none()
+                            && crate::TERRAIN_PREVIEW.state() != 3
+                        {
                             let tap = self.title_tap.handle(touch.id, phase, point, size);
                             let swipe = self.title_tap.take_scroll();
                             if tap.is_some() || swipe.is_some() {
@@ -683,8 +938,16 @@ impl ApplicationHandler<ShellEvent> for Shell {
                                     } else if self.title.as_mut().is_some_and(|title| {
                                         title.screen.preview_tap(pointer.0, pointer.1, view)
                                     }) {
+                                        // Leaving the selection invalidates any
+                                        // file/meshing worker still in flight.
+                                        self.world_inspection_generation =
+                                            self.world_inspection_generation.wrapping_add(1);
+                                        self.world_inspection_pending = false;
                                         self.initial_column = None;
                                         self.terrain = None;
+                                        self.terrain_camera = None;
+                                        crate::TERRAIN_PREVIEW.reset();
+                                        unsafe { horizon_ios_renderer_status_changed() };
                                         window.request_redraw();
                                     }
                                 } else if let Some((dy, start)) = swipe {
@@ -713,6 +976,9 @@ impl ApplicationHandler<ShellEvent> for Shell {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: ShellEvent) {
         match event {
             ShellEvent::RendererCompleted => self.complete_horizon_renderer(),
+            ShellEvent::TerrainPreviewRequested => self.try_terrain_preview(),
+            ShellEvent::TerrainPreviewCompleted => self.complete_terrain_preview(),
+            ShellEvent::TerrainPreviewExitRequested => self.restore_title_renderer(),
             ShellEvent::WorldInspected { generation, result } => {
                 if generation == self.world_inspection_generation
                     && self.lifecycle.drawable_size().is_some()
@@ -733,6 +999,21 @@ impl ApplicationHandler<ShellEvent> for Shell {
                             // worker finishes. Later stages will transfer it
                             // into the terrain/chunk manager, not save it.
                             self.initial_column = initial_column;
+                            self.terrain_camera =
+                                if self.terrain.is_some() && self.initial_column.is_some() {
+                                    world.saved_position.zip(world.saved_rotation)
+                                } else {
+                                    None
+                                };
+                            if self.terrain_camera.is_some()
+                                && self.horizon.is_some()
+                                && self.title.is_some()
+                            {
+                                crate::TERRAIN_PREVIEW.ready();
+                            } else {
+                                crate::TERRAIN_PREVIEW.reset();
+                            }
+                            unsafe { horizon_ios_renderer_status_changed() };
                             let safe_name: String = world
                                 .name
                                 .chars()
@@ -803,6 +1084,11 @@ impl ApplicationHandler<ShellEvent> for Shell {
                             );
                         }
                         Err(error) => {
+                            self.terrain = None;
+                            self.terrain_camera = None;
+                            self.initial_column = None;
+                            crate::TERRAIN_PREVIEW.reset();
+                            unsafe { horizon_ios_renderer_status_changed() };
                             report_world_inspection(&format!("World inspection failed: {error}"), 3)
                         }
                     }
@@ -818,7 +1104,11 @@ impl ApplicationHandler<ShellEvent> for Shell {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.metal = None;
         self.horizon = None;
+        self.title_renderer = None;
         self.title = None;
+        self.terrain = None;
+        self.terrain_camera = None;
+        crate::TERRAIN_PREVIEW.reset();
         self.window = None;
         let _ = crate::horizon_ios_shutdown();
         crate::set_graphics_state(0);

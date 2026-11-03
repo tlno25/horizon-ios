@@ -6,6 +6,7 @@ int main(void) {
     assert(horizon_ios_abi_version() == 1);
     assert(horizon_ios_graphics_state() == 0);
     assert(horizon_ios_renderer_preview_state() == 0);
+    assert(horizon_ios_terrain_preview_state() == 0);
     assert(horizon_ios_renderer_smoke_enabled() == 0);
     assert(horizon_ios_touch_count() == 0);
     assert(horizon_ios_touch_events() == 0);

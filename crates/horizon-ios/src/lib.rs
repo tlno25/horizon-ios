@@ -37,6 +37,8 @@ static PREVIEW_TERRAIN: OnceLock<horizon_client::game_startup::TerrainMeshingRes
 #[cfg(target_os = "ios")]
 static RENDERER_SWITCH: RendererSwitch = RendererSwitch::new();
 #[cfg(target_os = "ios")]
+static TERRAIN_PREVIEW: TerrainPreviewSwitch = TerrainPreviewSwitch::new();
+#[cfg(target_os = "ios")]
 static RENDERER_SMOKE_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Returns the ABI revision supported by this static library.
@@ -76,6 +78,8 @@ pub extern "C" fn horizon_ios_shutdown() -> i32 {
     ENGINE_STATE.store(0, Ordering::Release);
     #[cfg(target_os = "ios")]
     RENDERER_SWITCH.reset();
+    #[cfg(target_os = "ios")]
+    TERRAIN_PREVIEW.reset();
     #[cfg(target_os = "ios")]
     clear_touches();
     0
@@ -154,6 +158,53 @@ pub extern "C" fn horizon_ios_preview_game_renderer() -> i32 {
         0
     } else {
         RENDERER_SWITCH.reset();
+        -2
+    }
+}
+
+/// Native read-only terrain preview: 0=not ready, 1=meshed/ready,
+/// 2=requested, 3=building shared-device renderer, 4=shown, 5=error,
+/// 6=returning to title. Never a game session.
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_terrain_preview_state() -> u32 {
+    #[cfg(target_os = "ios")]
+    {
+        return TERRAIN_PREVIEW.state();
+    }
+    #[cfg(not(target_os = "ios"))]
+    0
+}
+
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_preview_selected_terrain() -> i32 {
+    if !app::renderer_events_available() {
+        return -2;
+    }
+    if !TERRAIN_PREVIEW.request() {
+        return -1;
+    }
+    if app::request_terrain_preview_event() {
+        0
+    } else {
+        TERRAIN_PREVIEW.ready();
+        -2
+    }
+}
+
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_leave_terrain_preview() -> i32 {
+    if !app::renderer_events_available() {
+        return -2;
+    }
+    if !TERRAIN_PREVIEW.exit_requested() {
+        return -1;
+    }
+    if app::request_terrain_exit_event() {
+        0
+    } else {
+        let _ = TERRAIN_PREVIEW.cancel_exit();
         -2
     }
 }
@@ -449,3 +500,5 @@ mod touch_input;
 pub use touch_input::{TouchInput, TouchPhase};
 mod renderer_switch;
 pub use renderer_switch::{RendererSwitch, describe_renderer_panic};
+mod terrain_preview;
+pub use terrain_preview::TerrainPreviewSwitch;

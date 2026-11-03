@@ -570,7 +570,9 @@ pub fn loading_renderer(
     previous: Option<&Renderer>,
     api: crate::graphics::GraphicsApi,
 ) -> Result<Renderer> {
-    loading_renderer_with_sprites(window, offscreen, atlas, panorama, previous, api, None)
+    loading_renderer_with_sprites(
+        window, offscreen, atlas, panorama, previous, api, None, None,
+    )
 }
 
 /// Native preview renderer with the same prepared block sprite arrays the
@@ -593,6 +595,27 @@ pub fn loading_terrain_renderer(
         previous,
         api,
         Some(terrain),
+        None,
+    )
+}
+
+/// Prepare a textured replacement while the old title renderer continues to
+/// present frames on the same device. No Winit surface is borrowed or moved
+/// across threads; UIKit transfers the surface after the worker finishes.
+pub fn loading_terrain_renderer_with_context(
+    window: Arc<Window>,
+    terrain: &crate::assets::RenderAssets,
+    context: crate::gfx::ReplacementContext,
+) -> Result<Renderer> {
+    loading_renderer_with_sprites(
+        window,
+        true,
+        None,
+        None,
+        None,
+        crate::graphics::GraphicsApi::Auto,
+        Some(terrain),
+        Some(context),
     )
 }
 
@@ -604,6 +627,7 @@ fn loading_renderer_with_sprites(
     previous: Option<&Renderer>,
     api: crate::graphics::GraphicsApi,
     terrain: Option<&crate::assets::RenderAssets>,
+    background: Option<crate::gfx::ReplacementContext>,
 ) -> Result<Renderer> {
     static FORCEFIELD: [u8; 4] = [0; 4];
     static EMPTY_HUD: [u8; 4] = [0, 0, 0, 255];
@@ -645,24 +669,45 @@ fn loading_renderer_with_sprites(
                 &[][..] as &[crate::sprites::SpriteAnimation],
             ),
         };
-    let mut renderer = pollster::block_on(Renderer::new(
-        window,
-        offscreen,
-        sprite_pixels,
-        sprite_size,
-        sprite_minimum_size,
-        layers,
-        sprite_mips,
-        animations,
-        (pixels, width, height),
-        (glint_pixels, glint_width, glint_height),
-        (glint_pixels, glint_width, glint_height),
-        (&FORCEFIELD[..], 1),
-        panorama,
-        None,
-        previous,
-        api,
-    ))?;
+    let mut renderer = if let Some(context) = background {
+        pollster::block_on(Renderer::new_with_context(
+            window,
+            offscreen,
+            sprite_pixels,
+            sprite_size,
+            sprite_minimum_size,
+            layers,
+            sprite_mips,
+            animations,
+            (pixels, width, height),
+            (glint_pixels, glint_width, glint_height),
+            (glint_pixels, glint_width, glint_height),
+            (&FORCEFIELD[..], 1),
+            panorama,
+            None,
+            Some(context),
+            api,
+        ))?
+    } else {
+        pollster::block_on(Renderer::new(
+            window,
+            offscreen,
+            sprite_pixels,
+            sprite_size,
+            sprite_minimum_size,
+            layers,
+            sprite_mips,
+            animations,
+            (pixels, width, height),
+            (glint_pixels, glint_width, glint_height),
+            (glint_pixels, glint_width, glint_height),
+            (&FORCEFIELD[..], 1),
+            panorama,
+            None,
+            previous,
+            api,
+        ))?
+    };
     if let Some(atlas) = atlas {
         renderer.hud.sprite_animations = atlas
             .sprite_animations

@@ -85,13 +85,27 @@ resources, the same background worker now:
    of saved neighbours. The CPU vertices stay on the Winit/UI thread only
    until a new selection, navigation, or app suspension clears them.
 
-`loading_terrain_renderer` and `terrain_preview_frame` now provide the correct
-prepared sprite arrays and safe saved-player camera for the future GPU stage;
-`upload_prepared_terrain` provides the same `Renderer::upload` bridge as the
-native game. **These GPU hooks are not yet activated by iOS**: the current
-boot renderer has only a placeholder block sprite and must not be sent full
-terrain vertices. No textured terrain is displayed, world simulation is not
-started and no save files are modified. This keeps native-Rust ownership of
+The **Preview saved terrain** action in SwiftUI now makes this an explicit
+opt-in GPU preview instead of only a CPU diagnostic. After the saved world
+preflight finishes, use Diagnostics to start the preview. The background worker
+builds a second native Horizon renderer with the full block sprite atlas,
+**sharing the existing title renderer's GPU device**; UIKit/Winit continues to
+draw the title until preparation finishes. UIKit then transfers the one live
+surface to the textured renderer and uploads the prepared section meshes with
+`Renderer::upload`. `terrain_preview_frame` points its camera at the saved
+player position. The preview automatically hides the diagnostics overlay so
+the player can see the scene; **Diagnostics → Back to title** restores the
+original renderer. If GPU initialization, upload or drawing fails, the iOS
+shell attempts to restore the title renderer and exposes a retry action.
+Backgrounding drops the GPU view and invalidates in-flight preparation. There
+is no second UIApplicationMain, no automatic Mac build and no gameplay loop.
+
+This is still a **static, read-only render of one saved column**. Light and
+face occlusion for unsaved neighbours, custom biome packs, missing chunks,
+movement, simulation, inventory and saving still require the world streamer
+and game runtime. Neither the preview nor the title joins a game session or
+changes `level.dat`; no session lock is acquired. Real-device/Simulator GPU
+behavior is not guaranteed until the next explicit macOS verification. This keeps native-Rust ownership of
 the game's data, as seen in the separate
 [heyskylo/horizon-ios](https://github.com/heyskylo/horizon-ios) experiment,
 without copying its app entry point or implementation.
@@ -100,7 +114,9 @@ are based on the bundled vanilla biome registry; custom-biome mappings must
 be integrated before actual gameplay. This does **not** generate missing
 chunks, take a session lock, modify `level.dat` or start world simulation.
 Other dimensions and worlds without a saved position await a different
-initial loading path. Remaining gameplay actions stay disabled.
+initial loading path. The terrain preview requires a prepared vanilla
+registry, a saved overworld chunk, a valid player camera and an active native
+title renderer. Remaining gameplay actions stay disabled.
 Use **Show game** to hide the full-screen diagnostics panel and touch the
 renderer; the small **Diagnostics** button restores the panel. Taps are
 rejected after dragging, cancellation or backgrounding. The resource-free CI

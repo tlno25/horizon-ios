@@ -25,6 +25,12 @@ void horizon_ios_enable_renderer_smoke(void);
 uint32_t horizon_ios_renderer_smoke_enabled(void);
 /* Request a single-window Winit handoff to the real Horizon boot renderer. */
 int32_t horizon_ios_preview_game_renderer(void);
+/* Read-only, GPU-textured preview of one saved chunk. Never starts gameplay.
+   0=unavailable, 1=ready, 2=requested, 3=preparing, 4=visible,
+   5=failed/retry available, 6=returning to title. */
+uint32_t horizon_ios_terrain_preview_state(void);
+int32_t horizon_ios_preview_selected_terrain(void);
+int32_t horizon_ios_leave_terrain_preview(void);
 uint32_t horizon_ios_touch_count(void);
 uint64_t horizon_ios_touch_events(void);
 /* Diagnostic SwiftUI touch pad: 0=start, 1=move, 2=end, 3=cancel.

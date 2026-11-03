@@ -12,6 +12,16 @@ class GraphicsStatusTests(unittest.TestCase):
             with self.subTest(status=status), self.assertRaises(ValueError):
                 validate({"state": 2, "error": "", "engine": 1, "player": "Player00001", "renderer_preview": status})
 
+    def test_terrain_preview_status_is_optional_and_bounded(self):
+        base = {"state": 2, "error": "", "engine": 1, "player": "Player00001"}
+        self.assertEqual(validate(base), "Metal ready")
+        for terrain in range(7):
+            with self.subTest(valid=terrain):
+                self.assertEqual(validate({**base, "terrain_preview": terrain}), "Metal ready")
+        for terrain in ("4", None, True, -1, 7, []):
+            with self.subTest(invalid=terrain), self.assertRaisesRegex(ValueError, "terrain_preview"):
+                validate({**base, "terrain_preview": terrain})
+
     def test_core_load_status_must_be_numeric_when_reported(self):
         for status in ("2", None, True, 7, -1):
             with self.subTest(status=status), self.assertRaises(ValueError):

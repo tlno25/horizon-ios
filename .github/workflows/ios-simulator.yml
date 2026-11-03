@@ -1,66 +1,36 @@
-name: Horizon iOS Build
+name: Horizon iOS Manual Build
 
 permissions:
   contents: read
 
+# macOS builders are expensive in runner minutes. Never build for every push.
 on:
-  pull_request:
-    paths:
-      - 'crates/horizon-ios/**'
-      - 'crates/horizon-core/**'
-      - 'crates/horizon-hdr/**'
-      - 'crates/horizon-client-input/**'
-      - 'crates/horizon-client-render/**'
-      - 'crates/horizon-client/**'
-      - 'packaging/ios/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'third_party/winit/**'
-      - '.github/workflows/ios-simulator.yml'
-  push:
-    branches: [ios]
-    paths:
-      - 'crates/horizon-ios/**'
-      - 'crates/horizon-core/**'
-      - 'crates/horizon-hdr/**'
-      - 'crates/horizon-client-input/**'
-      - 'crates/horizon-client-render/**'
-      - 'crates/horizon-client/**'
-      - 'packaging/ios/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'third_party/winit/**'
-      - '.github/workflows/ios-simulator.yml'
   workflow_dispatch:
     inputs:
-      build_device:
-        description: 'Build the unsigned device IPA (enabled by default)'
+      build_target:
+        description: 'Which artifact to build?'
+        type: choice
+        options:
+          - device
+          - simulator
+          - both
+        required: true
+        default: device
+      renderer_probe:
+        description: 'Run the experimental real Horizon GPU preview (Simulator only)'
         type: boolean
         required: false
-        default: true
+        default: false
+
+# Allow only one costly manual build per branch at once; no implicit cancellation
+# of a build that has already consumed macOS minutes.
+concurrency:
+  group: horizon-ios-manual-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  ffi-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: '1.95.0'
-      - name: Run Rust bridge and shared input tests
-        run: |
-          cargo test --locked -p horizon-ios
-          cargo test --locked -p horizon-client-input --lib
-          cargo test --locked --no-default-features -p horizon-client --lib resource_install::tests::
-          cargo test --locked --no-default-features -p horizon-client --lib game_startup::tests::
-      - name: Test iOS CI validators (graphics + unsigned IPA)
-        run: python3 -m unittest discover -s packaging/ios/tests -p 'test_*.py'
-      - name: Verify iOS dependency isolation
-        run: packaging/ios/tests/check_portability.sh
-      - name: Verify the Rust C ABI from C
-        run: packaging/ios/tests/run_ffi_smoke.sh
   simulator-build:
+    if: ${{ inputs.build_target == 'simulator' || inputs.build_target == 'both' }}
     # Intel macOS runners are usually available even when macOS arm64 workers
     # are capacity-constrained. Test the actual x86_64 Simulator runtime here;
     # the independent device job still cross-compiles real iPhoneOS arm64.
@@ -73,6 +43,11 @@ jobs:
         with:
           toolchain: '1.95.0'
           targets: x86_64-apple-ios
+      - name: Cache Rust dependencies and target artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: horizon-ios-macos
+          cache-on-failure: true
       - name: Build and link the iOS Simulator app (x86_64)
         run: |
           xcodebuild \
@@ -94,7 +69,7 @@ jobs:
           name: horizon-ios-simulator-app
           path: ${{ runner.temp }}/horizon-ios-artifacts/HorizonIOS-simulator-unsigned.zip
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
       - name: Launch in iPhone Simulator and capture preview
         env:
           DERIVED_DATA: ${{ runner.temp }}/HorizonDerivedData
@@ -106,7 +81,7 @@ jobs:
           name: horizon-ios-simulator-logs
           path: ${{ runner.temp }}/horizon-ios-simulator-native.log
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7
       - name: Upload preview screenshot
         if: always()
         uses: actions/upload-artifact@v4
@@ -114,11 +89,11 @@ jobs:
           name: horizon-ios-simulator-preview
           path: ${{ runner.temp }}/horizon-ios-smoke.png
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7
       - name: Probe real Horizon boot renderer in iOS Simulator (experimental)
-        # Exposing the complete Horizon GPU path can reveal unsupported iOS
-        # pipelines. Record a failure without blocking the stable IPA build.
-        continue-on-error: true
+        if: ${{ inputs.renderer_probe }}
+        # When explicitly requested, a failed Horizon frame must fail the run;
+        # the ordinary Metal probe and device IPA are unaffected.
         env:
           DERIVED_DATA: ${{ runner.temp }}/HorizonDerivedData
         run: packaging/ios/tests/simulator_renderer_smoke.sh
@@ -132,15 +107,14 @@ jobs:
             ${{ runner.temp }}/horizon-ios-boot-renderer-*.log
             ${{ runner.temp }}/horizon-ios-boot-renderer-*.png
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7
 
   device-build:
-    # On ios pushes always produce the IPA; manual runs can skip it if desired.
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build_device == true)
+    if: ${{ inputs.build_target == 'device' || inputs.build_target == 'both' }}
     # Cross-compile ARM64 iPhoneOS on an Intel Mac when Apple Silicon runners
     # are capacity constrained. The app binary is still arm64 for real iPhones.
     runs-on: macos-15-intel
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust target for real iOS hardware
@@ -148,6 +122,11 @@ jobs:
         with:
           toolchain: '1.95.0'
           targets: aarch64-apple-ios
+      - name: Cache Rust dependencies and target artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: horizon-ios-macos
+          cache-on-failure: true
       - name: Build unsigned iPhone/iPad app
         run: |
           xcodebuild \
@@ -171,4 +150,4 @@ jobs:
           name: horizon-ios-unsigned-ipa
           path: ${{ runner.temp }}/horizon-ios-artifacts/horizon-ios-unsigned.ipa
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7

@@ -1,0 +1,69 @@
+name: Horizon iOS Quick Checks
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [ios]
+    paths:
+      - 'crates/horizon-ios/**'
+      - 'crates/horizon-core/**'
+      - 'crates/horizon-hdr/**'
+      - 'crates/horizon-client-input/**'
+      - 'crates/horizon-client-render/**'
+      - 'crates/horizon-client/**'
+      - 'packaging/ios/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'third_party/winit/**'
+      - '.github/workflows/ios-simulator.yml'
+      - '.github/workflows/ios-quick-checks.yml'
+  push:
+    branches: [ios]
+    paths:
+      - 'crates/horizon-ios/**'
+      - 'crates/horizon-core/**'
+      - 'crates/horizon-hdr/**'
+      - 'crates/horizon-client-input/**'
+      - 'crates/horizon-client-render/**'
+      - 'crates/horizon-client/**'
+      - 'packaging/ios/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'third_party/winit/**'
+      - '.github/workflows/ios-simulator.yml'
+      - '.github/workflows/ios-quick-checks.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: horizon-ios-quick-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ffi-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - name: Cache Linux Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: horizon-ios-linux
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - name: Run Rust bridge and shared input tests
+        run: |
+          cargo test --locked -p horizon-ios
+          cargo test --locked -p horizon-client-input --lib
+          cargo test --locked -p horizon-client-render --lib indirect_execution
+          cargo test --locked --no-default-features -p horizon-client --lib resource_install::tests::
+          cargo test --locked --no-default-features -p horizon-client --lib game_startup::tests::
+      - name: Test iOS CI validators (graphics + unsigned IPA)
+        run: python3 -m unittest discover -s packaging/ios/tests -p 'test_*.py'
+      - name: Verify iOS dependency isolation
+        run: packaging/ios/tests/check_portability.sh
+      - name: Verify the Rust C ABI from C
+        run: packaging/ios/tests/run_ffi_smoke.sh

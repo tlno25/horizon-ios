@@ -207,47 +207,49 @@ world/renderer and lifecycle events without creating a second UIKit event
 loop. Exercise rotation and background recovery on an actual iPhone/iPad.
 The Android crate and the `android` branch remain untouched.
 
-### Continuous integration
+### CI cost controls and manual builds
 
-The GitHub workflow `ios-simulator.yml` builds the **x86_64 iOS Simulator**
-app on `macos-15-intel` (avoiding the GitHub-hosted Apple Silicon runner queue),
-uploads the Simulator `.app.zip`, then launches `HorizonIOS` in an Intel-hosted
-iPhone simulator and uploads a screenshot. The Xcode Rust build phase also
-supports arm64 Simulator on an Apple Silicon Mac; both targets link their own
-architecture-matched static library. This Simulator binary is **not** an IPA
-for an iPhone: real devices still use `aarch64-apple-ios`. The simulator also performs a
-**separate experimental boot-renderer smoke test**: a fresh launch with the
-`HORIZON_IOS_RENDERER_SMOKE=1` environment flag (forwarded using `SIMCTL_CHILD_`)
-**and** a one-shot `Library/Caches/horizon-ios-renderer-smoke.flag` marker
-created inside that Simulator's private app container. Swift consumes the
-marker during UIKit mount and explicitly enables the Rust diagnostic, which
-is more reliable when `simctl` does not propagate environment variables.
-The app writes `smoke_mode=1` into its status JSON to acknowledge this opt-in;
-`verify_renderer_preview.py` refuses success if the flag was not observed.
-The diagnostic additionally writes `renderer_stage` synchronously before
-potentially blocking operations (boot HUD creation and WGPU initialization).
-A small iOS logger forwards the shared `gfx::startup_step` milestones such as
-adapter selection, surface configuration, pipeline creation, and first-frame
-stages. This distinguishes a slow GPU pipeline compilation from a missing
-handoff; even if UIKit stalls, the latest stage remains in the cached JSON.
-The app first presents the Metal probe frame, then transfers that same Winit window
-to the shared Horizon GPU boot renderer. This needs **no Minecraft assets**
-and never starts gameplay. It records `horizon-ios-boot-renderer-status.json`
-and reports whether `renderer_preview=3` (a real Horizon frame was presented).
-A failed preview is reported as a non-blocking experimental step, so it does
-not mask the separately verified normal launch or block IPA delivery. The
-GitHub job can be green even if that experimental step concludes with an
-error; check the step outcome and its JSON status before claiming a Horizon
-renderer frame was presented.
+There are now two independent iOS workflows to avoid consuming macOS runner
+minutes after every small change:
 
-Separately the workflow builds and uploads `horizon-ios-unsigned.ipa` for real
-iOS devices on `ios` pushes and by default on manual runs. The device build
-uses `macos-15-intel` to cross-compile an arm64 iPhoneOS binary on an Intel
-Mac, reducing contention with the Apple Silicon Simulator runners. An Intel
-build host does **not** make this an Intel iOS binary: the package validator
-checks the device executable is arm64.
-The screenshot and a successful `simctl launch` are **smoke evidence**;
-CI also checks the native GPU state file and fails if Metal does not initialize
-and present. Neither proves correct pixels, background recovery, or iPad behavior. Inspect
-the screenshot and manually exercise rotation/background transitions before
-accepting the vertical slice.
+- **Horizon iOS Quick Checks** (`ios-quick-checks.yml`) runs the Rust bridge,
+  portability, regression, C ABI and Python packaging checks on **Ubuntu**
+  for relevant pull requests and `ios` pushes. It cancels an older in-progress
+  quick check when newer changes arrive on the same PR/branch. A single Rust
+  dependency cache is warmed on trusted `ios` pushes or manual runs.
+- **Horizon iOS Manual Build** (`ios-simulator.yml`) runs **only** from the
+  GitHub Actions **Run workflow** button, with a branch and target selected.
+  Its `build_target` input is `device` (default), `simulator`, or `both`.
+  Select `device` to produce the artifact `horizon-ios-unsigned-ipa` containing
+  `horizon-ios-unsigned.ipa` for a real arm64 iPhone or iPad. Select
+  `simulator` to build, launch, screenshot and check the Metal probe in the
+  x86_64 Simulator. The `renderer_probe` checkbox additionally attempts the
+  experimental **real Horizon GPU boot renderer** (Simulator only). When
+  requested, failure **fails the job** and captures diagnostic status/logs.
+  A successful normal Metal probe does **not** imply that real Horizon's GPU
+  pipelines work. Neither diagnostic runs Minecraft gameplay.
+
+The macOS build uses `macos-15-intel` for both targets, cross-compiling arm64
+for device. Caches retain compiled Rust dependencies per job/architecture;
+GitHub's Actions cache quota and evictions still apply. The Xcode **Debug**
+configuration now uses the repository's Cargo `fast` profile (release-derived,
+without thin LTO and with parallel code generation) and links its `fast`
+static library. Xcode **Release** still uses the fully optimized Cargo
+`release` profile. Build success and total runner time should be measured
+on the next macOS run; cached builds are not guaranteed to be faster.
+
+Both macOS jobs have explicit timeouts and upload artifacts for **7 days**.
+Do not dispatch `both` unless both packages are needed. Manual builds in the
+same branch are serialized instead of cancelling one that already spent runner
+minutes. The separate **Horizon iOS Engine Compatibility** macOS workflow
+remains manual-only.
+
+Simulator diagnostics use a one-shot
+`Library/Caches/horizon-ios-renderer-smoke.flag` inside the simulator's app
+container and the `SIMCTL_CHILD_HORIZON_IOS_RENDERER_SMOKE=1` environment
+variable to opt in. The app records `smoke_mode`, `renderer_stage`, errors and
+`renderer_preview` in JSON. `renderer_preview=3` proves a real Horizon boot
+frame was presented; `4` indicates a failed attempt. See the uploaded
+`horizon-ios-boot-renderer-status` artifact for the captured evidence. The
+normal screenshot and successful `simctl launch` alone do **not** prove
+correct game pixels, multitouch gameplay, background recovery or iPad support.

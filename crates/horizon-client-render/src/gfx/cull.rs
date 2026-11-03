@@ -178,6 +178,14 @@ const RESULTS_USAGE: wgpu::BufferUsages =
 const READBACK_USAGE: wgpu::BufferUsages =
     wgpu::BufferUsages::MAP_READ.union(wgpu::BufferUsages::COPY_DST);
 
+fn supports_gpu_culling(flags: wgpu::DownlevelFlags) -> bool {
+    flags.contains(
+        wgpu::DownlevelFlags::VERTEX_STORAGE
+            | wgpu::DownlevelFlags::FRAGMENT_WRITABLE_STORAGE
+            | wgpu::DownlevelFlags::INDIRECT_EXECUTION,
+    )
+}
+
 impl Cull {
     /// The device feature culling needs, where the adapter has it.
     pub fn features(adapter: &wgpu::Adapter) -> wgpu::Features {
@@ -202,10 +210,7 @@ impl Cull {
         (device
             .features()
             .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
-            && adapter.get_downlevel_capabilities().flags.contains(
-                wgpu::DownlevelFlags::VERTEX_STORAGE
-                    | wgpu::DownlevelFlags::FRAGMENT_WRITABLE_STORAGE,
-            ))
+            && supports_gpu_culling(adapter.get_downlevel_capabilities().flags))
         .then_some(depth_test)
     }
     /// `color` is the world pass's colour format.
@@ -671,6 +676,17 @@ mod tests {
         assert_eq!(results.clone().collect::<Vec<_>>(), words);
         assert_eq!(results.collect::<Vec<_>>(), words);
         assert_eq!(readback_words(&[]).len(), 0);
+    }
+
+    #[test]
+    fn gpu_culling_requires_indirect_execution() {
+        let supported = wgpu::DownlevelFlags::VERTEX_STORAGE
+            | wgpu::DownlevelFlags::FRAGMENT_WRITABLE_STORAGE
+            | wgpu::DownlevelFlags::INDIRECT_EXECUTION;
+        assert!(supports_gpu_culling(supported));
+        assert!(!supports_gpu_culling(
+            supported - wgpu::DownlevelFlags::INDIRECT_EXECUTION
+        ));
     }
 
     #[test]

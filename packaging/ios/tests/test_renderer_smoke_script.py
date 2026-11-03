@@ -11,6 +11,11 @@ SCRIPT = pathlib.Path(__file__).parent / "simulator_renderer_smoke.sh"
 MOCK_XCRUN = '''#!/usr/bin/env python3
 import json,os,pathlib,sys
 args=sys.argv[1:]
+if os.environ.get('MOCK_RECORD_COMMANDS'):
+    with open(os.environ['MOCK_RECORD_COMMANDS'], 'a', encoding='utf-8') as record:
+        record.write(' '.join(args) + '\\n')
+if os.environ.get('HORIZON_IOS_SIMULATOR_REUSE_BOOT') == '1' and args[:2] in (['simctl','boot'], ['simctl','bootstatus']):
+    sys.exit('No simulator boot/bootstatus call allowed on reused boot')
 runner=pathlib.Path(os.environ['RUNNER_TEMP'])
 app_data=runner/'simulator-container'
 status=app_data/'Library/Caches/horizon-ios-graphics.json'
@@ -40,7 +45,7 @@ else:
 
 
 class RendererSmokeScriptTests(unittest.TestCase):
-    def run_mock(self, state, ack=1):
+    def run_mock(self, state, ack=1, reuse_boot=False):
         with tempfile.TemporaryDirectory() as work:
             root = pathlib.Path(work)
             app = root / 'derived/Build/Products/Debug-iphonesimulator/HorizonIOS.app'
@@ -54,7 +59,10 @@ class RendererSmokeScriptTests(unittest.TestCase):
             status.write_text(json.dumps({'renderer_preview':3}))
             env = dict(os.environ, PATH=str(mock.parent) + os.pathsep + os.environ['PATH'],
                        DERIVED_DATA=str(root/'derived'), RUNNER_TEMP=str(root),
-                       HORIZON_IOS_SIMULATOR_UDID='fake-iphone', MOCK_PREVIEW=str(state), MOCK_ACK=str(ack))
+                       HORIZON_IOS_SIMULATOR_UDID='fake-iphone', MOCK_PREVIEW=str(state), MOCK_ACK=str(ack),
+                       MOCK_RECORD_COMMANDS=str(root/'commands.log'))
+            if reuse_boot:
+                env['HORIZON_IOS_SIMULATOR_REUSE_BOOT'] = '1'
             process = subprocess.run(['bash', str(SCRIPT)], env=env,
                                      capture_output=True, text=True, timeout=10)
             diagnostic = root/'horizon-ios-boot-renderer-status.json'
@@ -62,7 +70,13 @@ class RendererSmokeScriptTests(unittest.TestCase):
             self.assertEqual(json.loads(diagnostic.read_text())['renderer_preview'], state)
             self.assertTrue((root/'horizon-ios-boot-renderer-screenshot.png').exists())
             self.assertIn('Mock Horizon', (root/'horizon-ios-boot-renderer-native.log').read_text())
+            if reuse_boot:
+                self.assertNotIn('simctl boot', (root/'commands.log').read_text())
             return process
+
+    def test_reuse_boot_skips_simulator_boot_and_bootstatus(self):
+        result = self.run_mock(3, reuse_boot=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_success_checks_a_real_renderer_frame(self):
         result = self.run_mock(3)

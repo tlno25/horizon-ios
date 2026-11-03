@@ -35,7 +35,7 @@ jobs:
     # are capacity-constrained. Test the actual x86_64 Simulator runtime here;
     # the independent device job still cross-compiles real iPhoneOS arm64.
     runs-on: macos-15-intel
-    timeout-minutes: 45
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust target
@@ -71,8 +71,11 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Launch in iPhone Simulator and capture preview
+        timeout-minutes: 6
         env:
           DERIVED_DATA: ${{ runner.temp }}/HorizonDerivedData
+          # Keep the same booted simulator only when a second probe is requested.
+          HORIZON_IOS_SIMULATOR_KEEP_BOOTED: ${{ inputs.renderer_probe && '1' || '0' }}
         run: packaging/ios/tests/simulator_smoke.sh
       - name: Upload iOS native diagnostics
         if: always()
@@ -92,10 +95,12 @@ jobs:
           retention-days: 7
       - name: Probe real Horizon boot renderer in iOS Simulator (experimental)
         if: ${{ inputs.renderer_probe }}
-        # When explicitly requested, a failed Horizon frame must fail the run;
-        # the ordinary Metal probe and device IPA are unaffected.
+        # If simctl bootstatus or GPU startup stalls, fail only this probe
+        # after five minutes rather than consuming the rest of a macOS job.
+        timeout-minutes: 5
         env:
           DERIVED_DATA: ${{ runner.temp }}/HorizonDerivedData
+          HORIZON_IOS_SIMULATOR_REUSE_BOOT: "1"
         run: packaging/ios/tests/simulator_renderer_smoke.sh
       - name: Upload Horizon boot-renderer diagnostic status
         if: always()

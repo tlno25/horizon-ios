@@ -36,6 +36,18 @@ class CIWorkflowsDoNotRunMacOSAutomatically(unittest.TestCase):
         self.assertIn('if: ${{ inputs.renderer_probe }}', text)
         self.assertIn('cancel-in-progress: false', text)
 
+    def test_gpu_probe_has_its_own_short_timeout_and_reuses_simulator(self):
+        text = (WORKFLOWS / 'ios-simulator.yml').read_text()
+        match = re.search(
+            r'(?m)^      - name: Probe real Horizon boot renderer.*?'
+            r'(?=^      - name: |^  device-build:)', text, re.S | re.M
+        )
+        self.assertIsNotNone(match)
+        step = match.group()
+        self.assertRegex(step, r'(?m)^        timeout-minutes: [1-7]\s*$')
+        self.assertIn('HORIZON_IOS_SIMULATOR_REUSE_BOOT: "1"', step)
+        self.assertIn("HORIZON_IOS_SIMULATOR_KEEP_BOOTED: ${{ inputs.renderer_probe && '1' || '0' }}", text)
+
     def test_readme_describes_only_manual_macos_builds(self):
         text = (ROOT / 'packaging/ios/README.md').read_text()
         self.assertNotIn('workflow also runs automatically', text)

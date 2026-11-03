@@ -24,7 +24,12 @@ print(phones[0]["udid"])
 ')"
 fi
 
-trap 'xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true' EXIT
+# The opt-in GPU probe runs immediately afterwards on the same Simulator.
+# Shutting down and booting again can stall simctl bootstatus for tens of
+# minutes on hosted macOS, wasting the runner budget.
+if [[ "${HORIZON_IOS_SIMULATOR_KEEP_BOOTED:-0}" != "1" ]]; then
+    trap 'xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true' EXIT
+fi
 xcrun simctl boot "$udid" || true
 xcrun simctl bootstatus "$udid" -b
 xcrun simctl install "$udid" "$app"

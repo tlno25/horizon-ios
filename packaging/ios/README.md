@@ -250,6 +250,14 @@ static library. Xcode **Release** still uses the fully optimized Cargo
 `release` profile. Build success and total runner time should be measured
 on the next macOS run; cached builds are not guaranteed to be faster.
 
+The Simulator job now reuses the already booted iPhone simulator for the
+experimental GPU probe instead of shutting it down and booting it again. The
+regular Metal test has a 6-minute step limit, the optional GPU probe has a
+separate 5-minute limit, and the overall Simulator job has a 35-minute cap.
+This prevents a stalled `simctl bootstatus` from consuming the previous
+45-minute job timeout. Experimental probe failures remain visible as failures;
+no green build is inferred from the ordinary Metal screenshot.
+
 Both macOS jobs have explicit timeouts and upload artifacts for **7 days**.
 Do not dispatch `both` unless both packages are needed. Manual builds in the
 same branch are serialized instead of cancelling one that already spent runner

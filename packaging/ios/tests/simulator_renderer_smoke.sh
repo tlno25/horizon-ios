@@ -32,8 +32,12 @@ capture_diagnostics() {
     xcrun simctl shutdown "$audid" >/dev/null 2>&1 || true
 }
 trap capture_diagnostics EXIT
-xcrun simctl boot "$audid" || true
-xcrun simctl bootstatus "$audid" -b
+if [[ "${HORIZON_IOS_SIMULATOR_REUSE_BOOT:-0}" != "1" ]]; then
+    xcrun simctl boot "$audid" || true
+    xcrun simctl bootstatus "$audid" -b
+else
+    echo 'Reusing the Simulator from the successful Metal probe (no second boot)'
+fi
 xcrun simctl install "$audid" "$app"
 app_data="$(xcrun simctl get_app_container "$audid" com.example.horizonios data)"
 source_status="$app_data/Library/Caches/horizon-ios-graphics.json"

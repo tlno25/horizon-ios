@@ -52,6 +52,7 @@ jobs:
         run: |
           cargo test --locked -p horizon-ios
           cargo test --locked -p horizon-client-input --lib
+          cargo test --locked -p horizon-client-render --lib indirect_execution
           cargo test --locked --no-default-features -p horizon-client --lib resource_install::tests::
           cargo test --locked --no-default-features -p horizon-client --lib game_startup::tests::
       - name: Test iOS CI validators (graphics + unsigned IPA)

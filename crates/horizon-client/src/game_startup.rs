@@ -24,6 +24,9 @@ pub struct WorldInspection {
     /// Read-only first chunk probe; absent when there is no saved position or
     /// when a non-overworld dimension needs its own storage mapping.
     pub initial_chunk_disk: Option<InitialChunkDiskState>,
+    /// Optional read-only resident conversion using the prepared block and
+    /// biome tables. The actual decoded column is not retained or rendered.
+    pub resident_chunk_preview: Option<ResidentChunkPreview>,
 }
 
 /// Preflight of a single saved Anvil chunk. A saved NBT record does not mean
@@ -36,6 +39,76 @@ pub enum InitialChunkDiskState {
         sections: usize,
         block_below_player: Option<String>,
     },
+}
+
+/// One native, fully decoded column was constructed in memory; no chunk is
+/// retained in a running World or sent to the GPU at this stage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResidentChunkPreview {
+    pub chunk: [i32; 2],
+    pub resident_sections: usize,
+    pub block_state_id: u32,
+    pub biome_id: u16,
+    pub heap_bytes: usize,
+}
+
+/// Construct a resident `Chunk` with the same decoder used for gameplay,
+/// then return only bounded diagnostic metadata. The Anvil path has already
+/// been verified by `inspect_saved_initial_chunk` below, preventing linked
+/// region and external payload files from being silently followed.
+pub fn decode_saved_initial_chunk_preview(
+    world: &Path,
+    chunk: [i32; 2],
+    player_position: [f64; 3],
+    registry: &horizon_world::registry::BlockRegistry,
+    biomes: &crate::biome::Biomes,
+) -> Result<Option<ResidentChunkPreview>> {
+    use horizon_core::position::ChunkPos;
+    use horizon_world::{nbt::Limits, region::RegionFile};
+
+    if staged_player_chunk(Some(player_position)) != Some(chunk) {
+        return Err("Saved player position does not belong to the requested chunk".into());
+    }
+    if matches!(
+        inspect_saved_initial_chunk(world, chunk, Some(player_position))?,
+        InitialChunkDiskState::Missing
+    ) {
+        return Ok(None);
+    }
+    let [cx, cz] = chunk;
+    let file = world
+        .join("region")
+        .join(format!("r.{}.{}.mca", cx >> 5, cz >> 5));
+    let mut region = RegionFile::open(file)?;
+    let record = region
+        .read(ChunkPos::new(cx, cz))?
+        .ok_or("Saved chunk disappeared")?;
+    let tag = record.nbt(Limits::saved())?;
+    let column = crate::save::decode_with(
+        &tag,
+        registry,
+        biomes,
+        None,
+        crate::chunk::ColumnLayout::VANILLA,
+    )
+    .ok_or("Horizon could not decode a full saved chunk with the loaded registry")?;
+    if [column.x, column.z] != chunk {
+        return Err("Resident chunk coordinates do not match the requested chunk".into());
+    }
+    let [x, y, z] = player_position;
+    let feet_y = y.floor() as i32 - 1;
+    if !(column.min_y()..column.max_y()).contains(&feet_y) {
+        return Err("Saved feet are outside the resident column's vertical range".into());
+    }
+    let x = x.floor() as i32;
+    let z = z.floor() as i32;
+    Ok(Some(ResidentChunkPreview {
+        chunk,
+        resident_sections: column.sections.len(),
+        block_state_id: column.block(x, feet_y, z).0,
+        biome_id: column.biome(x, feet_y, z),
+        heap_bytes: column.heap_bytes(),
+    }))
 }
 
 /// Read the first existing chunk using the game's read-only Anvil decoder.
@@ -211,7 +284,36 @@ pub fn inspect_existing_world(saves: &Path, folder: &str) -> Result<WorldInspect
         saved_rotation,
         initial_chunk,
         initial_chunk_disk,
+        resident_chunk_preview: None,
     })
+}
+
+/// Extend a verified read-only world preflight with the gameplay decoder's
+/// native internal block/biome IDs. This reads only the initial saved column;
+/// other dimensions and missing chunks are intentionally left uninitialized.
+pub fn inspect_existing_world_with_registry(
+    saves: &Path,
+    folder: &str,
+    registry: &horizon_world::registry::BlockRegistry,
+    biomes: &crate::biome::Biomes,
+) -> Result<WorldInspection> {
+    let mut world = inspect_existing_world(saves, folder)?;
+    if world.dimension == "minecraft:overworld"
+        && matches!(
+            world.initial_chunk_disk,
+            Some(InitialChunkDiskState::Saved { .. })
+        )
+        && let (Some(chunk), Some(position)) = (world.initial_chunk, world.saved_position)
+    {
+        world.resident_chunk_preview = decode_saved_initial_chunk_preview(
+            &saves.join(folder),
+            chunk,
+            position,
+            registry,
+            biomes,
+        )?;
+    }
+    Ok(world)
 }
 
 /// Load the pinned block registry, block facts and vanilla block tags.
@@ -409,6 +511,7 @@ mod tests {
                     ("xPos", Tag::Int(8)),
                     ("zPos", Tag::Int(-5)),
                     ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+                    ("Status", Tag::String("minecraft:full".into())),
                     (
                         "sections",
                         Tag::List(vec![Tag::compound([
@@ -421,6 +524,13 @@ mod tests {
                                         "id",
                                         Tag::String("minecraft:stone".into()),
                                     )])]),
+                                )]),
+                            ),
+                            (
+                                "biomes",
+                                Tag::compound([(
+                                    "palette",
+                                    Tag::List(vec![Tag::String("minecraft:plains".into())]),
                                 )]),
                             ),
                         ])]),
@@ -437,6 +547,57 @@ mod tests {
             region.write(chunk, &record).unwrap();
         }
         file
+    }
+
+    /// Minimal public test resources; no Mojang binaries or private packs.
+    fn synthetic_native_tables(
+        root: &Path,
+    ) -> (horizon_world::registry::BlockRegistry, crate::biome::Biomes) {
+        use horizon_world::nbt::Tag;
+        let resource_root = root.join("resource-fixture");
+        for name in ["grass", "foliage", "dry_foliage"] {
+            let file = resource_root.join(format!("assets/minecraft/textures/colormap/{name}.png"));
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            let mut output = Vec::new();
+            {
+                let mut encoder = png::Encoder::new(&mut output, 1, 1);
+                encoder.set_color(png::ColorType::Rgb);
+                encoder.set_depth(png::BitDepth::Eight);
+                let mut png = encoder.write_header().unwrap();
+                png.write_image_data(&[60, 120, 80]).unwrap();
+            }
+            fs::write(file, output).unwrap();
+        }
+        let biome_dir = resource_root.join("data/minecraft/worldgen/biome");
+        fs::create_dir_all(&biome_dir).unwrap();
+        for biome in ["desert", "plains"] {
+            fs::write(
+                biome_dir.join(format!("{biome}.json")),
+                r#"{"temperature":0.8,"downfall":0.4,"has_precipitation":true}"#,
+            )
+            .unwrap();
+        }
+        let biomes = crate::biome::Biomes::load(&resource_root).unwrap();
+        assert_eq!(biomes.id("minecraft:plains"), 1);
+        let registry = horizon_world::registry::BlockRegistry::from_nbt(&Tag::compound([
+            ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+            (
+                "states",
+                Tag::List(vec![
+                    Tag::compound([("id", Tag::String("minecraft:air".into()))]),
+                    Tag::compound([("id", Tag::String("minecraft:stone".into()))]),
+                ]),
+            ),
+            (
+                "defaults",
+                Tag::compound([
+                    ("minecraft:air", Tag::Int(0)),
+                    ("minecraft:stone", Tag::Int(1)),
+                ]),
+            ),
+        ]))
+        .unwrap();
+        (registry, biomes)
     }
 
     #[test]
@@ -523,6 +684,22 @@ mod tests {
         );
         assert_eq!(original, fs::read(&source).unwrap());
         assert_eq!(original_region, fs::read(&region_path).unwrap());
+        let (registry, biomes) = synthetic_native_tables(&root);
+        let preview =
+            inspect_existing_world_with_registry(&saves, "Test", &registry, &biomes).unwrap();
+        assert_eq!(
+            preview
+                .resident_chunk_preview
+                .as_ref()
+                .map(|c| c.block_state_id),
+            Some(1)
+        );
+        assert_eq!(
+            preview.resident_chunk_preview.as_ref().map(|c| c.biome_id),
+            Some(1)
+        );
+        assert_eq!(original, fs::read(&source).unwrap());
+        assert_eq!(original_region, fs::read(&region_path).unwrap());
         assert!(!world.join("session.lock").exists());
         #[cfg(unix)]
         {
@@ -566,6 +743,47 @@ mod tests {
         );
         assert_eq!(fs::read(&file).unwrap(), original);
         assert!(!root.join("session.lock").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ios_resident_preview_uses_shared_block_ids_and_biomes_without_writing() {
+        // Build a tiny public-domain registry and biome table entirely in a
+        // temporary directory; no private game resource files are involved.
+        let root =
+            std::env::temp_dir().join(format!("horizon-ios-resident-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let region = write_stone_region(&root);
+        let (registry, biomes) = synthetic_native_tables(&root);
+        let original = fs::read(&region).unwrap();
+        let result = decode_saved_initial_chunk_preview(
+            &root,
+            [8, -5],
+            [128.5, 72.0, -64.25],
+            &registry,
+            &biomes,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(result.block_state_id, 1);
+        assert_eq!(result.biome_id, 1);
+        assert_eq!(result.chunk, [8, -5]);
+        assert_eq!(result.resident_sections, 24);
+        // Uniform sections can be shared without allocating any heap bytes.
+        assert!(result.heap_bytes < 2 * 1024 * 1024);
+        assert_eq!(fs::read(&region).unwrap(), original);
+        assert!(!root.join("session.lock").exists());
+        assert!(
+            decode_saved_initial_chunk_preview(
+                &root,
+                [9, -5],
+                [144.0, 72.0, -64.25],
+                &registry,
+                &biomes
+            )
+            .unwrap()
+            .is_none()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

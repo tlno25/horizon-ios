@@ -64,10 +64,16 @@ existing `ChunkData` storage decoder to validate the saved section layout and
 sample the palette-resolved block directly beneath the saved player's feet
 (if that section is present). The diagnostic also reports the saved data
 version and section count. Linked region files and linked external chunk
-payloads are rejected. This does **not** turn all blocks into resident
-registry IDs, create chunk meshes, generate missing chunks, take a session
-lock, modify `level.dat`, start world simulation, or attach terrain to the
-GPU renderer.
+payloads are rejected. After the core block registry is loaded, the optional resident preflight
+also uses Horizon's existing `save::decode_with` to build the full in-memory
+block/biome column for this one saved chunk. It reports the registry's numeric
+block-state ID below the player, numeric biome ID, resident section count and
+approximate section-memory usage. The temporary column is then dropped; no
+terrain buffers are retained, meshed, sent to Metal or modified on disk.
+Custom world biome packs are not yet resolved during this preflight, so IDs
+are based on the bundled vanilla biome registry; custom-biome mappings must
+be integrated before actual gameplay. This does **not** generate missing
+chunks, take a session lock, modify `level.dat` or start world simulation.
 Other dimensions and worlds without a saved position await a different
 initial loading path. Remaining gameplay actions stay disabled.
 Use **Show game** to hide the full-screen diagnostics panel and touch the

@@ -180,13 +180,44 @@ impl Shell {
         self.world_inspection_generation = self.world_inspection_generation.wrapping_add(1);
         let generation = self.world_inspection_generation;
         let saves = home.join("saves");
+        let prepared_resources = home
+            .join(".local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
         report_world_inspection("Inspecting selected world (read-only)...", 1);
         let worker = std::thread::Builder::new()
             .name("Horizon iOS world inspection".to_owned())
             .spawn(move || {
-                let result = std::panic::catch_unwind(|| {
-                    horizon_client::game_startup::inspect_existing_world(&saves, &folder)
-                        .map_err(|error| error.to_string())
+                let result = std::panic::catch_unwind(|| -> Result<_, String> {
+                    // Probe save compatibility first. Only construct the
+                    // resource-backed resident decoder for a saved overworld
+                    // chunk and an already loaded core registry.
+                    let basic =
+                        horizon_client::game_startup::inspect_existing_world(&saves, &folder)
+                            .map_err(|error| error.to_string())?;
+                    let native_ready = matches!(
+                        basic.initial_chunk_disk,
+                        Some(horizon_client::game_startup::InitialChunkDiskState::Saved { .. })
+                    );
+                    let Some(core) = crate::CORE_ASSETS.get().filter(|_| native_ready) else {
+                        return Ok(basic);
+                    };
+                    let biomes = if let Some(biomes) = crate::PREVIEW_BIOMES.get() {
+                        biomes
+                    } else {
+                        let loaded = horizon_client::biome::Biomes::load(&prepared_resources)
+                            .map_err(|error| error.to_string())?;
+                        let _ = crate::PREVIEW_BIOMES.set(loaded);
+                        crate::PREVIEW_BIOMES
+                            .get()
+                            .ok_or("Could not cache prepared biome tables")?
+                    };
+                    horizon_client::game_startup::inspect_existing_world_with_registry(
+                        &saves,
+                        &folder,
+                        core.registry,
+                        biomes,
+                    )
+                    .map_err(|error| error.to_string())
                 })
                 .unwrap_or_else(|payload| Err(crate::describe_renderer_panic(payload.as_ref())));
                 let _ = proxy.send_event(ShellEvent::WorldInspected { generation, result });
@@ -637,6 +668,13 @@ impl ApplicationHandler<ShellEvent> for Shell {
                                 3 => "Spectator",
                                 _ => "Survival",
                             };
+                            let resident = world.resident_chunk_preview.as_ref().map_or(
+                                " No resident block/biome ID conversion available.".to_owned(),
+                                |r| format!(
+                                    " Native resident chunk: {} sections, block state ID {}, biome ID {}, approx. {} section heap bytes. No terrain rendered.",
+                                    r.resident_sections, r.block_state_id, r.biome_id, r.heap_bytes,
+                                ),
+                            );
                             let disk_probe = match &world.initial_chunk_disk {
                                 Some(horizon_client::game_startup::InitialChunkDiskState::Saved { data_version, sections, block_below_player }) => {
                                     let sampled = block_below_player.as_deref().map_or(
@@ -658,7 +696,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
                             };
                             let initial_location = match (world.saved_position, world.initial_chunk) {
                                 (Some([x, y, z]), Some([cx, cz])) => format!(
-                                    " Saved player at ({x:.1}, {y:.1}, {z:.1}); first chunk ({cx}, {cz}).{disk_probe} Not decoded into terrain or rendered."
+                                    " Saved player at ({x:.1}, {y:.1}, {z:.1}); first chunk ({cx}, {cz}).{disk_probe}{resident}"
                                 ),
                                 _ => " No valid saved player location; spawn search will be required before gameplay.".to_owned(),
                             };

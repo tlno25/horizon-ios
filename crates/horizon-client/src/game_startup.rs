@@ -105,6 +105,8 @@ pub struct TerrainMeshingResources {
     pub tables: crate::mesher::MeshTables,
     /// Canonical block collision shapes, shared with the native gameplay world.
     pub collisions: horizon_world::block_collision::BlockCollisionRegistry<'static>,
+    /// Native block friction/jump coefficients, bound once to the prepared registry.
+    pub movement: horizon_world::movement_properties::BoundMovementProperties,
 }
 
 impl TerrainMeshingResources {
@@ -114,10 +116,19 @@ impl TerrainMeshingResources {
         let visibility = crate::models::load_visibility(root, core.registry)?;
         let tables = crate::mesher::MeshTables::new(core, &render, &facts, visibility)?;
         let collisions = crate::collisions::load(root, core.registry)?;
+        let file = horizon_world::registry::BlockTableFile::open(
+            &root.join("movement-properties.nbt"),
+            core.registry,
+        )?;
+        let movement = horizon_world::movement_properties::MovementProperties::from_table(
+            file.table("movement")?,
+        )?
+        .bind(&Default::default())?;
         Ok(Self {
             render,
             tables,
             collisions,
+            movement,
         })
     }
 }
@@ -239,6 +250,35 @@ impl ReadOnlyWorldStage {
         self.saved_columns
     }
 
+    /// Read the same per-block friction table the full motion engine uses.
+    /// Sample just below the feet so partial blocks (slabs) are included.
+    /// The game runtime additionally tracks exact supporting block positions,
+    /// which this bounded read-only preview does not yet store.
+    pub fn support_friction(
+        &self,
+        movement: &horizon_world::movement_properties::BoundMovementProperties,
+        feet: [f64; 3],
+    ) -> Result<f32> {
+        use horizon_core::position::BlockPos;
+        if !feet.iter().all(|v| v.is_finite()) {
+            return Err("Invalid preview feet position".into());
+        }
+        let below = BlockPos::new(
+            feet[0].floor() as i32,
+            (feet[1] - f64::from(horizon_world::movement_support::ON_SUPPORT_OFFSET)).floor()
+                as i32,
+            feet[2].floor() as i32,
+        );
+        let friction = movement
+            .get(self.world.block(below.x, below.y, below.z))?
+            .coefficients
+            .friction;
+        if !friction.is_finite() || !(0.0..=1.0).contains(&friction) {
+            return Err("Invalid native block friction".into());
+        }
+        Ok(friction)
+    }
+
     /// Use native voxel shapes and `resolve_world_movement`, without changing
     /// the world or saved player pose. Maximum one block of motion per event.
     /// Missing chunks remain absent and the caller additionally clamps to
@@ -249,7 +289,24 @@ impl ReadOnlyWorldStage {
         from: [f64; 3],
         target: [f64; 3],
     ) -> Result<[f64; 3]> {
+        self.resolve_preview_movement_with_step(binding, from, target, 0.0, false)
+    }
+
+    /// Native Entity step candidate selection. A maximum 0.6-block step is
+    /// permitted only for grounded movement; collision probes that sample
+    /// support or gravity continue to use the strict non-stepping variant.
+    pub fn resolve_preview_movement_with_step(
+        &self,
+        binding: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
+        from: [f64; 3],
+        target: [f64; 3],
+        max_step: f32,
+        on_ground: bool,
+    ) -> Result<[f64; 3]> {
         use horizon_core::geometry::Vec3;
+        if !max_step.is_finite() || !(0.0..=0.6).contains(&max_step) {
+            return Err("Preview step height outside safe bounds".into());
+        }
         let body = preview_player_bounds(from)?;
         if !target.iter().all(|v| v.is_finite()) {
             return Err("Preview movement target is not finite".into());
@@ -267,7 +324,7 @@ impl ReadOnlyWorldStage {
             binding,
             subject: None,
         };
-        let resolved = collisions.resolve(body, requested, 0.0, false)?;
+        let resolved = collisions.resolve(body, requested, max_step, on_ground)?;
         Ok([
             from[0] + resolved.x,
             from[1] + resolved.y,
@@ -1134,6 +1191,8 @@ mod tests {
                 Tag::List(vec![
                     Tag::compound([("id", Tag::String("minecraft:air".into()))]),
                     Tag::compound([("id", Tag::String("minecraft:stone".into()))]),
+                    Tag::compound([("id", Tag::String("minecraft:stone_slab".into()))]),
+                    Tag::compound([("id", Tag::String("minecraft:ice".into()))]),
                 ]),
             ),
             (
@@ -1141,6 +1200,8 @@ mod tests {
                 Tag::compound([
                     ("minecraft:air", Tag::Int(0)),
                     ("minecraft:stone", Tag::Int(1)),
+                    ("minecraft:stone_slab", Tag::Int(2)),
+                    ("minecraft:ice", Tag::Int(3)),
                 ]),
             ),
         ]))
@@ -1463,6 +1524,15 @@ mod tests {
                 mask | if *enabled { 1 << i } else { 0 }
             });
             let (minimum, maximum) = shape.discrete_bounds();
+            let [xs, ys, zs] = shape.sizes();
+            let mut occupancy = Vec::with_capacity(xs * ys * zs);
+            for x in 0..xs {
+                for y in 0..ys {
+                    for z in 0..zs {
+                        occupancy.push(u8::from(shape.is_full(x as i32, y as i32, z as i32)));
+                    }
+                }
+            }
             Tag::compound([
                 ("canonical", Tag::Byte(canonical)),
                 (
@@ -1495,10 +1565,7 @@ mod tests {
                             .collect(),
                     ),
                 ),
-                (
-                    "occupied",
-                    Tag::ByteArray(if canonical == 2 { vec![1] } else { vec![] }),
-                ),
+                ("occupied", Tag::ByteArray(occupancy)),
                 ("cube_axes", Tag::Byte(axes)),
                 ("cube", Tag::Byte(i8::from(shape.is_cube()))),
                 ("discrete_min", Tag::IntArray(minimum.to_vec())),
@@ -1507,6 +1574,8 @@ mod tests {
         };
         let mut state_shapes = vec![0; registry.len()];
         state_shapes[1] = 1;
+        state_shapes[2] = 2;
+        state_shapes[3] = 1;
         let data = Tag::compound([
             ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
             (
@@ -1522,6 +1591,14 @@ mod tests {
                 Tag::List(vec![
                     make_shape(VoxelShape::empty(), 1),
                     make_shape(VoxelShape::block(), 2),
+                    make_shape(
+                        VoxelShape::from_box(horizon_core::geometry::Aabb::new(
+                            horizon_core::geometry::Vec3::ZERO,
+                            horizon_core::geometry::Vec3::new(1.0, 0.5, 1.0),
+                        ))
+                        .unwrap(),
+                        0,
+                    ),
                 ]),
             ),
             ("cached_shapes", Tag::IntArray(state_shapes)),
@@ -1542,14 +1619,139 @@ mod tests {
             (side[0] - 127.7).abs() < 1.0e-6,
             "stone wall must stop native player box: {side:?}"
         );
-        assert!(stage.world.modified.is_empty());
+        // Only this synthetic in-memory test snapshot gets a half-height slab
+        // and an adjacent full stone wall. The real Anvil region is unchanged.
+        let mut steps = stage;
+        let column = steps.world.chunks.get_mut(&(8, -5)).unwrap();
+        let chunk = std::sync::Arc::make_mut(column);
+        chunk.set(138, 80, -66, 2); // slab, top at y=80.5
+        chunk.set(140, 80, -66, 1); // full cube, cannot step without jumping
+        chunk.set(136, 80, -74, 3); // full ice block, high friction coefficient
+        let before = [137.5, 80.0, -65.5];
+        let target = [138.5, 80.0, -65.5];
+        let blocked = steps
+            .resolve_preview_movement(&collisions, before, target)
+            .unwrap();
+        assert!(blocked[0] < 137.8);
+        let stepped = steps
+            .resolve_preview_movement_with_step(&collisions, before, target, 0.6, true)
+            .unwrap();
+        assert!(stepped[0] > 138.4, "slab should be cleared: {stepped:?}");
+        assert!((stepped[1] - 80.5).abs() < 1e-6);
+        let airborne = steps
+            .resolve_preview_movement_with_step(&collisions, before, target, 0.6, false)
+            .unwrap();
+        assert!(airborne[0] < 137.8, "airborne players must not step up");
+        let wall = steps
+            .resolve_preview_movement_with_step(
+                &collisions,
+                [139.4, 80.0, -65.5],
+                [140.4, 80.0, -65.5],
+                0.6,
+                true,
+            )
+            .unwrap();
+        assert!(wall[0] < 139.8, "full-height wall should block: {wall:?}");
+        assert!(
+            steps
+                .resolve_preview_movement_with_step(&collisions, before, target, 0.61, true,)
+                .is_err()
+        );
+        assert!(
+            steps
+                .resolve_preview_movement_with_step(&collisions, before, target, f32::NAN, true,)
+                .is_err()
+        );
+        let properties = |friction: f32| {
+            Tag::compound([
+                ("friction", Tag::Float(friction.to_bits())),
+                ("speedFactor", Tag::Float(1.0f32.to_bits())),
+                ("jumpFactor", Tag::Float(1.0f32.to_bits())),
+                ("bounceRestitution", Tag::Float(0.0f32.to_bits())),
+                ("fallDistanceReduction", Tag::Float(0.0f32.to_bits())),
+                ("fenceGate", Tag::Byte(0)),
+            ])
+        };
+        let material_table = Tag::compound([
+            ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+            (
+                "states",
+                Tag::List(
+                    (0..registry.len())
+                        .map(|i| registry.state(BlockStateId(i as u32)).unwrap().to_nbt())
+                        .collect(),
+                ),
+            ),
+            (
+                "blocks",
+                Tag::compound([
+                    ("minecraft:air", properties(0.6)),
+                    ("minecraft:stone", properties(0.6)),
+                    ("minecraft:stone_slab", properties(0.6)),
+                    ("minecraft:ice", properties(0.98)),
+                ]),
+            ),
+        ]);
+        let material = horizon_world::movement_properties::MovementProperties::from_nbt(
+            &material_table,
+            &registry,
+        )
+        .unwrap()
+        .bind(&Default::default())
+        .unwrap();
+        assert!(
+            (steps
+                .support_friction(&material, [128.5, 80.0, -64.25])
+                .unwrap()
+                - 0.6)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            (steps
+                .support_friction(&material, [136.5, 81.0, -73.5])
+                .unwrap()
+                - 0.98)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            steps
+                .support_friction(&material, [f64::NAN, 80.0, 0.0])
+                .is_err()
+        );
+        // Prove the opt-in 20 TPS movement path actually invokes the native
+        // step resolver, rather than only the standalone collision probe.
+        let mut walker = crate::preview_physics::PreviewPhysics::new([137.3, 80.0, -65.5]);
+        for _ in 0..10 {
+            walker
+                .tick_with_materials(
+                    &steps,
+                    &collisions,
+                    false,
+                    [0.0, 1.0],
+                    270.0,
+                    Some(&material),
+                )
+                .unwrap();
+            if walker.position()[1] > 80.49 {
+                break;
+            }
+        }
+        assert!(
+            walker.position()[0] > 137.7,
+            "walking must climb slab: {:?}",
+            walker.position()
+        );
+        assert!((walker.position()[1] - 80.5).abs() < 1e-6);
+        assert!(steps.world.modified.is_empty());
         assert_eq!(fs::read(&region_path).unwrap(), bytes);
         // An opt-in 20 TPS read-only motion probe starts above the same
         // saved stone. Native gravity/voxel collisions land on its top,
         // and the shared jump impulse lifts the camera without save writes.
         let mut motion = crate::preview_physics::PreviewPhysics::new([128.5, 83.0, -64.25]);
         for _ in 0..35 {
-            motion.tick(&stage, &collisions, false).unwrap();
+            motion.tick(&steps, &collisions, false).unwrap();
         }
         assert!(
             (motion.position()[1] - 80.0).abs() < 1.0e-6,
@@ -1557,19 +1759,19 @@ mod tests {
             motion.position()
         );
         assert!(motion.grounded(), "must detect solid ground");
-        motion.tick(&stage, &collisions, true).unwrap();
+        motion.tick(&steps, &collisions, true).unwrap();
         assert!(
             motion.position()[1] > 80.3,
             "native jump impulse moves upward"
         );
         let first = motion.position()[1];
-        motion.tick(&stage, &collisions, false).unwrap();
+        motion.tick(&steps, &collisions, false).unwrap();
         assert!(
             motion.position()[1] > first,
             "upward velocity continues on next tick"
         );
         for _ in 0..45 {
-            motion.tick(&stage, &collisions, false).unwrap();
+            motion.tick(&steps, &collisions, false).unwrap();
         }
         assert!(motion.grounded());
         assert!((motion.position()[1] - 80.0).abs() < 1.0e-6);
@@ -1579,7 +1781,7 @@ mod tests {
         let start = walking.position();
         for _ in 0..12 {
             walking
-                .tick_with_input(&stage, &collisions, false, [0.0, 1.0], 0.0)
+                .tick_with_input(&steps, &collisions, false, [0.0, 1.0], 0.0)
                 .unwrap();
         }
         assert!(walking.position()[2] > start[2] + 0.7);
@@ -1587,21 +1789,21 @@ mod tests {
         let turned = walking.position();
         for _ in 0..12 {
             walking
-                .tick_with_input(&stage, &collisions, false, [0.0, 1.0], 90.0)
+                .tick_with_input(&steps, &collisions, false, [0.0, 1.0], 90.0)
                 .unwrap();
         }
         assert!(walking.position()[0] < turned[0] - 0.7);
         let released = walking.position();
         for _ in 0..25 {
             walking
-                .tick_with_input(&stage, &collisions, false, [0.0, 0.0], 90.0)
+                .tick_with_input(&steps, &collisions, false, [0.0, 0.0], 90.0)
                 .unwrap();
         }
         assert!(
             (walking.position()[0] - released[0]).abs() < 0.6,
             "walking should decelerate when the stick is released"
         );
-        assert!(stage.world.modified.is_empty());
+        assert!(steps.world.modified.is_empty());
         assert_eq!(fs::read(&region_path).unwrap(), bytes);
         assert!(!root.join("session.lock").exists());
         fs::remove_dir_all(root).unwrap();

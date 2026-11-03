@@ -117,13 +117,21 @@ With **Enable physics preview**, the same saved snapshot now accepts a
 right, visible only when diagnostics are hidden. The stick sends normalized
 camera-relative left/forward axes to Winit, which samples them on its native
 20 TPS `FixedStep` ticks. The dry-ground movement impulse comes from Horizon's
-shared `living_air::input_vector`, with bounded acceleration, baseline
-ground/air drag, full voxel-collision resolution and diagonal normalization.
+shared `living_air::input_vector`, with bounded acceleration and diagonal
+normalization. The preview now loads the prepared `movement-properties.nbt`
+once on world selection, samples the saved support block and applies the
+native friction-dependent ground speed and drag (e.g. ice versus stone).
+Grounded movement uses the existing `SceneCollisions::resolve` step-up
+selection with a **0.6-block maximum**: a half slab can be stepped onto,
+while full block walls and airborne movement cannot step. Collision sampling,
+physics ticks, and GPU camera movement never mutate world blocks.
 Its thumb snaps back and sends zero input when released, cancelled, when the
 diagnostics overlay opens, or when the app backgrounds. Unmeshed chunk edges
 clamp the camera rather than ending the physics preview; the saved pose is
 never modified. This does **not** load the larger `PlayerMotion` gameplay
-resources (fluids, special block friction and step-up are still outstanding).
+resources; fluid travel, fluid-dependent friction, status effects, sprinting,
+complex supporting blocks, special movement speed factors and full entity
+step/landing effects still require the complete game runtime.
 
 The transient view camera moves through the read-only native block collision
 world (full voxel shapes, not an invented approximate physics implementation),
@@ -147,9 +155,9 @@ Backgrounding drops the GPU view and invalidates in-flight preparation. There
 is no second UIApplicationMain, no automatic Mac build and no gameplay loop.
 
 This remains a **read-only render of at most nine saved columns**. The
-optional gravity/jump preview is deliberately **not a playable Minecraft
-session**: it does not run full `PlayerMotion` (fluids, sprinting, status effects,
-health and block effects), server/world ticks, terrain generation, multiplayer,
+optional walk/gravity/jump preview is deliberately **not a playable Minecraft
+session**: it does not run full `PlayerMotion` (fluid locomotion, sprinting,
+status effects, health and block effects), server/world ticks, terrain generation, multiplayer,
 inventory or saving. Missing neighbours, light and face occlusion beyond the
 saved region still require the full world streamer and game runtime. Neither the preview nor the title joins a game session or
 changes `level.dat`; no session lock is acquired. Real-device/Simulator GPU

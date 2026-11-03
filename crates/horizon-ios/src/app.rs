@@ -331,7 +331,14 @@ impl Shell {
                     .ok_or("Preview camera disappeared")?
                     .rotation()[0];
                 motion
-                    .tick_with_input(stage, &resources.collisions, jump, self.preview_walk, yaw)
+                    .tick_with_materials(
+                        stage,
+                        &resources.collisions,
+                        jump,
+                        self.preview_walk,
+                        yaw,
+                        Some(&resources.movement),
+                    )
                     .map_err(|e| e.to_string())?;
                 let camera = self
                     .terrain_camera

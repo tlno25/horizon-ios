@@ -46,14 +46,37 @@ impl PreviewPhysics {
         }
     }
 
-    /// Camera-relative walking impulse using native Entity.getInputVector,
-    /// not a platform-specific direction transform. Only the dry stone/air
-    /// baseline is modelled here; full PlayerMotion needs its extra bindings.
+    /// Camera-relative walking impulse using native Entity.getInputVector.
+    /// The legacy dry-stone fixture uses standard 0.6 ground friction.
     pub fn apply_walk_input(&mut self, axes: [f32; 2], yaw: f32) -> crate::Result<()> {
-        if !axes.iter().all(|v| v.is_finite() && v.abs() <= 1.0) || !yaw.is_finite() {
+        self.apply_walk_input_on_surface(axes, yaw, 0.6)
+    }
+
+    /// Native ground speed vs. friction curve, using the currently sampled
+    /// saved support block. This does not yet cover fluids or status effects.
+    pub fn apply_walk_input_on_surface(
+        &mut self,
+        axes: [f32; 2],
+        yaw: f32,
+        friction: f32,
+    ) -> crate::Result<()> {
+        if !axes.iter().all(|v| v.is_finite() && v.abs() <= 1.0)
+            || !yaw.is_finite()
+            || !friction.is_finite()
+            || !(0.0..=1.0).contains(&friction)
+        {
             return Err("Invalid preview movement input".into());
         }
-        let speed = if self.grounded { 0.1 } else { 0.02 };
+        let friction = living_air::modified_friction(friction, 1.0);
+        let speed = if self.grounded {
+            if friction > 0.6 {
+                0.1 * (0.21600002f32 / (friction * friction * friction))
+            } else {
+                0.1
+            }
+        } else {
+            0.02
+        };
         let delta = living_air::input_vector(
             Vec3::new(f64::from(axes[0]), 0.0, f64::from(axes[1])),
             speed,
@@ -65,8 +88,8 @@ impl PreviewPhysics {
     }
 
     /// One 20 TPS simulation tick; the shell owns its fixed-step scheduling.
-    /// Vanilla living jump/gravity are reused. Other motion rules (fluids,
-    /// abilities, sprinting, fall damage, step-up) are not yet simulated.
+    /// Vanilla living jump/gravity and native grounded step-up are reused.
+    /// Fluids, abilities, sprinting and fall damage are not yet simulated.
     pub fn tick(
         &mut self,
         stage: &ReadOnlyWorldStage,
@@ -86,6 +109,20 @@ impl PreviewPhysics {
         axes: [f32; 2],
         yaw: f32,
     ) -> crate::Result<bool> {
+        self.tick_with_materials(stage, collisions, jump, axes, yaw, None)
+    }
+
+    /// World-backed preview tick. Real prepared assets provide the native
+    /// movement-properties table; old headless test fixtures can omit it.
+    pub fn tick_with_materials(
+        &mut self,
+        stage: &ReadOnlyWorldStage,
+        collisions: &BlockCollisionRegistry<'_>,
+        jump: bool,
+        axes: [f32; 2],
+        yaw: f32,
+        materials: Option<&horizon_world::movement_properties::BoundMovementProperties>,
+    ) -> crate::Result<bool> {
         // Reject bad input before modifying grounded state or velocity.
         if !axes.iter().all(|v| v.is_finite() && v.abs() <= 1.0) || !yaw.is_finite() {
             return Err("Invalid preview movement input".into());
@@ -101,13 +138,26 @@ impl PreviewPhysics {
                 self.grounded = false;
             }
         }
-        self.apply_walk_input(axes, yaw)?;
+        let surface = if self.grounded {
+            materials.map_or(Ok(0.6), |properties| {
+                stage.support_friction(properties, old)
+            })?
+        } else {
+            0.6
+        };
+        self.apply_walk_input_on_surface(axes, yaw, surface)?;
         let target = [
             old[0] + self.velocity.x,
             old[1] + self.velocity.y,
             old[2] + self.velocity.z,
         ];
-        let moved = stage.resolve_preview_movement(collisions, old, target)?;
+        let moved = stage.resolve_preview_movement_with_step(
+            collisions,
+            old,
+            target,
+            if self.grounded { 0.6 } else { 0.0 },
+            self.grounded,
+        )?;
         if !moved.iter().all(|v| v.is_finite()) {
             return Err("Nonfinite native movement result".into());
         }
@@ -124,9 +174,13 @@ impl PreviewPhysics {
             living_motion::apply_gravity(self)?;
             self.velocity.y *= 0.98;
         }
-        // Simple dry-ground/air drag, matching the baseline factor used by
-        // LivingEntity.travelInAir. Full PlayerMotion handles special blocks.
-        let drag = if self.grounded { 0.6 * 0.91 } else { 0.91 };
+        // Native sampled surface slipperiness (ice, packed ice, slime etc.)
+        // drives ground drag. Full PlayerMotion also handles special effects.
+        let drag = if self.grounded {
+            surface as f64 * 0.91
+        } else {
+            0.91
+        };
         self.velocity.x *= drag;
         self.velocity.z *= drag;
         if self.velocity.x.abs() < 1.0e-5 {
@@ -229,6 +283,28 @@ mod tests {
         let before = diagonal.velocity;
         diagonal.apply_walk_input([0.0, 0.0], 0.0).unwrap();
         assert_eq!(diagonal.velocity, before);
+    }
+
+    #[test]
+    fn ice_uses_native_surface_slipperiness_and_dry_ground_speed_scaling() {
+        let mut stone = PreviewPhysics::new([8.0, 64.0, 8.0]);
+        stone.grounded = true;
+        stone
+            .apply_walk_input_on_surface([0.0, 1.0], 0.0, 0.6)
+            .unwrap();
+        let mut ice = PreviewPhysics::new([8.0, 64.0, 8.0]);
+        ice.grounded = true;
+        ice.apply_walk_input_on_surface([0.0, 1.0], 0.0, 0.98)
+            .unwrap();
+        assert!(stone.velocity.z > ice.velocity.z * 3.5);
+        assert!(
+            ice.apply_walk_input_on_surface([0.0, 1.0], f32::NAN, 0.98)
+                .is_err()
+        );
+        assert!(
+            ice.apply_walk_input_on_surface([0.0, 1.0], 0.0, f32::INFINITY)
+                .is_err()
+        );
     }
 
     #[test]

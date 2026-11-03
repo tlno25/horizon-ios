@@ -17,6 +17,18 @@ private var mostRecentRendererStage = ""
 private var mostRecentResourceMessage = ""
 private var mostRecentCoreLoadMessage = ""
 
+// The diagnostic overlay is hidden at the UIKit level so its full-screen
+// hosting view cannot swallow Winit's game touches. A small native button
+// stays available to restore the diagnostics without duplicating game UI.
+private weak var diagnosticsOverlayView: UIView?
+private weak var diagnosticsRestoreButton: UIButton?
+
+private func setDiagnosticsVisible(_ visible: Bool) {
+    guard Thread.isMainThread else { return }
+    diagnosticsOverlayView?.isHidden = !visible
+    diagnosticsRestoreButton?.isHidden = visible
+}
+
 /// The iOS sandbox is owned by Swift/UIKit, not inferred by a desktop-style
 /// current working directory in the Rust game. Preflight is idempotent.
 private func prepareSharedEngine() {
@@ -275,6 +287,10 @@ private struct HomeView: View {
                     }
                     Button("Refresh status", action: refreshStatus)
                         .buttonStyle(.bordered)
+                    if coreLoadState == 2 && rendererPreviewState == 3 {
+                        Button("Show game") { setDiagnosticsVisible(false) }
+                            .buttonStyle(.borderedProminent)
+                    }
                     if engineState == 1 || engineState == 3 {
                         Button("Import prepared resources ZIP") {
                             showResourceImporter = true
@@ -340,7 +356,7 @@ private struct HomeView: View {
                             .textSelection(.enabled)
                     }
 
-                    Text("The Metal probe renders the blue background. After loading game data, Preview Horizon renderer shows Horizon's native title and animated panorama. Touch controls and launching worlds are not connected yet.")
+                    Text("After loading game data, Preview Horizon renderer shows Horizon's native title. In Show game mode, you can tap Singleplayer and use the Cancel/Back buttons. Creating or launching worlds is not connected yet.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -486,6 +502,9 @@ public func horizon_ios_mount_home(_ parentPointer: UnsafeMutableRawPointer?) {
     // Reorder the existing overlay above it rather than installing another one.
     if let existing = parent.children.first(where: { $0 is UIHostingController<HomeView> }) {
         parent.view.bringSubviewToFront(existing.view)
+        if let restore = diagnosticsRestoreButton {
+            parent.view.bringSubviewToFront(restore)
+        }
         return
     }
     let hosting = UIHostingController(rootView: HomeView())
@@ -496,6 +515,23 @@ public func horizon_ios_mount_home(_ parentPointer: UnsafeMutableRawPointer?) {
     hosting.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
     parent.view.addSubview(hosting.view)
     hosting.didMove(toParent: parent)
+    diagnosticsOverlayView = hosting.view
+
+    let restore = UIButton(type: .system)
+    restore.setTitle("Diagnostics", for: .normal)
+    restore.accessibilityLabel = "Show Horizon diagnostics"
+    restore.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.9)
+    restore.layer.cornerRadius = 10
+    restore.contentEdgeInsets = UIEdgeInsets(top: 9, left: 12, bottom: 9, right: 12)
+    restore.translatesAutoresizingMaskIntoConstraints = false
+    restore.addAction(UIAction { _ in setDiagnosticsVisible(true) }, for: .touchUpInside)
+    parent.view.addSubview(restore)
+    NSLayoutConstraint.activate([
+        restore.topAnchor.constraint(equalTo: parent.view.safeAreaLayoutGuide.topAnchor, constant: 8),
+        restore.trailingAnchor.constraint(equalTo: parent.view.safeAreaLayoutGuide.trailingAnchor, constant: -12)
+    ])
+    diagnosticsRestoreButton = restore
+    restore.isHidden = true
 }
 
 // These callbacks are used only by the shared Horizon clipboard hooks after

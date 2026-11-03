@@ -182,6 +182,40 @@ mod tests {
     use std::{fs, time::SystemTime};
 
     #[test]
+    fn mobile_preview_accepts_only_safe_title_navigation() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-ios-title-tap-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let mut title = crate::title::Title::new(root.join("saves"), &root);
+        let size = (500.0, 350.0);
+        assert!(
+            !title.preview_tap(300.0, 241.0, size),
+            "Quit must not leave UIKit"
+        );
+        assert!(matches!(title.mode, crate::title::Mode::Main));
+        assert!(title.preview_tap(250.0, 145.0, size));
+        assert!(matches!(title.mode, crate::title::Mode::Create { .. }));
+        assert!(
+            !title.preview_tap(174.0, 333.0, size),
+            "world creation must remain disabled"
+        );
+        assert!(title.preview_tap(328.0, 333.0, size));
+        assert!(matches!(title.mode, crate::title::Mode::Main));
+        // World selection Back reuses the native hit targets.
+        title.mode = crate::title::Mode::Select {
+            worlds: Vec::new(),
+            selected: None,
+        };
+        assert!(
+            !title.preview_tap(175.0, 309.0, size),
+            "Play must not start a world"
+        );
+        assert!(title.preview_tap(372.0, 332.0, size));
+        assert!(matches!(title.mode, crate::title::Mode::Main));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn prepared_title_assets_can_cross_the_gpu_worker_boundary() {
         fn assert_send<T: Send>() {}
         assert_send::<crate::hud::HudAtlas>();

@@ -3099,6 +3099,34 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         let lines = atlas.font.split(&Text::translate(key, &[]), 170.0);
         crate::ui::tooltip(batch, atlas, &lines, cursor);
     }
+    /// Limited, non-destructive title navigation for an unfinished platform
+    /// preview. Uses the native button geometry and click implementation, but
+    /// does not permit world creation, deletion, joining or app termination.
+    /// Returns true only if an allowed button was activated.
+    pub fn preview_tap(&mut self, x: f32, y: f32, size: (f32, f32)) -> bool {
+        if !x.is_finite() || !y.is_finite() || size.0 <= 0.0 || size.1 <= 0.0 {
+            return false;
+        }
+        let hit = self.buttons(size.0, size.1).into_iter().find(|button| {
+            button.enabled
+                && x >= button.x
+                && x < button.x + button.w
+                && y >= button.y
+                && y < button.y + 20.0
+        });
+        let safe = matches!(
+            (&self.mode, hit.as_ref().map(|button| button.id)),
+            (Mode::Main, Some(1))
+                | (Mode::Select { .. }, Some(12))
+                | (Mode::Create { .. }, Some(22))
+        );
+        if safe {
+            let (action, _) = self.click(x, y, size);
+            debug_assert_eq!(action, Action::None);
+        }
+        safe
+    }
+
     /// The action and whether to play `AbstractWidget.playButtonClickSound`.
     /// Navigation buttons can return `Action::None` while still sounding.
     pub fn click(&mut self, x: f32, y: f32, size: (f32, f32)) -> (Action, bool) {

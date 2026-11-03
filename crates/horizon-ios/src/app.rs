@@ -14,7 +14,7 @@ use winit::window::{Window, WindowId};
 
 #[path = "metal_probe.rs"]
 mod metal_probe;
-use crate::{ProbeLifecycle, TitleRefresh};
+use crate::{ProbeLifecycle, TitleRefresh, TitleTap};
 use horizon_client::{
     gfx::{Renderer, panorama::Rotation},
     graphics::GraphicsApi,
@@ -137,6 +137,7 @@ struct Shell {
     horizon: Option<Renderer>,
     title: Option<PreparedTitle>,
     title_refresh: TitleRefresh,
+    title_tap: TitleTap,
     /// GPU pipelines are compiled offscreen on a worker. Winit/SwiftUI must
     /// remain responsive during this work; only surface attachment is on UIKit.
     renderer_job: Option<JoinHandle<Result<PreparedRenderer, String>>>,
@@ -404,6 +405,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
         self.metal = None;
         self.horizon = None;
         self.title = None;
+        self.title_tap.clear();
         crate::RENDERER_SWITCH.reset();
         crate::set_graphics_state(4);
         crate::shell_suspended();
@@ -439,6 +441,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 self.lifecycle.resize(size.width, size.height);
                 if self.lifecycle.drawable_size().is_none() {
                     crate::clear_touches();
+                    self.title_tap.clear();
                 }
                 if previously_presented && !self.lifecycle.has_presented_frame() {
                     crate::set_graphics_state(1);
@@ -512,12 +515,31 @@ impl ApplicationHandler<ShellEvent> for Shell {
                         WinitPhase::Ended => crate::TouchPhase::Ended,
                         WinitPhase::Cancelled => crate::TouchPhase::Cancelled,
                     };
-                    let _ = crate::update_touch(
-                        touch.id,
-                        phase,
-                        (touch.location.x as f32, touch.location.y as f32),
-                        size,
-                    );
+                    let point = (touch.location.x as f32, touch.location.y as f32);
+                    if crate::update_touch(touch.id, phase, point, size) {
+                        if self.title.is_some() && self.horizon.is_some() {
+                            if let Some(release) =
+                                self.title_tap.handle(touch.id, phase, point, size)
+                            {
+                                let renderer =
+                                    self.horizon.as_ref().expect("title renderer exists");
+                                let batch =
+                                    HudBatch::new([renderer.config.width, renderer.config.height]);
+                                let gui_point = (release.0 / batch.scale, release.1 / batch.scale);
+                                if self.title.as_mut().is_some_and(|title| {
+                                    title.screen.preview_tap(
+                                        gui_point.0,
+                                        gui_point.1,
+                                        (batch.width, batch.height),
+                                    )
+                                }) {
+                                    window.request_redraw();
+                                }
+                            }
+                        } else {
+                            self.title_tap.clear();
+                        }
+                    }
                 }
             }
             WindowEvent::CloseRequested => event_loop.exit(),

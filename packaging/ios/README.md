@@ -112,6 +112,19 @@ columns for which the CPU mesher actually produced geometry. **Pinch two fingers
 to raise or lower the preview camera within 16 blocks of the saved height;
 three or more fingers cancel the gesture. A bounded 3×3 saved region is the
 largest preview; missing or truncated columns are not traversable.
+With **Enable physics preview**, the same saved snapshot now accepts a
+**native UIKit thumbstick** in the lower left and a Jump button in the lower
+right, visible only when diagnostics are hidden. The stick sends normalized
+camera-relative left/forward axes to Winit, which samples them on its native
+20 TPS `FixedStep` ticks. The dry-ground movement impulse comes from Horizon's
+shared `living_air::input_vector`, with bounded acceleration, baseline
+ground/air drag, full voxel-collision resolution and diagonal normalization.
+Its thumb snaps back and sends zero input when released, cancelled, when the
+diagnostics overlay opens, or when the app backgrounds. Unmeshed chunk edges
+clamp the camera rather than ending the physics preview; the saved pose is
+never modified. This does **not** load the larger `PlayerMotion` gameplay
+resources (fluids, special block friction and step-up are still outstanding).
+
 The transient view camera moves through the read-only native block collision
 world (full voxel shapes, not an invented approximate physics implementation),
 while the saved player's pose never changes. By default this remains a

@@ -26,12 +26,17 @@ private var mostRecentWorldInspectionState: Int32 = 0
 private weak var diagnosticsOverlayView: UIView?
 private weak var diagnosticsRestoreButton: UIButton?
 private weak var physicsJumpButton: UIButton?
+private weak var physicsMovePad: UIView?
 
 private func setDiagnosticsVisible(_ visible: Bool) {
     guard Thread.isMainThread else { return }
     diagnosticsOverlayView?.isHidden = !visible
     diagnosticsRestoreButton?.isHidden = visible
     physicsJumpButton?.isHidden = visible || horizon_ios_preview_physics_enabled() == 0
+    if visible, let pad = physicsMovePad as? PhysicsMovePad {
+        pad.cancelMovement()
+    }
+    physicsMovePad?.isHidden = visible || horizon_ios_preview_physics_enabled() == 0
 }
 
 /// The iOS sandbox is owned by Swift/UIKit, not inferred by a desktop-style
@@ -95,6 +100,67 @@ private func saveGraphicsStatus() {
         try data.write(to: caches.appendingPathComponent("horizon-ios-graphics.json"), options: .atomic)
     } catch {
         NSLog("Horizon iOS: cannot save graphics status: %@", error.localizedDescription)
+    }
+}
+
+/// Minimal native thumbstick above the Winit Metal surface. It captures only
+/// its 132-point footprint; outside that area regular camera touches remain
+/// owned by the Rust Winit window. Values are transient, never persisted.
+private final class PhysicsMovePad: UIView {
+    private let thumb = UIView()
+    private var offset: CGPoint = .zero
+    private let travelRadius: CGFloat = 49
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    private func setup() {
+        backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.62)
+        layer.cornerRadius = 66
+        layer.borderWidth = 1
+        layer.borderColor = UIColor.secondaryLabel.withAlphaComponent(0.3).cgColor
+        accessibilityLabel = "Move in the read-only physics preview"
+        thumb.backgroundColor = UIColor.label.withAlphaComponent(0.45)
+        thumb.layer.cornerRadius = 20
+        thumb.bounds = CGRect(x: 0, y: 0, width: 40, height: 40)
+        thumb.isUserInteractionEnabled = false
+        addSubview(thumb)
+        addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:))))
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        thumb.center = CGPoint(x: bounds.midX + offset.x, y: bounds.midY + offset.y)
+    }
+
+    func cancelMovement() {
+        offset = .zero
+        _ = horizon_ios_preview_walk(0, 0)
+        setNeedsLayout()
+    }
+
+    @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
+        switch recognizer.state {
+        case .began, .changed:
+            let translation = recognizer.translation(in: self)
+            let length = max(hypot(translation.x, translation.y), 1)
+            let scale = min(1, travelRadius / length)
+            offset = CGPoint(x: translation.x * scale, y: translation.y * scale)
+            // Screen-right is negative left; screen-up is positive forward.
+            _ = horizon_ios_preview_walk(Float(-offset.x / travelRadius),
+                                         Float(-offset.y / travelRadius))
+        case .ended, .cancelled, .failed:
+            cancelMovement()
+        default: break
+        }
+        setNeedsLayout()
     }
 }
 
@@ -398,7 +464,7 @@ private struct HomeView: View {
                             }
                         }
                         Text(previewPhysicsEnabled
-                            ? "Experimental 20 TPS gravity and jumping use native block collisions. No mobs, crafting, health, world ticks or saving. Jump is also available over the game view."
+                            ? "Experimental 20 TPS walking, gravity and jumping use native block collisions. Hide Diagnostics to use the left virtual thumbstick and right Jump control. No world ticks or saving."
                             : "One finger: look around. Two fingers: pan or pinch through collision-tested saved terrain. Enable physics explicitly to test falling and jumping. Reset restores the saved camera; gameplay and saves are unchanged.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
@@ -472,7 +538,7 @@ private struct HomeView: View {
                             .textSelection(.enabled)
                     }
 
-                    Text("Load game data, open the native title, then select a saved world. Up to 3×3 existing chunks render read-only. Native block collision applies to camera movement; experimental 20 TPS gravity and jump can be enabled explicitly, without game world ticks or saving.")
+                    Text("Load game data, open the native title, then select a saved world. Up to 3×3 existing chunks render read-only. Enable the experimental 20 TPS movement preview for a camera-relative left thumbstick, gravity and jumping, without world ticks or saving.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -500,6 +566,7 @@ private struct HomeView: View {
             refreshStatus()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            (physicsMovePad as? PhysicsMovePad)?.cancelMovement()
             if diagnosticFingerDown {
                 touchPadEvent(3, .zero, CGSize(width: 1, height: 1))
                 diagnosticFingerDown = false
@@ -570,6 +637,10 @@ public func horizon_ios_preview_physics_changed() {
     guard Thread.isMainThread else { return }
     let diagnosticsVisible = !(diagnosticsOverlayView?.isHidden ?? true)
     physicsJumpButton?.isHidden = diagnosticsVisible || horizon_ios_preview_physics_enabled() == 0
+    if diagnosticsVisible || horizon_ios_preview_physics_enabled() == 0 {
+        (physicsMovePad as? PhysicsMovePad)?.cancelMovement()
+    }
+    physicsMovePad?.isHidden = diagnosticsVisible || horizon_ios_preview_physics_enabled() == 0
     DispatchQueue.main.async {
         saveGraphicsStatus()
         NotificationCenter.default.post(name: .horizonGraphicsChanged, object: nil)
@@ -661,6 +732,9 @@ public func horizon_ios_mount_home(_ parentPointer: UnsafeMutableRawPointer?) {
         if let jump = physicsJumpButton {
             parent.view.bringSubviewToFront(jump)
         }
+        if let pad = physicsMovePad {
+            parent.view.bringSubviewToFront(pad)
+        }
         setDiagnosticsVisible(!existing.view.isHidden)
         return
     }
@@ -705,6 +779,18 @@ public func horizon_ios_mount_home(_ parentPointer: UnsafeMutableRawPointer?) {
     ])
     physicsJumpButton = jump
     jump.isHidden = true
+
+    let pad = PhysicsMovePad(frame: .zero)
+    pad.translatesAutoresizingMaskIntoConstraints = false
+    parent.view.addSubview(pad)
+    NSLayoutConstraint.activate([
+        pad.leadingAnchor.constraint(equalTo: parent.view.safeAreaLayoutGuide.leadingAnchor, constant: 20),
+        pad.bottomAnchor.constraint(equalTo: parent.view.safeAreaLayoutGuide.bottomAnchor, constant: -24),
+        pad.widthAnchor.constraint(equalToConstant: 132),
+        pad.heightAnchor.constraint(equalToConstant: 132)
+    ])
+    physicsMovePad = pad
+    pad.isHidden = true
 }
 
 // These callbacks are used only by the shared Horizon clipboard hooks after

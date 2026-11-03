@@ -33,6 +33,7 @@ enum ShellEvent {
     TerrainPreviewResetCamera,
     PreviewPhysicsToggle,
     PreviewPhysicsJump,
+    PreviewWalk([f32; 2]),
     WorldInspected {
         generation: u64,
         result: Result<PreparedWorldPreview, String>,
@@ -141,6 +142,12 @@ pub(super) fn request_preview_physics_jump_event() -> bool {
         .is_some_and(|proxy| proxy.send_event(ShellEvent::PreviewPhysicsJump).is_ok())
 }
 
+pub(super) fn request_preview_walk_event(axes: [f32; 2]) -> bool {
+    EVENT_PROXY
+        .get()
+        .is_some_and(|proxy| proxy.send_event(ShellEvent::PreviewWalk(axes)).is_ok())
+}
+
 pub(super) unsafe fn preview_physics_changed() {
     unsafe { horizon_ios_preview_physics_changed() };
 }
@@ -243,6 +250,8 @@ struct Shell {
     preview_clock: Option<horizon_client::clock::FixedStep>,
     preview_last_tick: Option<Instant>,
     preview_jump_queued: bool,
+    /// Camera-relative walking input, sampled on the Winit tick thread.
+    preview_walk: [f32; 2],
     /// The original title renderer retains its GPU resources while a textured
     /// terrain replacement is active. Both share one WGPU device.
     title_renderer: Option<Renderer>,
@@ -265,6 +274,7 @@ impl Shell {
         self.preview_clock = None;
         self.preview_last_tick = None;
         self.preview_jump_queued = false;
+        self.preview_walk = [0.0, 0.0];
     }
 
     fn toggle_preview_physics(&mut self) {
@@ -315,17 +325,31 @@ impl Shell {
                     .get()
                     .ok_or("Collision table was released")?;
                 let jump = std::mem::take(&mut self.preview_jump_queued);
-                let moved = motion
-                    .tick(stage, &resources.collisions, jump)
+                let yaw = self
+                    .terrain_camera
+                    .as_ref()
+                    .ok_or("Preview camera disappeared")?
+                    .rotation()[0];
+                motion
+                    .tick_with_input(stage, &resources.collisions, jump, self.preview_walk, yaw)
                     .map_err(|e| e.to_string())?;
                 let camera = self
                     .terrain_camera
                     .as_mut()
                     .ok_or("Preview camera disappeared")?;
-                if !camera.set_collision_resolved_position(motion.position()) {
-                    return Err("Reached the edge of the read-only terrain preview".to_owned());
+                if (motion.position()[1] - camera.saved_position()[1]).abs() > 16.0 {
+                    return Err("Preview motion reached the vertical safety boundary".to_owned());
                 }
-                Ok(moved)
+                let previous_view = camera.position();
+                camera.set_simulated_position(motion.position());
+                let changed = camera.position() != previous_view;
+                let blocked_at_edge = camera.position() != motion.position();
+                if blocked_at_edge {
+                    // Reject momentum that would carry the camera into a
+                    // missing or unmeshed chunk. Continue rather than abort.
+                    motion.sync_camera(camera.position());
+                }
+                Ok(changed)
             })();
             match outcome {
                 Ok(moved) => changed |= moved,
@@ -1218,6 +1242,11 @@ impl ApplicationHandler<ShellEvent> for Shell {
             ShellEvent::PreviewPhysicsJump => {
                 if self.preview_physics.is_some() && crate::TERRAIN_PREVIEW.state() == 4 {
                     self.preview_jump_queued = true;
+                }
+            }
+            ShellEvent::PreviewWalk(axes) => {
+                if self.preview_physics.is_some() && crate::TERRAIN_PREVIEW.state() == 4 {
+                    self.preview_walk = axes;
                 }
             }
             ShellEvent::TerrainPreviewResetCamera => {

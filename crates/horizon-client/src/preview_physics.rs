@@ -5,6 +5,7 @@ use crate::game_startup::ReadOnlyWorldStage;
 use horizon_core::geometry::Vec3;
 use horizon_world::{
     block_collision::BlockCollisionRegistry,
+    living_air,
     living_motion::{self, LivingMotionWorld},
 };
 
@@ -45,6 +46,24 @@ impl PreviewPhysics {
         }
     }
 
+    /// Camera-relative walking impulse using native Entity.getInputVector,
+    /// not a platform-specific direction transform. Only the dry stone/air
+    /// baseline is modelled here; full PlayerMotion needs its extra bindings.
+    pub fn apply_walk_input(&mut self, axes: [f32; 2], yaw: f32) -> crate::Result<()> {
+        if !axes.iter().all(|v| v.is_finite() && v.abs() <= 1.0) || !yaw.is_finite() {
+            return Err("Invalid preview movement input".into());
+        }
+        let speed = if self.grounded { 0.1 } else { 0.02 };
+        let delta = living_air::input_vector(
+            Vec3::new(f64::from(axes[0]), 0.0, f64::from(axes[1])),
+            speed,
+            yaw,
+        );
+        self.velocity.x += delta.x;
+        self.velocity.z += delta.z;
+        Ok(())
+    }
+
     /// One 20 TPS simulation tick; the shell owns its fixed-step scheduling.
     /// Vanilla living jump/gravity are reused. Other motion rules (fluids,
     /// abilities, sprinting, fall damage, step-up) are not yet simulated.
@@ -54,6 +73,23 @@ impl PreviewPhysics {
         collisions: &BlockCollisionRegistry<'_>,
         jump: bool,
     ) -> crate::Result<bool> {
+        self.tick_with_input(stage, collisions, jump, [0.0, 0.0], 0.0)
+    }
+
+    /// One 20 TPS step of read-only walking, gravity and jumping. The camera
+    /// yaw is sampled on the Winit thread at the start of each physics tick.
+    pub fn tick_with_input(
+        &mut self,
+        stage: &ReadOnlyWorldStage,
+        collisions: &BlockCollisionRegistry<'_>,
+        jump: bool,
+        axes: [f32; 2],
+        yaw: f32,
+    ) -> crate::Result<bool> {
+        // Reject bad input before modifying grounded state or velocity.
+        if !axes.iter().all(|v| v.is_finite() && v.abs() <= 1.0) || !yaw.is_finite() {
+            return Err("Invalid preview movement input".into());
+        }
         let old = self.position;
         let below =
             stage.resolve_preview_movement(collisions, old, [old[0], old[1] - 0.05, old[2]])?;
@@ -65,6 +101,7 @@ impl PreviewPhysics {
                 self.grounded = false;
             }
         }
+        self.apply_walk_input(axes, yaw)?;
         let target = [
             old[0] + self.velocity.x,
             old[1] + self.velocity.y,
@@ -86,6 +123,17 @@ impl PreviewPhysics {
         if !self.grounded {
             living_motion::apply_gravity(self)?;
             self.velocity.y *= 0.98;
+        }
+        // Simple dry-ground/air drag, matching the baseline factor used by
+        // LivingEntity.travelInAir. Full PlayerMotion handles special blocks.
+        let drag = if self.grounded { 0.6 * 0.91 } else { 0.91 };
+        self.velocity.x *= drag;
+        self.velocity.z *= drag;
+        if self.velocity.x.abs() < 1.0e-5 {
+            self.velocity.x = 0.0;
+        }
+        if self.velocity.z.abs() < 1.0e-5 {
+            self.velocity.z = 0.0;
         }
         Ok(self.position != old)
     }
@@ -154,6 +202,35 @@ impl LivingMotionWorld for PreviewPhysics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn walking_input_obeys_camera_yaw_native_direction_and_friction() {
+        let mut forward = PreviewPhysics::new([8.0, 64.0, 8.0]);
+        forward.grounded = true;
+        forward.apply_walk_input([0.0, 1.0], 0.0).unwrap();
+        assert!(forward.velocity.z > 0.09);
+        assert!(forward.velocity.x.abs() < 0.00001);
+        let mut rotated = PreviewPhysics::new([8.0, 64.0, 8.0]);
+        rotated.grounded = true;
+        rotated.apply_walk_input([0.0, 1.0], 90.0).unwrap();
+        assert!(rotated.velocity.x < -0.09);
+        assert!(rotated.velocity.z.abs() < 0.00001);
+        let mut diagonal = PreviewPhysics::new([8.0, 64.0, 8.0]);
+        diagonal.grounded = true;
+        diagonal.apply_walk_input([1.0, 1.0], 0.0).unwrap();
+        let speed = diagonal.velocity.x.hypot(diagonal.velocity.z);
+        assert!(speed <= 0.100001, "diagonals may not move faster: {speed}");
+        assert!(
+            diagonal
+                .apply_walk_input([f32::INFINITY, 0.0], 0.0)
+                .is_err()
+        );
+        assert!(diagonal.apply_walk_input([0.0, 1.0], f32::NAN).is_err());
+        assert!(diagonal.apply_walk_input([3.0, 0.0], 0.0).is_err());
+        let before = diagonal.velocity;
+        diagonal.apply_walk_input([0.0, 0.0], 0.0).unwrap();
+        assert_eq!(diagonal.velocity, before);
+    }
+
     #[test]
     fn touch_repositions_body_without_creating_unbounded_momentum() {
         let mut physics = PreviewPhysics::new([8.0, 65.0, 8.0]);

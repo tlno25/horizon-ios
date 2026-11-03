@@ -1573,6 +1573,34 @@ mod tests {
         }
         assert!(motion.grounded());
         assert!((motion.position()[1] - 80.0).abs() < 1.0e-6);
+        // Walk across a flat real saved stone layer using Horizon's own
+        // yaw-based input transform. The player save stays untouched.
+        let mut walking = crate::preview_physics::PreviewPhysics::new([132.5, 80.0, -72.5]);
+        let start = walking.position();
+        for _ in 0..12 {
+            walking
+                .tick_with_input(&stage, &collisions, false, [0.0, 1.0], 0.0)
+                .unwrap();
+        }
+        assert!(walking.position()[2] > start[2] + 0.7);
+        assert!((walking.position()[1] - 80.0).abs() < 1.0e-6);
+        let turned = walking.position();
+        for _ in 0..12 {
+            walking
+                .tick_with_input(&stage, &collisions, false, [0.0, 1.0], 90.0)
+                .unwrap();
+        }
+        assert!(walking.position()[0] < turned[0] - 0.7);
+        let released = walking.position();
+        for _ in 0..25 {
+            walking
+                .tick_with_input(&stage, &collisions, false, [0.0, 0.0], 90.0)
+                .unwrap();
+        }
+        assert!(
+            (walking.position()[0] - released[0]).abs() < 0.6,
+            "walking should decelerate when the stick is released"
+        );
         assert!(stage.world.modified.is_empty());
         assert_eq!(fs::read(&region_path).unwrap(), bytes);
         assert!(!root.join("session.lock").exists());

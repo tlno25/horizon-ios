@@ -278,6 +278,25 @@ pub extern "C" fn horizon_ios_preview_physics_jump() -> i32 {
     }
 }
 
+/// Queue an absolute analog-stick state: left and forward in [-1,1].
+/// Invalid floats are rejected at the C ABI boundary; no player saves or
+/// world blocks are changed. The joystick must send zero on release.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_preview_walk(left: f32, forward: f32) -> i32 {
+    if !left.is_finite() || !forward.is_finite() || left.abs() > 1.0 || forward.abs() > 1.0 {
+        return -3;
+    }
+    if TERRAIN_PREVIEW.state() != 4 || !PREVIEW_PHYSICS_ENABLED.load(Ordering::Acquire) {
+        return -1;
+    }
+    if app::request_preview_walk_event([left, forward]) {
+        0
+    } else {
+        -2
+    }
+}
+
 /// Number of active touches recorded by the native input bridge.
 #[unsafe(no_mangle)]
 pub extern "C" fn horizon_ios_touch_count() -> u32 {

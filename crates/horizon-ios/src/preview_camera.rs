@@ -114,6 +114,22 @@ impl PreviewCamera {
         true
     }
 
+    /// Apply native physics to the view while respecting the displayed
+    /// region. A blocked edge clamps the transient camera rather than ending
+    /// simulation. Return false when the camera did not move or input is bad.
+    pub fn set_simulated_position(&mut self, position: [f64; 3]) -> bool {
+        if !position.iter().all(|v| v.is_finite())
+            || (position[1] - self.saved_position[1]).abs() > 16.0
+        {
+            return false;
+        }
+        let old = self.position;
+        self.position[0] = self.constrain_axis(position[0], true);
+        self.position[2] = self.constrain_axis(position[2], false);
+        self.position[1] = position[1];
+        self.position != old
+    }
+
     /// Restore only the preview camera; never write the player's save.
     pub fn reset_view(&mut self) {
         self.position = self.saved_position;
@@ -336,6 +352,20 @@ mod tests {
         assert!((-79.9..=-64.1).contains(&z));
         assert_eq!(y, 72.0);
         assert_eq!(camera.rotation(), [90.0, 20.0]);
+    }
+
+    #[test]
+    fn simulated_walk_stops_safely_at_unrendered_chunk_edge() {
+        let mut camera = PreviewCamera::new([15.8, 80.0, 8.0], [0.0, 0.0]);
+        assert!(camera.set_simulated_position([16.25, 80.0, 8.0]));
+        assert!((camera.position()[0] - 15.9).abs() < 1.0e-6);
+        assert!(!camera.set_simulated_position([16.25, 80.0, 8.0]));
+        assert!(!camera.set_simulated_position([f64::NAN, 80.0, 8.0]));
+        assert!(!camera.set_simulated_position([15.8, 64.0 - 20.0, 8.0]));
+        assert_eq!(camera.saved_position(), [15.8, 80.0, 8.0]);
+        assert!(camera.allow_rendered_chunk([1, 0]));
+        assert!(camera.set_simulated_position([16.25, 80.0, 8.0]));
+        assert!(camera.position()[0] > 16.0);
     }
 
     #[test]

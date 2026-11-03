@@ -8,6 +8,7 @@ private extension Notification.Name {
     static let horizonResourceImportChanged = Notification.Name("HorizonResourceImportChanged")
     static let horizonTouchChanged = Notification.Name("HorizonTouchChanged")
     static let horizonCoreLoadChanged = Notification.Name("HorizonCoreLoadChanged")
+    static let horizonWorldInspectionChanged = Notification.Name("HorizonWorldInspectionChanged")
 }
 
 // Main-thread-only: Rust reports an error synchronously before the SwiftUI
@@ -16,6 +17,8 @@ private var mostRecentGraphicsError = ""
 private var mostRecentRendererStage = ""
 private var mostRecentResourceMessage = ""
 private var mostRecentCoreLoadMessage = ""
+private var mostRecentWorldInspectionMessage = ""
+private var mostRecentWorldInspectionState: Int32 = 0
 
 // The diagnostic overlay is hidden at the UIKit level so its full-screen
 // hosting view cannot swallow Winit's game touches. A small native button
@@ -99,6 +102,8 @@ private struct HomeView: View {
     @State private var rendererPreviewState = horizon_ios_renderer_preview_state()
     @State private var rendererStage = mostRecentRendererStage
     @State private var coreLoadMessage = mostRecentCoreLoadMessage
+    @State private var worldInspectionMessage = mostRecentWorldInspectionMessage
+    @State private var worldInspectionState = mostRecentWorldInspectionState
     @State private var loadingCore = false
     @State private var playerName = horizon_ios_player_name().map { String(cString: $0) } ?? ""
     @State private var graphicsError = mostRecentGraphicsError
@@ -185,6 +190,8 @@ private struct HomeView: View {
         coreLoadState = horizon_ios_core_load_state()
         rendererPreviewState = horizon_ios_renderer_preview_state()
         rendererStage = mostRecentRendererStage
+        worldInspectionMessage = mostRecentWorldInspectionMessage
+        worldInspectionState = mostRecentWorldInspectionState
         playerName = horizon_ios_player_name().map { String(cString: $0) } ?? ""
         graphicsError = mostRecentGraphicsError
         activeTouchCount = horizon_ios_touch_count()
@@ -276,6 +283,21 @@ private struct HomeView: View {
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                     }
+                    if worldInspectionState != 0 {
+                        Divider()
+                        Text("Selected world — read-only check")
+                            .font(.headline)
+                        if worldInspectionState == 1 {
+                            ProgressView("Reading level.dat")
+                        }
+                        Text(worldInspectionMessage)
+                            .font(.footnote)
+                            .foregroundColor(worldInspectionState == 3 ? .red : .secondary)
+                            .textSelection(.enabled)
+                        Text("The world has not started. No session lock or save changes are performed.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     if !playerName.isEmpty {
                         LabeledContent("Local player", value: playerName)
                     }
@@ -356,7 +378,7 @@ private struct HomeView: View {
                             .textSelection(.enabled)
                     }
 
-                    Text("After loading game data, Preview Horizon renderer shows Horizon's native title. In Show game mode, tap Singleplayer, select an existing world, or swipe the world list. Cancel/Back buttons work. Creating or launching worlds is not connected yet.")
+                    Text("After loading game data, Preview Horizon renderer shows Horizon's native title. In Show game mode, tap Singleplayer, select a world or swipe the list. Play Selected World now performs a read-only world compatibility check; it does not start gameplay or modify save data.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -368,6 +390,9 @@ private struct HomeView: View {
         .fileImporter(isPresented: $showResourceImporter, allowedContentTypes: [.zip], onCompletion: selectResourceArchive)
         .onReceive(NotificationCenter.default.publisher(for: .horizonCoreLoadChanged)) { _ in
             coreLoadMessage = mostRecentCoreLoadMessage
+            refreshStatus()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .horizonWorldInspectionChanged)) { _ in
             refreshStatus()
         }
         .onReceive(NotificationCenter.default.publisher(for: .horizonTouchChanged)) { _ in
@@ -420,6 +445,23 @@ public func horizon_ios_renderer_status_changed() {
     saveGraphicsStatus()
     DispatchQueue.main.async {
         NotificationCenter.default.post(name: .horizonGraphicsChanged, object: nil)
+    }
+}
+
+/// The title's native Play Selected World button is a *read-only preflight*
+/// on iOS until a complete game loop exists. Copy the borrowed bytes before
+/// deferring UIKit changes outside Winit's window-event callback.
+@_cdecl("horizon_ios_world_inspection_changed")
+public func horizon_ios_world_inspection_changed(_ bytes: UnsafePointer<UInt8>?,
+                                                _ length: Int, _ state: Int32) {
+    guard let bytes, length > 0, length <= 4096, (1...3).contains(state) else { return }
+    let message = String(decoding: UnsafeBufferPointer(start: bytes, count: length), as: UTF8.self)
+    DispatchQueue.main.async {
+        mostRecentWorldInspectionMessage = message
+        mostRecentWorldInspectionState = state
+        // Reveal the result even if the player hid diagnostics to tap the title.
+        setDiagnosticsVisible(true)
+        NotificationCenter.default.post(name: .horizonWorldInspectionChanged, object: nil)
     }
 }
 

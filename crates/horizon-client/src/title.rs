@@ -3133,6 +3133,39 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         false
     }
 
+    /// On iOS, the native Play Selected World button only *requests* a
+    /// read-only preflight. No session lock, file fixup or game is started.
+    /// The host performs the filesystem work on a worker thread.
+    pub fn preview_inspect_request(&self, x: f32, y: f32, size: (f32, f32)) -> Option<String> {
+        if !x.is_finite()
+            || !y.is_finite()
+            || !size.0.is_finite()
+            || !size.1.is_finite()
+            || size.0 <= 0.0
+            || size.1 <= 0.0
+        {
+            return None;
+        }
+        let Mode::Select { worlds, selected } = &self.mode else {
+            return None;
+        };
+        let world = selected.and_then(|i| worlds.get(i))?;
+        if world.disabled() || world.corrupted || world.file_fixing || world.downgrade {
+            return None;
+        }
+        self.buttons(size.0, size.1)
+            .into_iter()
+            .any(|button| {
+                button.id == 10
+                    && button.enabled
+                    && x >= button.x
+                    && x < button.x + button.w
+                    && y >= button.y
+                    && y < button.y + 20.0
+            })
+            .then(|| world.folder.clone())
+    }
+
     /// Scroll only the world list, never create a world or change title options.
     /// Delta is in GUI pixels (finger moving up passes a negative delta).
     pub fn preview_scroll(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) -> bool {

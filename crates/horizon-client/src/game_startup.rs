@@ -5,6 +5,70 @@
 use crate::{Result, assets::Assets};
 use std::path::Path;
 
+/// Read-only metadata available before an iOS client has a gameplay loop.
+/// A completed inspection is not permission to start gameplay or modify saves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldInspection {
+    pub folder: String,
+    pub name: String,
+    pub game_mode: i32,
+    pub seed: i64,
+    pub dimension: String,
+}
+
+/// Mirror the read/compatibility stages of the desktop's existing-world loader
+/// without taking a session lock, performing file fixes, or writing to disk.
+/// The iOS shell calls this on a worker thread, never on UIKit's event loop.
+pub fn inspect_existing_world(saves: &Path, folder: &str) -> Result<WorldInspection> {
+    use std::path::Component;
+
+    if !matches!(
+        &std::path::Path::new(folder)
+            .components()
+            .collect::<Vec<_>>()[..],
+        [Component::Normal(_)]
+    ) {
+        return Err("World must be a single folder beneath saves".into());
+    }
+    let base = std::fs::canonicalize(saves)?;
+    let candidate = saves.join(folder);
+    if std::fs::symlink_metadata(&candidate)?
+        .file_type()
+        .is_symlink()
+    {
+        return Err("World folder cannot be a symbolic link".into());
+    }
+    let world = std::fs::canonicalize(&candidate)?;
+    if world.parent() != Some(base.as_path()) || !world.is_dir() {
+        return Err("World is outside the game's saves directory".into());
+    }
+    if std::fs::symlink_metadata(world.join("level.dat"))?
+        .file_type()
+        .is_symlink()
+    {
+        return Err("World level.dat cannot be a symbolic link".into());
+    }
+    if crate::save::incompatible_version(&world).is_some() {
+        return Err("World was saved in an incompatible game series".into());
+    }
+    if crate::save::needs_file_fixes(&world) {
+        return Err("World requires an upgrade and backup before opening".into());
+    }
+    if crate::save::downgraded_from(&world).is_some() {
+        return Err("World was saved in a newer version".into());
+    }
+    let level =
+        crate::save::Level::read_summary(&world).ok_or("Cannot read the world's level.dat")?;
+    let game_mode = level.mode();
+    Ok(WorldInspection {
+        folder: folder.to_owned(),
+        name: level.name,
+        game_mode,
+        seed: level.seed,
+        dimension: level.dimension,
+    })
+}
+
 /// Load the pinned block registry, block facts and vanilla block tags.
 /// The native game loader calls this before building meshes and gameplay tables.
 /// `Assets::load` leaks one immutable registry for the process lifetime, so
@@ -180,6 +244,87 @@ pub fn loading_title_frame<'a>(
 mod tests {
     use super::*;
     use std::{fs, time::SystemTime};
+
+    #[test]
+    fn ios_world_inspection_reads_valid_level_data_without_creating_a_lock() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-ios-inspect-{}-ok", std::process::id()));
+        let saves = root.join("saves");
+        let world = saves.join("Test");
+        fs::create_dir_all(&world).unwrap();
+        let source = world.join("level.dat");
+        crate::save::write_dat(
+            &source,
+            horizon_world::nbt::Tag::compound([(
+                "Data",
+                horizon_world::nbt::Tag::compound([
+                    (
+                        "LevelName",
+                        horizon_world::nbt::Tag::String("My World".into()),
+                    ),
+                    (
+                        "DataVersion",
+                        horizon_world::nbt::Tag::Int(horizon_world::DATA_VERSION),
+                    ),
+                    ("GameType", horizon_world::nbt::Tag::Int(1)),
+                    (
+                        "WorldGenSettings",
+                        horizon_world::nbt::Tag::compound([(
+                            "seed",
+                            horizon_world::nbt::Tag::Long(12345),
+                        )]),
+                    ),
+                    (
+                        "Version",
+                        horizon_world::nbt::Tag::compound([(
+                            "Name",
+                            horizon_world::nbt::Tag::String("26.3".into()),
+                        )]),
+                    ),
+                ]),
+            )]),
+        )
+        .unwrap();
+        let original = fs::read(&source).unwrap();
+        let inspected = inspect_existing_world(&saves, "Test").unwrap();
+        assert_eq!(inspected.folder, "Test");
+        assert_eq!(inspected.name, "My World");
+        assert_eq!(inspected.game_mode, 1);
+        assert_eq!(inspected.seed, 12345);
+        assert_eq!(original, fs::read(&source).unwrap());
+        assert!(!world.join("session.lock").exists());
+        #[cfg(unix)]
+        {
+            let external = root.join("external-level.dat");
+            fs::rename(&source, &external).unwrap();
+            std::os::unix::fs::symlink(&external, &source).unwrap();
+            assert!(
+                inspect_existing_world(&saves, "Test").is_err(),
+                "a symlinked level.dat may escape the app's world directory"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ios_world_inspection_rejects_traversal_missing_and_invalid_worlds() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-ios-inspect-{}-bad", std::process::id()));
+        let saves = root.join("saves");
+        fs::create_dir_all(saves.join("Unreadable")).unwrap();
+        for folder in ["../escape", ".", "", "Unreadable", "Missing", "/tmp"] {
+            assert!(
+                inspect_existing_world(&saves, folder).is_err(),
+                "unexpectedly accepted {folder:?}"
+            );
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&root, saves.join("Linked")).unwrap();
+            assert!(inspect_existing_world(&saves, "Linked").is_err());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn mobile_preview_accepts_only_safe_title_navigation() {

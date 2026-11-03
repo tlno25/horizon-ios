@@ -913,6 +913,42 @@ fn world_search_hint_is_gray_and_only_shown_empty_and_unfocused() {
 }
 
 #[test]
+fn ios_preview_play_button_only_requests_read_only_world_inspection() {
+    let mut f = Fixture::new();
+    f.world("World", "Test World");
+    f.title.enter_singleplayer();
+    let size = (480.0, 262.0);
+    let play = (160.0, 220.0); // native Select World primary button
+    assert_eq!(f.title.preview_inspect_request(play.0, play.1, size), None);
+    assert!(f.title.preview_tap(240.0, 60.0, size));
+    assert_eq!(
+        f.title
+            .preview_inspect_request(play.0, play.1, size)
+            .as_deref(),
+        Some("World")
+    );
+    assert!(matches!(
+        f.title.mode,
+        Mode::Select {
+            selected: Some(_),
+            ..
+        }
+    ));
+    assert!(!f.title.saves.join("World/session.lock").exists());
+    for point in [(10.0, 10.0), (160.0, 250.0), (f32::NAN, 220.0)] {
+        assert!(
+            f.title
+                .preview_inspect_request(point.0, point.1, size)
+                .is_none()
+        );
+    }
+    if let Mode::Select { worlds, .. } = &mut f.title.mode {
+        worlds[0].locked = true;
+    }
+    assert_eq!(f.title.preview_inspect_request(play.0, play.1, size), None);
+}
+
+#[test]
 fn ios_preview_selects_world_rows_without_starting_any_world() {
     let mut f = Fixture::new();
     f.world("World", "World");

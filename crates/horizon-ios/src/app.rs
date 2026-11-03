@@ -23,10 +23,14 @@ use horizon_client::{
 };
 use metal_probe::MetalProbe;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 enum ShellEvent {
     Wake,
     RendererCompleted,
+    WorldInspected {
+        generation: u64,
+        result: Result<horizon_client::game_startup::WorldInspection, String>,
+    },
 }
 
 static EVENT_PROXY: OnceLock<EventLoopProxy<ShellEvent>> = OnceLock::new();
@@ -92,6 +96,8 @@ unsafe extern "C" {
     /// Swift copies the diagnostic before this synchronous callback returns.
     fn horizon_ios_resource_import_result(message: *const u8, length: usize, succeeded: i32);
     fn horizon_ios_core_load_result(message: *const u8, length: usize, succeeded: i32);
+    /// 1=inspecting, 2=read-only validation succeeded, 3=failed.
+    fn horizon_ios_world_inspection_changed(message: *const u8, length: usize, state: i32);
 }
 
 pub(super) unsafe fn graphics_changed(state: u32) {
@@ -110,6 +116,11 @@ pub(super) fn report_core_load_result(message: &str, success: bool) {
 
 pub(super) fn notify_touch_changed() {
     unsafe { horizon_ios_touch_changed() };
+}
+
+fn report_world_inspection(message: &str, state: i32) {
+    eprintln!("Horizon iOS world inspection: {message}");
+    unsafe { horizon_ios_world_inspection_changed(message.as_ptr(), message.len(), state) };
 }
 
 fn report_graphics_error(message: &str) {
@@ -138,6 +149,8 @@ struct Shell {
     title: Option<PreparedTitle>,
     title_refresh: TitleRefresh,
     title_tap: TitleTap,
+    world_inspection_pending: bool,
+    world_inspection_generation: u64,
     /// GPU pipelines are compiled offscreen on a worker. Winit/SwiftUI must
     /// remain responsive during this work; only surface attachment is on UIKit.
     renderer_job: Option<JoinHandle<Result<PreparedRenderer, String>>>,
@@ -148,6 +161,42 @@ struct Shell {
 }
 
 impl Shell {
+    /// Request only the desktop loader's read-only world metadata stage.
+    /// The real game world, session lock, simulation and save writers are not
+    /// constructed by this preview yet. Never block UIKit on file access.
+    fn inspect_selected_world(&mut self, folder: String) {
+        if self.world_inspection_pending {
+            return;
+        }
+        let Some(home) = crate::ENGINE_HOME.get() else {
+            report_world_inspection("Game home is unavailable", 3);
+            return;
+        };
+        let Some(proxy) = EVENT_PROXY.get() else {
+            report_world_inspection("Winit event loop is unavailable", 3);
+            return;
+        };
+        self.world_inspection_pending = true;
+        self.world_inspection_generation = self.world_inspection_generation.wrapping_add(1);
+        let generation = self.world_inspection_generation;
+        let saves = home.join("saves");
+        report_world_inspection("Inspecting selected world (read-only)...", 1);
+        let worker = std::thread::Builder::new()
+            .name("Horizon iOS world inspection".to_owned())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(|| {
+                    horizon_client::game_startup::inspect_existing_world(&saves, &folder)
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap_or_else(|payload| Err(crate::describe_renderer_panic(payload.as_ref())));
+                let _ = proxy.send_event(ShellEvent::WorldInspected { generation, result });
+            });
+        if let Err(error) = worker {
+            self.world_inspection_pending = false;
+            report_world_inspection(&format!("Cannot start inspection: {error}"), 3);
+        }
+    }
+
     fn mount_home(&self) -> Result<(), String> {
         let window = self.window.as_ref().ok_or("Winit window not created")?;
         let handle = window.window_handle().map_err(|error| error.to_string())?;
@@ -406,6 +455,8 @@ impl ApplicationHandler<ShellEvent> for Shell {
         self.horizon = None;
         self.title = None;
         self.title_tap.clear();
+        self.world_inspection_pending = false;
+        self.world_inspection_generation = self.world_inspection_generation.wrapping_add(1);
         crate::RENDERER_SWITCH.reset();
         crate::set_graphics_state(4);
         crate::shell_suspended();
@@ -526,23 +577,29 @@ impl ApplicationHandler<ShellEvent> for Shell {
                                 let batch =
                                     HudBatch::new([renderer.config.width, renderer.config.height]);
                                 let view = (batch.width, batch.height);
-                                if let Some(title) = self.title.as_mut() {
-                                    let changed = if let Some(release) = tap {
-                                        title.screen.preview_tap(
-                                            release.0 / batch.scale,
-                                            release.1 / batch.scale,
-                                            view,
-                                        )
-                                    } else if let Some((dy, start)) = swipe {
+                                if let Some(release) = tap {
+                                    let pointer =
+                                        (release.0 / batch.scale, release.1 / batch.scale);
+                                    let request = self.title.as_ref().and_then(|title| {
+                                        title
+                                            .screen
+                                            .preview_inspect_request(pointer.0, pointer.1, view)
+                                    });
+                                    if let Some(folder) = request {
+                                        self.inspect_selected_world(folder);
+                                    } else if self.title.as_mut().is_some_and(|title| {
+                                        title.screen.preview_tap(pointer.0, pointer.1, view)
+                                    }) {
+                                        window.request_redraw();
+                                    }
+                                } else if let Some((dy, start)) = swipe {
+                                    if self.title.as_mut().is_some_and(|title| {
                                         title.screen.preview_scroll(
                                             dy / batch.scale,
                                             (start.0 / batch.scale, start.1 / batch.scale),
                                             view,
                                         )
-                                    } else {
-                                        false
-                                    };
-                                    if changed {
+                                    }) {
                                         window.request_redraw();
                                     }
                                 }
@@ -559,8 +616,42 @@ impl ApplicationHandler<ShellEvent> for Shell {
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: ShellEvent) {
-        if matches!(event, ShellEvent::RendererCompleted) {
-            self.complete_horizon_renderer();
+        match event {
+            ShellEvent::RendererCompleted => self.complete_horizon_renderer(),
+            ShellEvent::WorldInspected { generation, result } => {
+                if generation == self.world_inspection_generation
+                    && self.lifecycle.drawable_size().is_some()
+                {
+                    self.world_inspection_pending = false;
+                    match result {
+                        Ok(world) => {
+                            let safe_name: String = world
+                                .name
+                                .chars()
+                                .filter(|c| !c.is_control())
+                                .take(96)
+                                .collect();
+                            let mode = match world.game_mode {
+                                1 => "Creative",
+                                2 => "Adventure",
+                                3 => "Spectator",
+                                _ => "Survival",
+                            };
+                            report_world_inspection(
+                                &format!(
+                                    "World '{safe_name}' verified: {mode}, seed {}, dimension {}. Gameplay is not implemented yet; no save files were changed.",
+                                    world.seed, world.dimension
+                                ),
+                                2,
+                            );
+                        }
+                        Err(error) => {
+                            report_world_inspection(&format!("World inspection failed: {error}"), 3)
+                        }
+                    }
+                }
+            }
+            ShellEvent::Wake => {}
         }
         if let Some(window) = &self.window {
             window.request_redraw();

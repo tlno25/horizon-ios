@@ -288,7 +288,7 @@ private struct HomeView: View {
                         Text("Selected world — read-only check")
                             .font(.headline)
                         if worldInspectionState == 1 {
-                            ProgressView("Reading level.dat")
+                            ProgressView("Inspecting save and preparing CPU terrain")
                         }
                         Text(worldInspectionMessage)
                             .font(.footnote)
@@ -378,7 +378,7 @@ private struct HomeView: View {
                             .textSelection(.enabled)
                     }
 
-                    Text("After loading game data, Preview Horizon renderer shows Horizon's native title. In Show game mode, tap Singleplayer, select a world or swipe the list. Play Selected World now performs a read-only world compatibility check; it does not start gameplay or modify save data.")
+                    Text("After loading game data, Preview Horizon renderer shows Horizon's native title. In Show game mode, tap Singleplayer, select a world or swipe the list. Play Selected World checks the save and prepares one chunk's CPU terrain mesh. Terrain display, gameplay and saving are not active yet.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

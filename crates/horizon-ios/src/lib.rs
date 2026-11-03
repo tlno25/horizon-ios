@@ -32,6 +32,9 @@ static CORE_ASSETS: OnceLock<horizon_client::assets::Assets> = OnceLock::new();
 #[cfg(target_os = "ios")]
 static PREVIEW_BIOMES: OnceLock<horizon_client::biome::Biomes> = OnceLock::new();
 #[cfg(target_os = "ios")]
+static PREVIEW_TERRAIN: OnceLock<horizon_client::game_startup::TerrainMeshingResources> =
+    OnceLock::new();
+#[cfg(target_os = "ios")]
 static RENDERER_SWITCH: RendererSwitch = RendererSwitch::new();
 #[cfg(target_os = "ios")]
 static RENDERER_SMOKE_ENABLED: AtomicBool = AtomicBool::new(false);

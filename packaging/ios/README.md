@@ -71,10 +71,30 @@ block-state ID below the player, numeric biome ID, resident section count and
 approximate section-memory usage. After validation, the Winit shell now
 retains **at most one decoded initial column** in Rust memory for the next
 terrain stage. The column is cleared on a new world inspection, title
-navigation, or suspension. It is not yet meshed, sent to Metal, or modified
-on disk. This keeps native-Rust ownership of the game's data, as seen in the
-separate [heyskylo/horizon-ios](https://github.com/heyskylo/horizon-ios)
-experiment, without copying its app entry point or implementation.
+navigation, or suspension. On a player-triggered preflight with prepared
+resources, the same background worker now:
+
+1. Loads and caches the actual block-model atlas, block facts and native
+   visibility/meshing tables **on demand** (not during title startup).
+2. Reads up to eight existing neighbouring Anvil columns read-only, without
+   generating any missing chunks, to preserve native face occlusion.
+3. Runs Horizon's shared `Mesher` over non-air sections of the saved centre
+   column, sorts solid faces and retains their CPU vertices, with a bounded
+   1,048,576-vertex safety limit (about 24 MiB of vertices).
+4. Reports real solid/translucent quad counts, meshed sections and the number
+   of saved neighbours. The CPU vertices stay on the Winit/UI thread only
+   until a new selection, navigation, or app suspension clears them.
+
+`loading_terrain_renderer` and `terrain_preview_frame` now provide the correct
+prepared sprite arrays and safe saved-player camera for the future GPU stage;
+`upload_prepared_terrain` provides the same `Renderer::upload` bridge as the
+native game. **These GPU hooks are not yet activated by iOS**: the current
+boot renderer has only a placeholder block sprite and must not be sent full
+terrain vertices. No textured terrain is displayed, world simulation is not
+started and no save files are modified. This keeps native-Rust ownership of
+the game's data, as seen in the separate
+[heyskylo/horizon-ios](https://github.com/heyskylo/horizon-ios) experiment,
+without copying its app entry point or implementation.
 Custom world biome packs are not yet resolved during this preflight, so IDs
 are based on the bundled vanilla biome registry; custom-biome mappings must
 be integrated before actual gameplay. This does **not** generate missing

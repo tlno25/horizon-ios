@@ -41,8 +41,8 @@ pub enum InitialChunkDiskState {
     },
 }
 
-/// One native, fully decoded column was constructed in memory; no chunk is
-/// retained in a running World or sent to the GPU at this stage.
+/// Preview metadata for a native decoded saved column. A worker may retain
+/// the in-memory column for CPU meshing, but does not start a running World.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResidentChunkPreview {
     pub chunk: [i32; 2],
@@ -84,38 +84,124 @@ pub fn decode_saved_initial_chunk_preview(
     )
 }
 
-/// Construct a resident `Chunk` with the same decoder used for gameplay,
-/// then return only bounded diagnostic metadata. The Anvil path has already
-/// been verified by `inspect_saved_initial_chunk` below, preventing linked
-/// region and external payload files from being silently followed.
-pub fn load_saved_initial_chunk_preview(
+/// Only compile sections that contain saved, non-air block states. Empty
+/// chunks may have many uniform air sections, which the native Mesher can
+/// return cheaply but should not allocate GPU buffers for.
+pub fn mesh_section_candidates(column: &crate::chunk::Chunk) -> Vec<i32> {
+    column
+        .sections
+        .iter()
+        .enumerate()
+        .filter(|(_, section)| !section.is_uniform(0))
+        .map(|(i, _)| i as i32)
+        .collect()
+}
+
+/// CPU assets for the same native mesher that desktop and Android use.
+/// Loaded only when the player selects a saved world, not at title startup.
+/// The prepared texture atlas is also needed by the eventual Metal renderer.
+pub struct TerrainMeshingResources {
+    pub render: crate::assets::RenderAssets,
+    pub tables: crate::mesher::MeshTables,
+}
+
+impl TerrainMeshingResources {
+    pub fn load(root: &Path, core: &Assets) -> Result<Self> {
+        let render = core.reload(root)?;
+        let facts = crate::blocks::BlockFacts::load(root, core.registry)?;
+        let visibility = crate::models::load_visibility(root, core.registry)?;
+        let tables = crate::mesher::MeshTables::new(core, &render, &facts, visibility)?;
+        Ok(Self { render, tables })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TerrainMeshSummary {
+    /// Number of sections that actually contain visible mesh vertices.
+    pub sections: usize,
+    pub solid_quads: usize,
+    pub translucent_quads: usize,
+}
+
+/// Count real quads, not padded or uniform-air sections.
+pub fn terrain_mesh_summary(meshes: &[(i32, crate::mesher::SectionMesh)]) -> TerrainMeshSummary {
+    let mut summary = TerrainMeshSummary::default();
+    for (_, mesh) in meshes {
+        if !mesh.solid.is_empty() || !mesh.translucent.is_empty() {
+            summary.sections += 1;
+        }
+        summary.solid_quads += mesh.solid.len() / 4;
+        summary.translucent_quads += mesh.translucent.len() / 4;
+    }
+    summary
+}
+
+/// Meshed sections retain their native terrain vertices for a future GPU
+/// upload. This is a bounded preview of the *saved* initial column only, not
+/// a running world. Saved neighbours are consulted for face occlusion; missing
+/// or ungenerated neighbours and ongoing lighting still need the world streamer.
+pub struct PreparedTerrain {
+    pub meshes: Vec<(i32, crate::mesher::SectionMesh)>,
+    pub summary: TerrainMeshSummary,
+    /// Saved neighbour columns actually used for edge face culling (0..=8).
+    pub saved_neighbors: usize,
+}
+
+/// One bounded (3x3) read-only neighbourhood for native face occlusion.
+/// Missing neighbouring saves remain absent; no generation or writes occur.
+/// Every present neighbour is checked with the same Anvil guard as the first.
+pub fn load_saved_initial_region(
     world: &Path,
-    chunk: [i32; 2],
-    player_position: [f64; 3],
+    center: &crate::chunk::Chunk,
     registry: &horizon_world::registry::BlockRegistry,
     biomes: &crate::biome::Biomes,
-) -> Result<Option<(ResidentChunkPreview, crate::chunk::Chunk)>> {
+) -> Result<crate::mesher::Region> {
+    let mut region: crate::mesher::Region = std::array::from_fn(|_| std::array::from_fn(|_| None));
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            let entry = if dx == 0 && dz == 0 {
+                Some(center.clone())
+            } else {
+                let x = center
+                    .x
+                    .checked_add(dx)
+                    .ok_or("Neighbour X coordinate overflow")?;
+                let z = center
+                    .z
+                    .checked_add(dz)
+                    .ok_or("Neighbour Z coordinate overflow")?;
+                read_existing_saved_column(world, [x, z], registry, biomes)?
+            };
+            region[(dz + 1) as usize][(dx + 1) as usize] = entry.map(std::sync::Arc::new);
+        }
+    }
+    Ok(region)
+}
+
+/// Shared read-only Anvil path for both the centre column and its neighbours.
+/// This does not apply data fixes, create regions, or acquire session locks.
+fn read_existing_saved_column(
+    world: &Path,
+    chunk: [i32; 2],
+    registry: &horizon_world::registry::BlockRegistry,
+    biomes: &crate::biome::Biomes,
+) -> Result<Option<crate::chunk::Chunk>> {
     use horizon_core::position::ChunkPos;
     use horizon_world::{nbt::Limits, region::RegionFile};
 
-    if staged_player_chunk(Some(player_position)) != Some(chunk) {
-        return Err("Saved player position does not belong to the requested chunk".into());
-    }
-    if matches!(
-        inspect_saved_initial_chunk(world, chunk, Some(player_position))?,
-        InitialChunkDiskState::Missing
-    ) {
+    let Some(path) = verified_region_path(world, chunk)? else {
         return Ok(None);
-    }
+    };
     let [cx, cz] = chunk;
-    let file = world
-        .join("region")
-        .join(format!("r.{}.{}.mca", cx >> 5, cz >> 5));
-    let mut region = RegionFile::open(file)?;
-    let record = region
-        .read(ChunkPos::new(cx, cz))?
-        .ok_or("Saved chunk disappeared")?;
-    let tag = record.nbt(Limits::saved())?;
+    let mut region = RegionFile::open(path)?;
+    let Some(record) = region.read(ChunkPos::new(cx, cz))? else {
+        return Ok(None);
+    };
+    let validated = horizon_world::chunk::ChunkData::new(record.nbt(Limits::saved())?)?;
+    if validated.position() != ChunkPos::new(cx, cz) {
+        return Err("Anvil chunk has mismatched coordinates".into());
+    }
+    let tag = validated.root();
     let column = crate::save::decode_with(
         &tag,
         registry,
@@ -127,6 +213,88 @@ pub fn load_saved_initial_chunk_preview(
     if [column.x, column.z] != chunk {
         return Err("Resident chunk coordinates do not match the requested chunk".into());
     }
+    Ok(Some(column))
+}
+
+/// Run the game's native CPU mesher over the already validated initial column
+/// with vanilla models, lighting, palette IDs and biome tint logic.
+/// This performs no GPU operations or save writes and can run on a worker.
+pub fn mesh_prepared_column(
+    region: &crate::mesher::Region,
+    seed: i64,
+    core: &Assets,
+    biomes: &crate::biome::Biomes,
+    resources: &TerrainMeshingResources,
+) -> Result<PreparedTerrain> {
+    use crate::mesher::Mesher;
+    use horizon_core::biome::{BiomeZoom, obfuscate_seed};
+
+    let column = region[1][1]
+        .as_deref()
+        .ok_or("No centre chunk for terrain meshing")?;
+    let borrowed = crate::mesher::borrow(region);
+    let mut mesher = Mesher {
+        nether_shading: false,
+        shader_pack_lighting: false,
+        assets: core,
+        render: &resources.render,
+        tables: &resources.tables,
+        biomes,
+        visibility: resources.tables.visibility.clone(),
+        zoom: BiomeZoom::new(obfuscate_seed(seed)),
+        blend_radius: 2,
+        smooth_lighting: true,
+        cutout_leaves: true,
+    };
+    let mut meshes = Vec::new();
+    let mut emitted_vertices = 0usize;
+    // One-column iOS preview only: keep CPU geometry under ~24 MiB of vertices.
+    const MAX_PREVIEW_VERTICES: usize = 1_048_576;
+    for sy in mesh_section_candidates(column) {
+        let mut mesh = mesher.mesh(&borrowed, sy);
+        if mesh.solid.is_empty() && mesh.translucent.is_empty() {
+            continue;
+        }
+        emitted_vertices = emitted_vertices
+            .saturating_add(mesh.solid.len())
+            .saturating_add(mesh.translucent.len());
+        if emitted_vertices > MAX_PREVIEW_VERTICES {
+            return Err("Saved terrain preview exceeds the bounded CPU mesh budget".into());
+        }
+        mesh.sort_solid();
+        meshes.push((sy, mesh));
+    }
+    let summary = terrain_mesh_summary(&meshes);
+    let saved_neighbors = region
+        .iter()
+        .flatten()
+        .filter(|column| column.is_some())
+        .count()
+        .saturating_sub(1);
+    Ok(PreparedTerrain {
+        meshes,
+        summary,
+        saved_neighbors,
+    })
+}
+
+/// Construct a resident `Chunk` with the same decoder used for gameplay,
+/// then return only bounded diagnostic metadata. The Anvil path has already
+/// been verified by `inspect_saved_initial_chunk` below, preventing linked
+/// region and external payload files from being silently followed.
+pub fn load_saved_initial_chunk_preview(
+    world: &Path,
+    chunk: [i32; 2],
+    player_position: [f64; 3],
+    registry: &horizon_world::registry::BlockRegistry,
+    biomes: &crate::biome::Biomes,
+) -> Result<Option<(ResidentChunkPreview, crate::chunk::Chunk)>> {
+    if staged_player_chunk(Some(player_position)) != Some(chunk) {
+        return Err("Saved player position does not belong to the requested chunk".into());
+    }
+    let Some(column) = read_existing_saved_column(world, chunk, registry, biomes)? else {
+        return Ok(None);
+    };
     let [x, y, z] = player_position;
     let feet_y = y.floor() as i32 - 1;
     if !(column.min_y()..column.max_y()).contains(&feet_y) {
@@ -146,28 +314,17 @@ pub fn load_saved_initial_chunk_preview(
     )))
 }
 
-/// Read the first existing chunk using the game's read-only Anvil decoder.
-/// Never generate missing regions, acquire a session lock or touch save data.
-/// Reject symlinks in the region path, including external `.mcc` payloads.
-pub fn inspect_saved_initial_chunk(
-    world: &Path,
-    chunk: [i32; 2],
-    player_position: Option<[f64; 3]>,
-) -> Result<InitialChunkDiskState> {
-    use horizon_core::position::{BlockPos, ChunkPos};
-    use horizon_world::{
-        nbt::{Limits, Tag},
-        region::RegionFile,
-    };
+/// Validate the shared Anvil region path before any reader opens it.
+/// Reject symlinks for both region files and oversized external payloads.
+fn verified_region_path(world: &Path, chunk: [i32; 2]) -> Result<Option<std::path::PathBuf>> {
     use std::{fs, io::ErrorKind};
-
     let directory = world.join("region");
     match fs::symlink_metadata(&directory) {
         Ok(meta) if !meta.is_dir() || meta.file_type().is_symlink() => {
             return Err("Invalid region directory".into());
         }
         Err(err) if err.kind() == ErrorKind::NotFound => {
-            return Ok(InitialChunkDiskState::Missing);
+            return Ok(None);
         }
         Err(err) => return Err(err.into()),
         _ => {}
@@ -179,7 +336,7 @@ pub fn inspect_saved_initial_chunk(
             return Err("Invalid or linked Anvil region file".into());
         }
         Err(err) if err.kind() == ErrorKind::NotFound => {
-            return Ok(InitialChunkDiskState::Missing);
+            return Ok(None);
         }
         Err(err) => return Err(err.into()),
         _ => {}
@@ -195,6 +352,26 @@ pub fn inspect_saved_initial_chunk(
         Err(err) => return Err(err.into()),
         _ => {}
     }
+    Ok(Some(path))
+}
+
+/// Read the first existing chunk using the game's read-only Anvil decoder.
+/// Never generate missing regions, acquire a session lock or touch save data.
+/// Reject symlinks in the region path, including external `.mcc` payloads.
+pub fn inspect_saved_initial_chunk(
+    world: &Path,
+    chunk: [i32; 2],
+    player_position: Option<[f64; 3]>,
+) -> Result<InitialChunkDiskState> {
+    use horizon_core::position::{BlockPos, ChunkPos};
+    use horizon_world::{
+        nbt::{Limits, Tag},
+        region::RegionFile,
+    };
+    let Some(path) = verified_region_path(world, chunk)? else {
+        return Ok(InitialChunkDiskState::Missing);
+    };
+    let [x, z] = chunk;
     let mut region = RegionFile::open(path)?;
     let Some(record) = region.read(ChunkPos::new(x, z))? else {
         return Ok(InitialChunkDiskState::Missing);
@@ -298,7 +475,7 @@ pub fn inspect_existing_world(saves: &Path, folder: &str) -> Result<WorldInspect
     let saved_position = level
         .position
         .filter(|p| staged_player_chunk(Some(*p)).is_some());
-    let saved_rotation = saved_position.map(|_| level.rotation);
+    let saved_rotation = saved_position.map(|_| safe_preview_rotation(level.rotation));
     let initial_chunk = staged_player_chunk(saved_position);
     // Only the vanilla overworld layout is supported by the first disk probe.
     // Other dimensions keep their metadata but await their storage mapping.
@@ -393,6 +570,41 @@ pub fn loading_renderer(
     previous: Option<&Renderer>,
     api: crate::graphics::GraphicsApi,
 ) -> Result<Renderer> {
+    loading_renderer_with_sprites(window, offscreen, atlas, panorama, previous, api, None)
+}
+
+/// Native preview renderer with the same prepared block sprite arrays the
+/// desktop game uses. Replaces the placeholder one-pixel block texture;
+/// it must be created on a worker before uploading or drawing terrain meshes.
+pub fn loading_terrain_renderer(
+    window: Arc<Window>,
+    offscreen: bool,
+    atlas: Option<&crate::hud::HudAtlas>,
+    panorama: Option<&crate::gfx::panorama::Faces>,
+    previous: Option<&Renderer>,
+    api: crate::graphics::GraphicsApi,
+    terrain: &crate::assets::RenderAssets,
+) -> Result<Renderer> {
+    loading_renderer_with_sprites(
+        window,
+        offscreen,
+        atlas,
+        panorama,
+        previous,
+        api,
+        Some(terrain),
+    )
+}
+
+fn loading_renderer_with_sprites(
+    window: Arc<Window>,
+    offscreen: bool,
+    atlas: Option<&crate::hud::HudAtlas>,
+    panorama: Option<&crate::gfx::panorama::Faces>,
+    previous: Option<&Renderer>,
+    api: crate::graphics::GraphicsApi,
+    terrain: Option<&crate::assets::RenderAssets>,
+) -> Result<Renderer> {
     static FORCEFIELD: [u8; 4] = [0; 4];
     static EMPTY_HUD: [u8; 4] = [0, 0, 0, 255];
     static EMPTY_GLINT: [u8; 4] = [0; 4];
@@ -414,15 +626,34 @@ pub fn loading_renderer(
     if let Some(atlas) = atlas {
         atlas.font.reset_cache();
     }
+    let (sprite_pixels, sprite_size, sprite_minimum_size, layers, sprite_mips, animations) =
+        match terrain {
+            Some(t) => (
+                t.pixels.as_slice(),
+                t.sprite_size,
+                t.sprite_minimum_size,
+                t.texture_layers,
+                t.sprite_mips.as_slice(),
+                t.animations.as_slice(),
+            ),
+            None => (
+                &[255, 255, 255, 255][..],
+                1,
+                1,
+                1,
+                &[][..] as &[crate::mipmap::Settings],
+                &[][..] as &[crate::sprites::SpriteAnimation],
+            ),
+        };
     let mut renderer = pollster::block_on(Renderer::new(
         window,
         offscreen,
-        &[255, 255, 255, 255],
-        1,
-        1,
-        1,
-        &[],
-        &[],
+        sprite_pixels,
+        sprite_size,
+        sprite_minimum_size,
+        layers,
+        sprite_mips,
+        animations,
         (pixels, width, height),
         (glint_pixels, glint_width, glint_height),
         (glint_pixels, glint_width, glint_height),
@@ -516,6 +747,59 @@ pub fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         post_effects: crate::post_chain::Request::none(),
         menu_blur: None,
     }
+}
+
+/// A saved world can contain nonfinite camera angles. Do not send NaN to
+/// WGPU's view matrix, and clamp pitch to the vanilla first-person range.
+pub fn safe_preview_rotation(rotation: [f32; 2]) -> [f32; 2] {
+    if !rotation[0].is_finite() || !rotation[1].is_finite() {
+        [0.0, 0.0]
+    } else {
+        [rotation[0], rotation[1].clamp(-90.0, 90.0)]
+    }
+}
+
+/// Upload sections after `loading_terrain_renderer` created a GPU atlas from
+/// the same `TerrainMeshingResources`. This must run on Winit/UIKit's thread
+/// while the game's display surface is valid. Only saved static terrain is
+/// staged: no world ticks or save modifications take place.
+pub fn upload_prepared_terrain(
+    renderer: &mut Renderer,
+    column: &crate::chunk::Chunk,
+    prepared: &PreparedTerrain,
+) {
+    for (sy, mesh) in &prepared.meshes {
+        renderer.upload((column.x, *sy, column.z), mesh);
+    }
+}
+
+/// The smallest native world-camera frame the shared GPU renderer can draw.
+/// Used only once prepared terrain has been uploaded with real sprite arrays;
+/// this is not an active gameplay loop and does not tick or save a world.
+pub fn terrain_preview_frame(
+    hud: &HudBatch,
+    saved_position: [f64; 3],
+    rotation: [f32; 2],
+) -> Frame<'_> {
+    let mut frame = loading_frame(hud);
+    // The saved position is the player's feet. First-person view is 1.62 m up.
+    let camera = glam::DVec3::new(
+        saved_position[0],
+        saved_position[1] + 1.62,
+        saved_position[2],
+    );
+    let rotation = safe_preview_rotation(rotation);
+    frame.title = false;
+    frame.camera = camera;
+    frame.eye = camera;
+    frame.yaw = rotation[0];
+    frame.pitch = rotation[1];
+    frame.eye_rotation = rotation;
+    frame.skybox = true;
+    frame.distance = 96.0;
+    frame.detail_distance = 96.0;
+    frame.cave_culling = false; // Incomplete saved neighbours need no graph.
+    frame
 }
 
 /// Draw the same native Minecraft/Horizon title widgets used by the desktop
@@ -764,6 +1048,18 @@ mod tests {
         assert_eq!([column.x, column.z], [8, -5]);
         assert_eq!(column.block(128, 71, -65).0, 1);
         assert_eq!(column.biome(128, 71, -65), 1);
+        let region = load_saved_initial_region(&world, &column, &registry, &biomes).unwrap();
+        assert!(region[1][1].is_some());
+        assert_eq!(region[1][1].as_ref().unwrap().block(128, 71, -65).0, 1);
+        assert_eq!(region.iter().flatten().filter(|c| c.is_some()).count(), 1);
+        assert!(region[0][0].is_none());
+        // The initial column has one non-air section in the synthetic save;
+        // the CPU mesher must not scan all 24 empty sections.
+        assert_eq!(mesh_section_candidates(&column), vec![8]);
+        assert_eq!(
+            mesh_section_candidates(&crate::chunk::Chunk::empty(8, -5)),
+            Vec::<i32>::new()
+        );
         assert_eq!(original, fs::read(&source).unwrap());
         assert_eq!(original_region, fs::read(&region_path).unwrap());
         assert!(!world.join("session.lock").exists());
@@ -865,6 +1161,47 @@ mod tests {
     }
 
     #[test]
+    fn ios_cpu_mesh_neighbourhood_decodes_existing_saves_and_never_writes() {
+        use horizon_core::position::ChunkPos;
+        use horizon_world::{
+            compression::Compression,
+            nbt::{Limits, Tag},
+            region::{ChunkRecord, RegionFile},
+        };
+        let root =
+            std::env::temp_dir().join(format!("horizon-ios-neighbours-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let file = write_stone_region(&root);
+        let mut original_region = RegionFile::open(&file).unwrap();
+        let mut neighbor_nbt = original_region
+            .read(ChunkPos::new(8, -5))
+            .unwrap()
+            .unwrap()
+            .nbt(Limits::saved())
+            .unwrap();
+        *neighbor_nbt.tag.get_mut("xPos").unwrap() = Tag::Int(9);
+        let neighbor =
+            ChunkRecord::from_nbt(&neighbor_nbt, Compression::Zlib, 0, Limits::default()).unwrap();
+        RegionFile::open_writable(&file, false)
+            .unwrap()
+            .write(ChunkPos::new(9, -5), &neighbor)
+            .unwrap();
+        let before = fs::read(&file).unwrap();
+        let (registry, biomes) = synthetic_native_tables(&root);
+        let center = read_existing_saved_column(&root, [8, -5], &registry, &biomes)
+            .unwrap()
+            .unwrap();
+        let nearby = load_saved_initial_region(&root, &center, &registry, &biomes).unwrap();
+        assert_eq!(nearby.iter().flatten().filter(|c| c.is_some()).count(), 2);
+        assert_eq!(nearby[1][1].as_ref().unwrap().block(128, 71, -65).0, 1);
+        assert_eq!(nearby[1][2].as_ref().unwrap().block(144, 71, -65).0, 1);
+        assert!(nearby[0][1].is_none());
+        assert_eq!(before, fs::read(&file).unwrap());
+        assert!(!root.join("session.lock").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn ios_preflight_rejects_symlinked_and_corrupt_region_files() {
         let root =
             std::env::temp_dir().join(format!("horizon-ios-anvil-bad-{}", std::process::id()));
@@ -893,6 +1230,46 @@ mod tests {
             assert!(inspect_saved_initial_chunk(&root, [0, 0], None).is_err());
         }
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ios_preview_camera_rejects_invalid_rotation_and_pitch() {
+        assert_eq!(safe_preview_rotation([f32::NAN, f32::INFINITY]), [0.0, 0.0]);
+        assert_eq!(safe_preview_rotation([180.0, 180.0]), [180.0, 90.0]);
+        assert_eq!(safe_preview_rotation([-45.0, -130.0]), [-45.0, -90.0]);
+    }
+
+    #[test]
+    fn ios_terrain_frame_uses_saved_camera_and_is_not_a_title_frame() {
+        let hud = crate::hud::HudBatch::new([720, 480]);
+        let frame = terrain_preview_frame(&hud, [128.5, 72.0, -64.25], [45.0, -15.0]);
+        assert!(!frame.title);
+        assert!(frame.skybox);
+        assert_eq!(frame.camera, glam::DVec3::new(128.5, 73.62, -64.25));
+        assert_eq!(frame.eye, frame.camera);
+        assert_eq!(frame.eye_rotation, [45.0, -15.0]);
+        assert_eq!(frame.yaw, 45.0);
+        assert_eq!(frame.pitch, -15.0);
+        assert!(frame.distance >= 64.0);
+    }
+
+    #[test]
+    fn ios_cpu_terrain_summary_counts_only_emitted_quads() {
+        use crate::mesher::{SectionMesh, TerrainVertex};
+        let mut one = SectionMesh::default();
+        let vertex = TerrainVertex::new([0.0, 0.0, 0.0], [0.0, 0.0], 0, 0, 0);
+        one.solid.extend([vertex; 8]);
+        one.translucent.extend([vertex; 4]);
+        let summary = terrain_mesh_summary(&[(8, one), (9, SectionMesh::default())]);
+        assert_eq!(summary.sections, 1);
+        assert_eq!(summary.solid_quads, 2);
+        assert_eq!(summary.translucent_quads, 1);
+        assert_eq!(terrain_mesh_summary(&[]).sections, 0);
+        // Rendering resources and CPU meshes move to and from the iOS worker.
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<TerrainMeshingResources>();
+        fn assert_send<T: Send>() {}
+        assert_send::<PreparedTerrain>();
     }
 
     #[test]

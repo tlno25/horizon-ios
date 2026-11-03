@@ -29,8 +29,15 @@ enum ShellEvent {
     RendererCompleted,
     WorldInspected {
         generation: u64,
-        result: Result<horizon_client::game_startup::PreparedWorld, String>,
+        result: Result<PreparedWorldPreview, String>,
     },
+}
+
+/// Full CPU-only result delivered from the file/meshing worker. No WGPU
+/// objects cross the event channel; UIKit alone uploads GPU state.
+struct PreparedWorldPreview {
+    world: horizon_client::game_startup::PreparedWorld,
+    terrain: Option<horizon_client::game_startup::PreparedTerrain>,
 }
 
 static EVENT_PROXY: OnceLock<EventLoopProxy<ShellEvent>> = OnceLock::new();
@@ -128,8 +135,9 @@ fn report_graphics_error(message: &str) {
     unsafe { horizon_ios_report_graphics_error(message.as_ptr(), message.len()) };
 }
 
-/// Title visuals are exactly the native Horizon title screen, not duplicated
-/// SwiftUI buttons. World actions/input are not wired up in this milestone.
+/// Title visuals are the native Horizon title screen, not duplicated SwiftUI
+/// buttons. World selection safely stages read-only terrain CPU data, but the
+/// live game loop and textured GPU terrain remain disabled.
 struct PreparedTitle {
     atlas: HudAtlas,
     screen: Title,
@@ -154,6 +162,9 @@ struct Shell {
     /// At most one decoded saved column, prepared on the file-I/O worker and
     /// owned by UIKit's Winit thread. Not yet attached to the terrain renderer.
     initial_column: Option<horizon_client::chunk::Chunk>,
+    /// Native CPU mesh vertices for the initial saved column, staged until
+    /// the terrain renderer has the corresponding block sprite atlas.
+    terrain: Option<horizon_client::game_startup::PreparedTerrain>,
     /// GPU pipelines are compiled offscreen on a worker. Winit/SwiftUI must
     /// remain responsive during this work; only surface attachment is on UIKit.
     renderer_job: Option<JoinHandle<Result<PreparedRenderer, String>>>,
@@ -181,6 +192,7 @@ impl Shell {
         };
         self.world_inspection_pending = true;
         self.initial_column = None;
+        self.terrain = None;
         self.world_inspection_generation = self.world_inspection_generation.wrapping_add(1);
         let generation = self.world_inspection_generation;
         let saves = home.join("saves");
@@ -203,9 +215,12 @@ impl Shell {
                         Some(horizon_client::game_startup::InitialChunkDiskState::Saved { .. })
                     );
                     let Some(core) = crate::CORE_ASSETS.get().filter(|_| native_ready) else {
-                        return Ok(horizon_client::game_startup::PreparedWorld {
-                            inspection: basic,
-                            initial_column: None,
+                        return Ok(PreparedWorldPreview {
+                            world: horizon_client::game_startup::PreparedWorld {
+                                inspection: basic,
+                                initial_column: None,
+                            },
+                            terrain: None,
                         });
                     };
                     let biomes = if let Some(biomes) = crate::PREVIEW_BIOMES.get() {
@@ -218,13 +233,51 @@ impl Shell {
                             .get()
                             .ok_or("Could not cache prepared biome tables")?
                     };
-                    horizon_client::game_startup::prepare_existing_world_with_registry(
+                    let world = horizon_client::game_startup::prepare_existing_world_with_registry(
                         &saves,
                         &folder,
                         core.registry,
                         biomes,
                     )
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string())?;
+                    let terrain = if let Some(column) = &world.initial_column {
+                        // Full block models and sprite atlas are loaded only on
+                        // demand, never during the title's initial GPU boot.
+                        let assets = if let Some(assets) = crate::PREVIEW_TERRAIN.get() {
+                            assets
+                        } else {
+                            let loaded =
+                                horizon_client::game_startup::TerrainMeshingResources::load(
+                                    &prepared_resources,
+                                    core,
+                                )
+                                .map_err(|error| error.to_string())?;
+                            let _ = crate::PREVIEW_TERRAIN.set(loaded);
+                            crate::PREVIEW_TERRAIN
+                                .get()
+                                .ok_or("Cannot cache terrain assets")?
+                        };
+                        let region = horizon_client::game_startup::load_saved_initial_region(
+                            &saves.join(&folder),
+                            column,
+                            core.registry,
+                            biomes,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        Some(
+                            horizon_client::game_startup::mesh_prepared_column(
+                                &region,
+                                world.inspection.seed,
+                                core,
+                                biomes,
+                                assets,
+                            )
+                            .map_err(|error| error.to_string())?,
+                        )
+                    } else {
+                        None
+                    };
+                    Ok(PreparedWorldPreview { world, terrain })
                 })
                 .unwrap_or_else(|payload| Err(crate::describe_renderer_panic(payload.as_ref())));
                 let _ = proxy.send_event(ShellEvent::WorldInspected { generation, result });
@@ -495,6 +548,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
         self.title_tap.clear();
         self.world_inspection_pending = false;
         self.initial_column = None;
+        self.terrain = None;
         self.world_inspection_generation = self.world_inspection_generation.wrapping_add(1);
         crate::RENDERER_SWITCH.reset();
         crate::set_graphics_state(4);
@@ -630,6 +684,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
                                         title.screen.preview_tap(pointer.0, pointer.1, view)
                                     }) {
                                         self.initial_column = None;
+                                        self.terrain = None;
                                         window.request_redraw();
                                     }
                                 } else if let Some((dy, start)) = swipe {
@@ -664,7 +719,12 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 {
                     self.world_inspection_pending = false;
                     match result {
-                        Ok(prepared) => {
+                        Ok(loaded) => {
+                            let PreparedWorldPreview {
+                                world: prepared,
+                                terrain,
+                            } = loaded;
+                            self.terrain = terrain;
                             let horizon_client::game_startup::PreparedWorld {
                                 inspection: world,
                                 initial_column,
@@ -693,6 +753,16 @@ impl ApplicationHandler<ShellEvent> for Shell {
                                     self.initial_column.is_some(),
                                 ),
                             );
+                            let mesh_status = self.terrain.as_ref().map_or(
+                                " CPU terrain mesh not prepared.".to_owned(),
+                                |prepared| format!(
+                                    " CPU mesh retained: {} visible sections, {} solid quads, {} translucent quads, {} of 8 saved neighbours used (not uploaded to GPU).",
+                                    prepared.summary.sections,
+                                    prepared.summary.solid_quads,
+                                    prepared.summary.translucent_quads,
+                                    prepared.saved_neighbors,
+                                ),
+                            );
                             let disk_probe = match &world.initial_chunk_disk {
                                 Some(horizon_client::game_startup::InitialChunkDiskState::Saved { data_version, sections, block_below_player }) => {
                                     let sampled = block_below_player.as_deref().map_or(
@@ -714,7 +784,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
                             };
                             let initial_location = match (world.saved_position, world.initial_chunk) {
                                 (Some([x, y, z]), Some([cx, cz])) => format!(
-                                    " Saved player at ({x:.1}, {y:.1}, {z:.1}); first chunk ({cx}, {cz}).{disk_probe}{resident}"
+                                    " Saved player at ({x:.1}, {y:.1}, {z:.1}); first chunk ({cx}, {cz}).{disk_probe}{resident}{mesh_status}"
                                 ),
                                 _ => " No valid saved player location; spawn search will be required before gameplay.".to_owned(),
                             };

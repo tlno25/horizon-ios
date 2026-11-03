@@ -194,11 +194,30 @@ fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
     // The flat path creates GPU-written indirect draw buffers even before
     // any terrain exists. On limited Metal devices, creating such buffers
     // fails validation. Use the existing per-section direct draw path.
-    flags.contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION)
-        && flags.contains(wgpu::DownlevelFlags::VERTEX_STORAGE | wgpu::DownlevelFlags::COMPUTE_SHADERS)
+    supports_flat_draws(flags)
         && limits.max_storage_buffers_per_shader_stage >= 3
         && limits.max_storage_buffer_binding_size
             >= wgpu::Limits::default().max_storage_buffer_binding_size
+}
+
+fn supports_flat_draws(flags: wgpu::DownlevelFlags) -> bool {
+    flags.contains(
+        wgpu::DownlevelFlags::INDIRECT_EXECUTION
+            | wgpu::DownlevelFlags::VERTEX_STORAGE
+            | wgpu::DownlevelFlags::COMPUTE_SHADERS,
+    )
+}
+
+#[cfg(test)]
+#[test]
+fn flat_draws_require_indirect_execution_even_with_storage_and_compute() {
+    let supported = wgpu::DownlevelFlags::VERTEX_STORAGE
+        | wgpu::DownlevelFlags::COMPUTE_SHADERS
+        | wgpu::DownlevelFlags::INDIRECT_EXECUTION;
+    assert!(supports_flat_draws(supported));
+    assert!(!supports_flat_draws(
+        supported - wgpu::DownlevelFlags::INDIRECT_EXECUTION
+    ));
 }
 
 fn storage(binding: u32, stage: wgpu::ShaderStages, read_only: bool) -> wgpu::BindGroupLayoutEntry {

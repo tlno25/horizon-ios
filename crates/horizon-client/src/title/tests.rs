@@ -913,6 +913,50 @@ fn world_search_hint_is_gray_and_only_shown_empty_and_unfocused() {
 }
 
 #[test]
+fn ios_preview_selects_world_rows_without_starting_any_world() {
+    let mut f = Fixture::new();
+    f.world("World", "World");
+    f.title.enter_singleplayer();
+    let size = (480.0, 262.0);
+    assert!(matches!(f.title.mode, Mode::Select { selected: None, .. }));
+    // The icon and a double tap would launch in native mouse mode, but not in preview.
+    for point in [(110.0, 60.0), (240.0, 60.0), (240.0, 60.0)] {
+        assert!(f.title.preview_tap(point.0, point.1, size));
+        assert!(matches!(
+            f.title.mode,
+            Mode::Select {
+                selected: Some(0),
+                ..
+            }
+        ));
+    }
+    assert!(!f.title.saves.join("World/session.lock").exists());
+    assert!(!f.title.preview_tap(f32::NAN, 60.0, size));
+    assert!(!f.title.preview_tap(240.0, 0.0, size));
+    assert!(matches!(f.title.mode, Mode::Select { .. }));
+}
+
+#[test]
+fn ios_preview_swipes_scroll_within_world_list_without_playing() {
+    let mut f = Fixture::new();
+    for i in 0..10 {
+        f.world(&format!("World{i}"), &format!("World {i}"));
+    }
+    f.title.enter_singleplayer();
+    let size = (480.0, 262.0);
+    assert!(f.title.preview_scroll(-100.0, (240.0, 100.0), size));
+    let moved = f.title.scroll.get().amount;
+    assert!(moved > 0.0);
+    assert!(!f.title.preview_scroll(-10.0, (240.0, 10.0), size));
+    assert!(!f.title.preview_scroll(f32::NAN, (240.0, 100.0), size));
+    assert_eq!(f.title.scroll.get().amount, moved);
+    assert!(f.title.preview_scroll(1000.0, (240.0, 100.0), size));
+    assert_eq!(f.title.scroll.get().amount, 0.0);
+    assert!(matches!(f.title.mode, Mode::Select { selected: None, .. }));
+    assert!(f.title.saves.join("World0/level.dat").exists());
+}
+
+#[test]
 fn scrolled_world_list_draws_inside_the_list_and_drags_its_scroller() {
     let mut f = Fixture::new();
     for i in 0..10 {

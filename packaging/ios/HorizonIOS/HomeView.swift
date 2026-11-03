@@ -356,7 +356,7 @@ private struct HomeView: View {
                             .textSelection(.enabled)
                     }
 
-                    Text("After loading game data, Preview Horizon renderer shows Horizon's native title. In Show game mode, you can tap Singleplayer and use the Cancel/Back buttons. Creating or launching worlds is not connected yet.")
+                    Text("After loading game data, Preview Horizon renderer shows Horizon's native title. In Show game mode, tap Singleplayer, select an existing world, or swipe the world list. Cancel/Back buttons work. Creating or launching worlds is not connected yet.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

@@ -3123,8 +3123,41 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         if safe {
             let (action, _) = self.click(x, y, size);
             debug_assert_eq!(action, Action::None);
+            return true;
         }
-        safe
+        // Native desktop click() opens a saved world on the icon or second
+        // click; iOS preview must only focus the row, including repeated taps.
+        if matches!(self.mode, Mode::Select { .. }) && hit.is_none() {
+            return self.focus_world_row((x, y), size);
+        }
+        false
+    }
+
+    /// Scroll only the world list, never create a world or change title options.
+    /// Delta is in GUI pixels (finger moving up passes a negative delta).
+    pub fn preview_scroll(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) -> bool {
+        if !delta.is_finite()
+            || !cursor.0.is_finite()
+            || !cursor.1.is_finite()
+            || !size.0.is_finite()
+            || !size.1.is_finite()
+            || size.0 <= 0.0
+            || size.1 <= 0.0
+        {
+            return false;
+        }
+        let Mode::Select { worlds, .. } = &self.mode else {
+            return false;
+        };
+        let (top, bottom, left, content) = self.world_list(worlds, size);
+        if cursor.0 < left || cursor.0 >= left + ROW_WIDTH || cursor.1 < top || cursor.1 >= bottom {
+            return false;
+        }
+        let mut scroll = self.scroll.get();
+        let before = scroll.amount;
+        scroll.wheel(delta, 1.0, top, bottom, content);
+        self.scroll.set(scroll);
+        scroll.amount != before
     }
 
     /// The action and whether to play `AbstractWidget.playButtonClickSound`.

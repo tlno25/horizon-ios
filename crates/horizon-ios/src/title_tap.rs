@@ -8,12 +8,21 @@ const MAX_MOVEMENT_PIXELS: f32 = 36.0;
 pub struct TitleTap {
     pressed: Option<(u64, (f32, f32))>,
     moved: bool,
+    multi_touch: bool,
+    scroll: Option<(f32, (f32, f32))>,
 }
 
 impl TitleTap {
     pub fn clear(&mut self) {
         self.pressed = None;
         self.moved = false;
+        self.multi_touch = false;
+        self.scroll = None;
+    }
+
+    /// Take a completed vertical swipe as (physical delta-y, starting point).
+    pub fn take_scroll(&mut self) -> Option<(f32, (f32, f32))> {
+        self.scroll.take()
     }
 
     /// Returns the released point in *physical* drawable pixels only for a tap.
@@ -24,6 +33,7 @@ impl TitleTap {
         point: (f32, f32),
         size: (u32, u32),
     ) -> Option<(f32, f32)> {
+        self.scroll = None;
         if !point.0.is_finite()
             || !point.1.is_finite()
             || size.0 == 0
@@ -43,6 +53,10 @@ impl TitleTap {
                 if self.pressed.is_none() {
                     self.pressed = Some((id, point));
                     self.moved = false;
+                    self.multi_touch = false;
+                } else if self.pressed.is_some_and(|(active, _)| active != id) {
+                    // Once a second finger is down, suppress clicks AND swipes.
+                    self.multi_touch = true;
                 }
             }
             TouchPhase::Moved | TouchPhase::Ended | TouchPhase::Cancelled => {
@@ -56,8 +70,14 @@ impl TitleTap {
                 let dy = point.1 - start.1;
                 self.moved |= dx * dx + dy * dy > MAX_MOVEMENT_PIXELS * MAX_MOVEMENT_PIXELS;
                 if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
-                    let valid = phase == TouchPhase::Ended && !self.moved;
+                    let valid = phase == TouchPhase::Ended && !self.moved && !self.multi_touch;
+                    let scroll = (phase == TouchPhase::Ended
+                        && !self.multi_touch
+                        && dy.abs() > MAX_MOVEMENT_PIXELS
+                        && dy.abs() > dx.abs())
+                    .then_some((dy, start));
                     self.clear();
+                    self.scroll = scroll;
                     return valid.then_some(point);
                 }
             }

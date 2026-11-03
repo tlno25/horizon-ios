@@ -518,22 +518,33 @@ impl ApplicationHandler<ShellEvent> for Shell {
                     let point = (touch.location.x as f32, touch.location.y as f32);
                     if crate::update_touch(touch.id, phase, point, size) {
                         if self.title.is_some() && self.horizon.is_some() {
-                            if let Some(release) =
-                                self.title_tap.handle(touch.id, phase, point, size)
-                            {
+                            let tap = self.title_tap.handle(touch.id, phase, point, size);
+                            let swipe = self.title_tap.take_scroll();
+                            if tap.is_some() || swipe.is_some() {
                                 let renderer =
                                     self.horizon.as_ref().expect("title renderer exists");
                                 let batch =
                                     HudBatch::new([renderer.config.width, renderer.config.height]);
-                                let gui_point = (release.0 / batch.scale, release.1 / batch.scale);
-                                if self.title.as_mut().is_some_and(|title| {
-                                    title.screen.preview_tap(
-                                        gui_point.0,
-                                        gui_point.1,
-                                        (batch.width, batch.height),
-                                    )
-                                }) {
-                                    window.request_redraw();
+                                let view = (batch.width, batch.height);
+                                if let Some(title) = self.title.as_mut() {
+                                    let changed = if let Some(release) = tap {
+                                        title.screen.preview_tap(
+                                            release.0 / batch.scale,
+                                            release.1 / batch.scale,
+                                            view,
+                                        )
+                                    } else if let Some((dy, start)) = swipe {
+                                        title.screen.preview_scroll(
+                                            dy / batch.scale,
+                                            (start.0 / batch.scale, start.1 / batch.scale),
+                                            view,
+                                        )
+                                    } else {
+                                        false
+                                    };
+                                    if changed {
+                                        window.request_redraw();
+                                    }
                                 }
                             }
                         } else {

@@ -46,7 +46,10 @@ preview draws the **existing native Horizon title screen** with its prepared
 GUI atlas, buttons and panorama using the shared GPU renderer, paced to about
 30 fps while foregrounded. The controls are *visual only* at this stage;
 iOS real Winit/UIKit touches can now activate **Singleplayer** and the
-**Back/Cancel** buttons through the existing native button hit-testing. The
+**Back/Cancel** buttons through the existing native button hit-testing.
+In the Select World screen, tapping a row focuses it without joining even on
+repeated taps or the row icon. A vertical swipe scrolls the world list using
+the existing native scroll bounds. The
 remaining actions are intentionally disabled until gameplay is connected.
 Use **Show game** to hide the full-screen diagnostics panel and touch the
 renderer; the small **Diagnostics** button restores the panel. Taps are

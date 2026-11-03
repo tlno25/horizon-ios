@@ -37,6 +37,8 @@ int32_t horizon_ios_reset_terrain_preview_camera(void);
 uint32_t horizon_ios_preview_physics_enabled(void);
 int32_t horizon_ios_toggle_preview_physics(void);
 int32_t horizon_ios_preview_physics_jump(void);
+uint32_t horizon_ios_preview_sprinting(void);
+int32_t horizon_ios_toggle_preview_sprint(void);
 /* Absolute normalized analog axes: positive left and positive forward. */
 int32_t horizon_ios_preview_walk(float left, float forward);
 uint32_t horizon_ios_touch_count(void);

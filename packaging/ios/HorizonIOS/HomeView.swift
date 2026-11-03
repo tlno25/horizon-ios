@@ -26,6 +26,7 @@ private var mostRecentWorldInspectionState: Int32 = 0
 private weak var diagnosticsOverlayView: UIView?
 private weak var diagnosticsRestoreButton: UIButton?
 private weak var physicsJumpButton: UIButton?
+private weak var physicsSprintButton: UIButton?
 private weak var physicsMovePad: UIView?
 
 private func setDiagnosticsVisible(_ visible: Bool) {
@@ -33,6 +34,7 @@ private func setDiagnosticsVisible(_ visible: Bool) {
     diagnosticsOverlayView?.isHidden = !visible
     diagnosticsRestoreButton?.isHidden = visible
     physicsJumpButton?.isHidden = visible || horizon_ios_preview_physics_enabled() == 0
+    physicsSprintButton?.isHidden = visible || horizon_ios_preview_physics_enabled() == 0
     if visible, let pad = physicsMovePad as? PhysicsMovePad {
         pad.cancelMovement()
     }
@@ -90,6 +92,7 @@ private func saveGraphicsStatus() {
         "renderer_preview": Int(horizon_ios_renderer_preview_state()),
         "terrain_preview": Int(horizon_ios_terrain_preview_state()),
         "preview_physics": Int(horizon_ios_preview_physics_enabled()),
+        "preview_sprint": Int(horizon_ios_preview_sprinting()),
         "renderer_stage": mostRecentRendererStage,
         "smoke_mode": Int(horizon_ios_renderer_smoke_enabled()),
         "player": horizon_ios_player_name().map { String(cString: $0) } ?? ""
@@ -172,6 +175,7 @@ private struct HomeView: View {
     @State private var rendererPreviewState = horizon_ios_renderer_preview_state()
     @State private var terrainPreviewState = horizon_ios_terrain_preview_state()
     @State private var previewPhysicsEnabled = horizon_ios_preview_physics_enabled() != 0
+    @State private var previewSprintEnabled = horizon_ios_preview_sprinting() != 0
     @State private var rendererStage = mostRecentRendererStage
     @State private var coreLoadMessage = mostRecentCoreLoadMessage
     @State private var worldInspectionMessage = mostRecentWorldInspectionMessage
@@ -252,7 +256,7 @@ private struct HomeView: View {
         case 1: return "Saved CPU terrain is ready"
         case 2: return "Preview requested"
         case 3: return "Preparing textured GPU renderer"
-        case 4: return previewPhysicsEnabled ? "Gravity and jump (read-only 20 TPS)" : "Showing static terrain (read-only)"
+        case 4: return previewPhysicsEnabled ? "Walking and sprint (read-only 20 TPS)" : "Showing static terrain (read-only)"
         case 5: return "Preview failed — retry available"
         case 6: return "Returning to title"
         default: return "Not prepared"
@@ -291,6 +295,14 @@ private struct HomeView: View {
         refreshStatus()
     }
 
+    private func togglePreviewSprint() {
+        let code = horizon_ios_toggle_preview_sprint()
+        if code != 0 {
+            graphicsError = "Cannot toggle read-only sprint (code \(code))"
+        }
+        refreshStatus()
+    }
+
     private func jumpInPreview() {
         let code = horizon_ios_preview_physics_jump()
         if code != 0 {
@@ -314,6 +326,7 @@ private struct HomeView: View {
         rendererPreviewState = horizon_ios_renderer_preview_state()
         terrainPreviewState = horizon_ios_terrain_preview_state()
         previewPhysicsEnabled = horizon_ios_preview_physics_enabled() != 0
+        previewSprintEnabled = horizon_ios_preview_sprinting() != 0
         rendererStage = mostRecentRendererStage
         worldInspectionMessage = mostRecentWorldInspectionMessage
         worldInspectionState = mostRecentWorldInspectionState
@@ -459,12 +472,14 @@ private struct HomeView: View {
                             }
                             .buttonStyle(.bordered)
                             if previewPhysicsEnabled {
+                                Button(previewSprintEnabled ? "Stop sprint" : "Sprint", action: togglePreviewSprint)
+                                    .buttonStyle(.bordered)
                                 Button("Jump", action: jumpInPreview)
                                     .buttonStyle(.borderedProminent)
                             }
                         }
                         Text(previewPhysicsEnabled
-                            ? "Experimental 20 TPS walking, gravity and jumping use native block collisions. Hide Diagnostics to use the left virtual thumbstick and right Jump control. No world ticks or saving."
+                            ? "Read-only 20 TPS movement: left thumbstick to walk, right-side Sprint (forward input only) and Jump controls. Block speed and jump multipliers apply. No world ticks or saving."
                             : "One finger: look around. Two fingers: pan or pinch through collision-tested saved terrain. Enable physics explicitly to test falling and jumping. Reset restores the saved camera; gameplay and saves are unchanged.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
@@ -538,7 +553,7 @@ private struct HomeView: View {
                             .textSelection(.enabled)
                     }
 
-                    Text("Load game data, open the native title, then select a saved world. Up to 3×3 existing chunks render read-only. Enable the experimental 20 TPS movement preview for a camera-relative left thumbstick, gravity and jumping, without world ticks or saving.")
+                    Text("Load game data, open the native title, then select a saved world. Up to 3×3 existing chunks render read-only. The opt-in 20 TPS movement preview has a left thumbstick, sprint, gravity and jumping, with native block speed/jump factors and no world ticks or saving.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -637,6 +652,8 @@ public func horizon_ios_preview_physics_changed() {
     guard Thread.isMainThread else { return }
     let diagnosticsVisible = !(diagnosticsOverlayView?.isHidden ?? true)
     physicsJumpButton?.isHidden = diagnosticsVisible || horizon_ios_preview_physics_enabled() == 0
+    physicsSprintButton?.isHidden = diagnosticsVisible || horizon_ios_preview_physics_enabled() == 0
+    physicsSprintButton?.setTitle(horizon_ios_preview_sprinting() == 0 ? "Sprint" : "Sprinting", for: .normal)
     if diagnosticsVisible || horizon_ios_preview_physics_enabled() == 0 {
         (physicsMovePad as? PhysicsMovePad)?.cancelMovement()
     }
@@ -732,6 +749,9 @@ public func horizon_ios_mount_home(_ parentPointer: UnsafeMutableRawPointer?) {
         if let jump = physicsJumpButton {
             parent.view.bringSubviewToFront(jump)
         }
+        if let sprint = physicsSprintButton {
+            parent.view.bringSubviewToFront(sprint)
+        }
         if let pad = physicsMovePad {
             parent.view.bringSubviewToFront(pad)
         }
@@ -779,6 +799,22 @@ public func horizon_ios_mount_home(_ parentPointer: UnsafeMutableRawPointer?) {
     ])
     physicsJumpButton = jump
     jump.isHidden = true
+
+    let sprint = UIButton(type: .system)
+    sprint.setTitle("Sprint", for: .normal)
+    sprint.accessibilityLabel = "Toggle sprint in read-only physics preview"
+    sprint.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.88)
+    sprint.layer.cornerRadius = 12
+    sprint.contentEdgeInsets = UIEdgeInsets(top: 13, left: 16, bottom: 13, right: 16)
+    sprint.translatesAutoresizingMaskIntoConstraints = false
+    sprint.addAction(UIAction { _ in _ = horizon_ios_toggle_preview_sprint() }, for: .touchUpInside)
+    parent.view.addSubview(sprint)
+    NSLayoutConstraint.activate([
+        sprint.trailingAnchor.constraint(equalTo: parent.view.safeAreaLayoutGuide.trailingAnchor, constant: -20),
+        sprint.bottomAnchor.constraint(equalTo: jump.topAnchor, constant: -12)
+    ])
+    physicsSprintButton = sprint
+    sprint.isHidden = true
 
     let pad = PhysicsMovePad(frame: .zero)
     pad.translatesAutoresizingMaskIntoConstraints = false

@@ -201,6 +201,20 @@ pub fn load_saved_initial_region(
     Ok(region)
 }
 
+/// A tiny immutable adapter for native block speed/jump factor probes.
+struct PreviewBlockLookup<'a>(&'a ReadOnlyWorldStage);
+
+impl horizon_world::movement_properties::MovementBlockProvider for PreviewBlockLookup<'_> {
+    type Error = std::io::Error;
+
+    fn movement_block_state(
+        &mut self,
+        position: horizon_core::position::BlockPos,
+    ) -> std::io::Result<horizon_world::registry::BlockStateId> {
+        Ok(self.0.world.block(position.x, position.y, position.z))
+    }
+}
+
 /// A resident read-only subset of the real native `World`. It shares the
 /// exact Arc-backed decoded chunk columns that the native mesher uses; no
 /// block edit, entity spawn, tick scheduling or disk save can occur here.
@@ -277,6 +291,67 @@ impl ReadOnlyWorldStage {
             return Err("Invalid native block friction".into());
         }
         Ok(friction)
+    }
+
+    /// Native Entity.move block speed factor. Current feet and the supporting
+    /// block are queried through the same movement_support implementation
+    /// as desktop. Preview doesn't have exact support-block identity yet.
+    pub fn support_speed_factor(
+        &self,
+        materials: &horizon_world::movement_properties::BoundMovementProperties,
+        feet: [f64; 3],
+    ) -> Result<f32> {
+        let location = Self::movement_location(feet)?;
+        let factor = horizon_world::movement_support::block_speed_factor(
+            &mut horizon_world::movement_properties::RegistryMovementWorld {
+                properties: materials,
+                world: &mut PreviewBlockLookup(self),
+            },
+            location,
+        )?;
+        if !factor.is_finite() || !(0.0..=4.0).contains(&factor) {
+            return Err("Invalid native block speed factor".into());
+        }
+        Ok(factor)
+    }
+
+    /// Native LivingEntity jump factor: the block at the feet wins when
+    /// nondefault, otherwise use the nearest lower block.
+    pub fn support_jump_factor(
+        &self,
+        materials: &horizon_world::movement_properties::BoundMovementProperties,
+        feet: [f64; 3],
+    ) -> Result<f32> {
+        let location = Self::movement_location(feet)?;
+        let factor = horizon_world::movement_support::block_jump_factor(
+            &mut horizon_world::movement_properties::RegistryMovementWorld {
+                properties: materials,
+                world: &mut PreviewBlockLookup(self),
+            },
+            location,
+        )?;
+        if !factor.is_finite() || !(0.0..=2.0).contains(&factor) {
+            return Err("Invalid native block jump factor".into());
+        }
+        Ok(factor)
+    }
+
+    fn movement_location(
+        feet: [f64; 3],
+    ) -> Result<horizon_world::movement_support::MovementLocation> {
+        use horizon_core::{geometry::Vec3, position::BlockPos};
+        if !feet.iter().all(|value| value.is_finite()) {
+            return Err("Invalid preview feet position".into());
+        }
+        Ok(horizon_world::movement_support::MovementLocation {
+            position: Vec3::new(feet[0], feet[1], feet[2]),
+            block_position: BlockPos::new(
+                feet[0].floor() as i32,
+                feet[1].floor() as i32,
+                feet[2].floor() as i32,
+            ),
+            supporting_block: None,
+        })
     }
 
     /// Use native voxel shapes and `resolve_world_movement`, without changing
@@ -1193,6 +1268,8 @@ mod tests {
                     Tag::compound([("id", Tag::String("minecraft:stone".into()))]),
                     Tag::compound([("id", Tag::String("minecraft:stone_slab".into()))]),
                     Tag::compound([("id", Tag::String("minecraft:ice".into()))]),
+                    Tag::compound([("id", Tag::String("minecraft:soul_sand".into()))]),
+                    Tag::compound([("id", Tag::String("minecraft:honey_block".into()))]),
                 ]),
             ),
             (
@@ -1202,6 +1279,8 @@ mod tests {
                     ("minecraft:stone", Tag::Int(1)),
                     ("minecraft:stone_slab", Tag::Int(2)),
                     ("minecraft:ice", Tag::Int(3)),
+                    ("minecraft:soul_sand", Tag::Int(4)),
+                    ("minecraft:honey_block", Tag::Int(5)),
                 ]),
             ),
         ]))
@@ -1576,6 +1655,8 @@ mod tests {
         state_shapes[1] = 1;
         state_shapes[2] = 2;
         state_shapes[3] = 1;
+        state_shapes[4] = 1;
+        state_shapes[5] = 1;
         let data = Tag::compound([
             ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
             (
@@ -1627,6 +1708,8 @@ mod tests {
         chunk.set(138, 80, -66, 2); // slab, top at y=80.5
         chunk.set(140, 80, -66, 1); // full cube, cannot step without jumping
         chunk.set(136, 80, -74, 3); // full ice block, high friction coefficient
+        chunk.set(136, 80, -75, 4); // soul sand, slow movement factor
+        chunk.set(137, 80, -75, 5); // honey, reduced jump factor
         let before = [137.5, 80.0, -65.5];
         let target = [138.5, 80.0, -65.5];
         let blocked = steps
@@ -1662,11 +1745,11 @@ mod tests {
                 .resolve_preview_movement_with_step(&collisions, before, target, f32::NAN, true,)
                 .is_err()
         );
-        let properties = |friction: f32| {
+        let properties = |friction: f32, speed_factor: f32, jump_factor: f32| {
             Tag::compound([
                 ("friction", Tag::Float(friction.to_bits())),
-                ("speedFactor", Tag::Float(1.0f32.to_bits())),
-                ("jumpFactor", Tag::Float(1.0f32.to_bits())),
+                ("speedFactor", Tag::Float(speed_factor.to_bits())),
+                ("jumpFactor", Tag::Float(jump_factor.to_bits())),
                 ("bounceRestitution", Tag::Float(0.0f32.to_bits())),
                 ("fallDistanceReduction", Tag::Float(0.0f32.to_bits())),
                 ("fenceGate", Tag::Byte(0)),
@@ -1685,10 +1768,12 @@ mod tests {
             (
                 "blocks",
                 Tag::compound([
-                    ("minecraft:air", properties(0.6)),
-                    ("minecraft:stone", properties(0.6)),
-                    ("minecraft:stone_slab", properties(0.6)),
-                    ("minecraft:ice", properties(0.98)),
+                    ("minecraft:air", properties(0.6, 1.0, 1.0)),
+                    ("minecraft:stone", properties(0.6, 1.0, 1.0)),
+                    ("minecraft:stone_slab", properties(0.6, 1.0, 1.0)),
+                    ("minecraft:ice", properties(0.98, 1.0, 1.0)),
+                    ("minecraft:soul_sand", properties(0.6, 0.4, 1.0)),
+                    ("minecraft:honey_block", properties(0.6, 0.4, 0.5)),
                 ]),
             ),
         ]);
@@ -1720,6 +1805,104 @@ mod tests {
                 .support_friction(&material, [f64::NAN, 80.0, 0.0])
                 .is_err()
         );
+        let soul = [136.5, 81.0, -74.5];
+        let honey = [137.5, 81.0, -74.5];
+        assert!((steps.support_speed_factor(&material, soul).unwrap() - 0.4).abs() < 1e-6);
+        assert!((steps.support_jump_factor(&material, honey).unwrap() - 0.5).abs() < 1e-6);
+        assert!(
+            (steps
+                .support_speed_factor(&material, [128.5, 80.0, -64.25])
+                .unwrap()
+                - 1.0)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            steps
+                .support_speed_factor(&material, [f64::INFINITY, 81.0, 0.0])
+                .is_err()
+        );
+        let mut soul_walk = crate::preview_physics::PreviewPhysics::new(soul);
+        soul_walk
+            .tick_with_controls(
+                &steps,
+                &collisions,
+                false,
+                [0.0, 1.0],
+                0.0,
+                Some(&material),
+                false,
+            )
+            .unwrap();
+        assert!(soul_walk.position()[2] > soul[2]);
+        assert!(
+            soul_walk.position()[2] - soul[2] < 0.11,
+            "slowed by soul sand"
+        );
+        let mut honey_jump = crate::preview_physics::PreviewPhysics::new(honey);
+        honey_jump
+            .tick_with_controls(
+                &steps,
+                &collisions,
+                true,
+                [0.0, 0.0],
+                0.0,
+                Some(&material),
+                false,
+            )
+            .unwrap();
+        assert!(
+            (honey_jump.position()[1] - 81.21).abs() < 0.005,
+            "honey jump factor: {:?}",
+            honey_jump.position()
+        );
+        // The exact saved stone terrain can now run native walking and an
+        // explicit sprint request without changing the saved player or world.
+        let sprint_start = [132.5, 80.0, -72.5];
+        let mut walking_test = crate::preview_physics::PreviewPhysics::new(sprint_start);
+        let mut sprinting_test = crate::preview_physics::PreviewPhysics::new(sprint_start);
+        for _ in 0..8 {
+            walking_test
+                .tick_with_controls(
+                    &steps,
+                    &collisions,
+                    false,
+                    [0.0, 1.0],
+                    0.0,
+                    Some(&material),
+                    false,
+                )
+                .unwrap();
+            sprinting_test
+                .tick_with_controls(
+                    &steps,
+                    &collisions,
+                    false,
+                    [0.0, 1.0],
+                    0.0,
+                    Some(&material),
+                    true,
+                )
+                .unwrap();
+        }
+        assert!(
+            sprinting_test.position()[2] - sprint_start[2]
+                > (walking_test.position()[2] - sprint_start[2]) * 1.20
+        );
+        assert!((sprinting_test.position()[1] - 80.0).abs() < 1e-6);
+        let mut stopped_sprint = crate::preview_physics::PreviewPhysics::new(sprint_start);
+        stopped_sprint
+            .tick_with_controls(
+                &steps,
+                &collisions,
+                false,
+                [0.0, 0.0],
+                0.0,
+                Some(&material),
+                true,
+            )
+            .unwrap();
+        assert!(!stopped_sprint.sprinting_on_input([0.0, 1.0]));
         // Prove the opt-in 20 TPS movement path actually invokes the native
         // step resolver, rather than only the standalone collision probe.
         let mut walker = crate::preview_physics::PreviewPhysics::new([137.3, 80.0, -65.5]);

@@ -15,6 +15,9 @@ pub struct PreviewPhysics {
     position: [f64; 3],
     velocity: Vec3,
     grounded: bool,
+    sprinting: bool,
+    yaw: f32,
+    jump_factor: f32,
 }
 
 impl PreviewPhysics {
@@ -23,6 +26,9 @@ impl PreviewPhysics {
             position,
             velocity: Vec3::ZERO,
             grounded: false,
+            sprinting: false,
+            yaw: 0.0,
+            jump_factor: 1.0,
         }
     }
 
@@ -34,6 +40,33 @@ impl PreviewPhysics {
     #[must_use]
     pub fn grounded(&self) -> bool {
         self.grounded
+    }
+
+    /// Sprint is a temporary preview flag; the user's saved abilities and
+    /// movement attributes are never changed.
+    pub fn set_sprinting(&mut self, enabled: bool) {
+        self.sprinting = enabled;
+    }
+
+    #[must_use]
+    pub fn sprinting_on_input(&self, axes: [f32; 2]) -> bool {
+        self.sprinting && axes[1].is_finite() && axes[1] >= 0.8
+    }
+
+    pub fn set_camera_yaw(&mut self, yaw: f32) -> crate::Result<()> {
+        if !yaw.is_finite() {
+            return Err("Invalid preview yaw".into());
+        }
+        self.yaw = yaw;
+        Ok(())
+    }
+
+    pub fn set_jump_factor(&mut self, factor: f32) -> crate::Result<()> {
+        if !factor.is_finite() || !(0.0..=2.0).contains(&factor) {
+            return Err("Invalid native jump factor".into());
+        }
+        self.jump_factor = factor;
+        Ok(())
     }
 
     /// Reconcile a camera touch-pan with this simulated body. This clears
@@ -68,11 +101,17 @@ impl PreviewPhysics {
             return Err("Invalid preview movement input".into());
         }
         let friction = living_air::modified_friction(friction, 1.0);
+        // Native `minecraft:sprinting` AddMultipliedTotal modifier (+30%).
+        let base_speed = if self.sprinting {
+            0.1 * (1.0 + 0.3f32)
+        } else {
+            0.1
+        };
         let speed = if self.grounded {
             if friction > 0.6 {
-                0.1 * (0.21600002f32 / (friction * friction * friction))
+                base_speed * (0.21600002f32 / (friction * friction * friction))
             } else {
-                0.1
+                base_speed
             }
         } else {
             0.02
@@ -88,8 +127,9 @@ impl PreviewPhysics {
     }
 
     /// One 20 TPS simulation tick; the shell owns its fixed-step scheduling.
-    /// Vanilla living jump/gravity and native grounded step-up are reused.
-    /// Fluids, abilities, sprinting and fall damage are not yet simulated.
+    /// Native jump, gravity and grounded step-up are reused. Vanilla sprint
+    /// speed/jump impulse are opt-in; fluid movement, hunger eligibility,
+    /// abilities and fall damage are not simulated.
     pub fn tick(
         &mut self,
         stage: &ReadOnlyWorldStage,
@@ -123,10 +163,37 @@ impl PreviewPhysics {
         yaw: f32,
         materials: Option<&horizon_world::movement_properties::BoundMovementProperties>,
     ) -> crate::Result<bool> {
+        let requested_sprint = self.sprinting;
+        self.tick_with_controls(
+            stage,
+            collisions,
+            jump,
+            axes,
+            yaw,
+            materials,
+            requested_sprint,
+        )
+    }
+
+    /// Explicit opt-in sprint input is sampled alongside the walking stick.
+    /// Sprint only activates with sufficient forward input, just like the
+    /// native player movement gate; it is not a persistent game attribute.
+    pub fn tick_with_controls(
+        &mut self,
+        stage: &ReadOnlyWorldStage,
+        collisions: &BlockCollisionRegistry<'_>,
+        jump: bool,
+        axes: [f32; 2],
+        yaw: f32,
+        materials: Option<&horizon_world::movement_properties::BoundMovementProperties>,
+        requested_sprint: bool,
+    ) -> crate::Result<bool> {
         // Reject bad input before modifying grounded state or velocity.
         if !axes.iter().all(|v| v.is_finite() && v.abs() <= 1.0) || !yaw.is_finite() {
             return Err("Invalid preview movement input".into());
         }
+        self.set_sprinting(requested_sprint && axes[1] >= 0.8);
+        self.set_camera_yaw(yaw)?;
         let old = self.position;
         let below =
             stage.resolve_preview_movement(collisions, old, [old[0], old[1] - 0.05, old[2]])?;
@@ -134,6 +201,10 @@ impl PreviewPhysics {
         if self.grounded {
             self.velocity.y = 0.0;
             if jump {
+                let factor = materials.map_or(Ok(1.0), |properties| {
+                    stage.support_jump_factor(properties, old)
+                })?;
+                self.set_jump_factor(factor)?;
                 living_motion::jump_from_ground(self)?;
                 self.grounded = false;
             }
@@ -162,6 +233,13 @@ impl PreviewPhysics {
             return Err("Nonfinite native movement result".into());
         }
         self.position = moved;
+        // Entity.move applies the local block's speedFactor to horizontal
+        // motion after collisions, before LivingEntity's air/ground drag.
+        if let Some(properties) = materials {
+            let factor = stage.support_speed_factor(properties, moved)?;
+            self.velocity.x *= f64::from(factor);
+            self.velocity.z *= f64::from(factor);
+        }
         let stopped_up = self.velocity.y > 0.0 && moved[1] + 1.0e-7 < target[1];
         let stopped_down = self.velocity.y < 0.0 && moved[1] > target[1] + 1.0e-7;
         if stopped_down {
@@ -215,7 +293,7 @@ impl LivingMotionWorld for PreviewPhysics {
         Ok(0.42)
     }
     fn block_jump_factor(&mut self) -> Result<f32, Self::Error> {
-        Ok(1.0)
+        Ok(self.jump_factor)
     }
     fn has_jump_boost(&mut self) -> Result<bool, Self::Error> {
         Ok(false)
@@ -224,10 +302,10 @@ impl LivingMotionWorld for PreviewPhysics {
         Ok(0)
     }
     fn sprinting(&mut self) -> Result<bool, Self::Error> {
-        Ok(false)
+        Ok(self.sprinting)
     }
     fn yaw(&mut self) -> Result<f32, Self::Error> {
-        Ok(0.0)
+        Ok(self.yaw)
     }
     fn mark_needs_sync(&mut self) {}
     fn no_gravity(&mut self) -> Result<bool, Self::Error> {
@@ -243,7 +321,7 @@ impl LivingMotionWorld for PreviewPhysics {
         Ok(false)
     }
     fn speed(&mut self) -> Result<f32, Self::Error> {
-        Ok(0.1)
+        Ok(if self.sprinting { 0.13 } else { 0.1 })
     }
     fn omnidirectional_air_mover(&mut self) -> Result<bool, Self::Error> {
         Ok(false)
@@ -305,6 +383,41 @@ mod tests {
             ice.apply_walk_input_on_surface([0.0, 1.0], 0.0, f32::INFINITY)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn sprinting_accelerates_forward_and_shared_jump_has_yaw_impulse() {
+        let mut walk = PreviewPhysics::new([8.0, 65.0, 8.0]);
+        walk.grounded = true;
+        walk.set_sprinting(false);
+        walk.apply_walk_input([0.0, 1.0], 90.0).unwrap();
+        let mut sprint = PreviewPhysics::new([8.0, 65.0, 8.0]);
+        sprint.grounded = true;
+        sprint.set_sprinting(true);
+        sprint.set_camera_yaw(90.0).unwrap();
+        sprint.apply_walk_input([0.0, 1.0], 90.0).unwrap();
+        assert!(sprint.velocity.x < walk.velocity.x * 1.25);
+        let impulse_before = sprint.velocity.x;
+        living_motion::jump_from_ground(&mut sprint).unwrap();
+        assert!(sprint.velocity.y > 0.4);
+        assert!((sprint.velocity.x - (impulse_before - 0.2)).abs() < 1e-5);
+        sprint.set_sprinting(false);
+        let mut backward = PreviewPhysics::new([8.0, 65.0, 8.0]);
+        backward.grounded = true;
+        backward.set_sprinting(true);
+        backward.set_camera_yaw(0.0).unwrap();
+        assert!(!backward.sprinting_on_input([0.0, -1.0]));
+        assert!(backward.sprinting_on_input([0.0, 1.0]));
+    }
+
+    #[test]
+    fn native_jump_factor_scales_shared_vertical_jump() {
+        let mut body = PreviewPhysics::new([0.0, 64.0, 0.0]);
+        body.grounded = true;
+        body.set_jump_factor(0.5).unwrap();
+        living_motion::jump_from_ground(&mut body).unwrap();
+        assert!((body.velocity.y - f64::from(0.42f32 * 0.5)).abs() < 1e-6);
+        assert!(body.set_jump_factor(f32::NAN).is_err());
     }
 
     #[test]

@@ -33,6 +33,7 @@ enum ShellEvent {
     TerrainPreviewResetCamera,
     PreviewPhysicsToggle,
     PreviewPhysicsJump,
+    PreviewSprintToggle,
     PreviewWalk([f32; 2]),
     WorldInspected {
         generation: u64,
@@ -140,6 +141,12 @@ pub(super) fn request_preview_physics_jump_event() -> bool {
     EVENT_PROXY
         .get()
         .is_some_and(|proxy| proxy.send_event(ShellEvent::PreviewPhysicsJump).is_ok())
+}
+
+pub(super) fn request_preview_sprint_toggle_event() -> bool {
+    EVENT_PROXY
+        .get()
+        .is_some_and(|proxy| proxy.send_event(ShellEvent::PreviewSprintToggle).is_ok())
 }
 
 pub(super) fn request_preview_walk_event(axes: [f32; 2]) -> bool {
@@ -252,6 +259,8 @@ struct Shell {
     preview_jump_queued: bool,
     /// Camera-relative walking input, sampled on the Winit tick thread.
     preview_walk: [f32; 2],
+    /// Sprint is an explicit read-only preview setting, not a saved ability.
+    preview_sprint: bool,
     /// The original title renderer retains its GPU resources while a textured
     /// terrain replacement is active. Both share one WGPU device.
     title_renderer: Option<Renderer>,
@@ -275,6 +284,8 @@ impl Shell {
         self.preview_last_tick = None;
         self.preview_jump_queued = false;
         self.preview_walk = [0.0, 0.0];
+        self.preview_sprint = false;
+        crate::set_preview_sprinting(false);
     }
 
     fn toggle_preview_physics(&mut self) {
@@ -331,13 +342,14 @@ impl Shell {
                     .ok_or("Preview camera disappeared")?
                     .rotation()[0];
                 motion
-                    .tick_with_materials(
+                    .tick_with_controls(
                         stage,
                         &resources.collisions,
                         jump,
                         self.preview_walk,
                         yaw,
                         Some(&resources.movement),
+                        self.preview_sprint,
                     )
                     .map_err(|e| e.to_string())?;
                 let camera = self
@@ -1254,6 +1266,12 @@ impl ApplicationHandler<ShellEvent> for Shell {
             ShellEvent::PreviewWalk(axes) => {
                 if self.preview_physics.is_some() && crate::TERRAIN_PREVIEW.state() == 4 {
                     self.preview_walk = axes;
+                }
+            }
+            ShellEvent::PreviewSprintToggle => {
+                if self.preview_physics.is_some() && crate::TERRAIN_PREVIEW.state() == 4 {
+                    self.preview_sprint = !self.preview_sprint;
+                    crate::set_preview_sprinting(self.preview_sprint);
                 }
             }
             ShellEvent::TerrainPreviewResetCamera => {

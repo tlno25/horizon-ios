@@ -43,6 +43,9 @@ static RENDERER_SMOKE_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Opt-in, read-only 20 TPS physics preview. Not actual gameplay.
 #[cfg(target_os = "ios")]
 static PREVIEW_PHYSICS_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Native Winit owns this transient sprint flag; Swift only reads it.
+#[cfg(target_os = "ios")]
+static PREVIEW_SPRINT_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Returns the ABI revision supported by this static library.
 #[unsafe(no_mangle)]
@@ -85,6 +88,8 @@ pub extern "C" fn horizon_ios_shutdown() -> i32 {
     TERRAIN_PREVIEW.reset();
     #[cfg(target_os = "ios")]
     PREVIEW_PHYSICS_ENABLED.store(false, Ordering::Release);
+    #[cfg(target_os = "ios")]
+    PREVIEW_SPRINT_ENABLED.store(false, Ordering::Release);
     #[cfg(target_os = "ios")]
     clear_touches();
     0
@@ -258,6 +263,39 @@ pub extern "C" fn horizon_ios_toggle_preview_physics() -> i32 {
         return -1;
     }
     if app::request_preview_physics_toggle_event() {
+        0
+    } else {
+        -2
+    }
+}
+
+/// Whether sprint is requested for this read-only preview (0/1).
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_preview_sprinting() -> u32 {
+    #[cfg(target_os = "ios")]
+    {
+        return u32::from(PREVIEW_SPRINT_ENABLED.load(Ordering::Acquire));
+    }
+    #[cfg(not(target_os = "ios"))]
+    0
+}
+
+#[cfg(target_os = "ios")]
+fn set_preview_sprinting(enabled: bool) {
+    if PREVIEW_SPRINT_ENABLED.swap(enabled, Ordering::AcqRel) != enabled {
+        unsafe { app::preview_physics_changed() };
+    }
+}
+
+/// Explicitly toggle sprint while the physics preview is displayed.
+/// It affects only the transient 20 TPS body, not the saved player attributes.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_toggle_preview_sprint() -> i32 {
+    if TERRAIN_PREVIEW.state() != 4 || !PREVIEW_PHYSICS_ENABLED.load(Ordering::Acquire) {
+        return -1;
+    }
+    if app::request_preview_sprint_toggle_event() {
         0
     } else {
         -2

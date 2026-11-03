@@ -12,7 +12,7 @@ use winit::{event::KeyEvent, keyboard::ModifiersState};
 
 #[derive(Default)]
 pub(super) struct StartupMenu {
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     touch: horizon_client::touch_ui::TouchUi,
     #[cfg(target_os = "android")]
     keyboard_focus: Option<horizon_client::widgets::Target>,
@@ -1192,6 +1192,44 @@ impl Loading {
                 self.menu_option_events(e);
             } else if let Some(t) = &mut self.menu.title {
                 t.escape();
+            }
+            return Ok(());
+        }
+        #[cfg(target_os = "ios")]
+        if let WindowEvent::Touch(touch) = &event {
+            use horizon_client::ios_touch::{MenuTouchAction, menu_action};
+            use winit::event::TouchPhase;
+            // Winit's raw physical coordinates map to the same native menu
+            // hit-testing as desktop cursor events. Tap only on release;
+            // dragging a list is always scrolling, never joining a world.
+            self.menu.key_focus = None;
+            let point = [touch.location.x as f32, touch.location.y as f32];
+            let action = menu_action(&mut self.menu.touch, touch.id, point, touch.phase);
+            if touch.phase != TouchPhase::Cancelled {
+                self.menu_event(
+                    event_loop,
+                    WindowEvent::CursorMoved {
+                        device_id: touch.device_id,
+                        position: touch.location,
+                    },
+                )?;
+            }
+            match action {
+                MenuTouchAction::Click => {
+                    self.startup_mouse_button(event_loop, false, true)?;
+                    self.startup_mouse_button(event_loop, false, false)?;
+                }
+                MenuTouchAction::Scroll(y) => {
+                    self.menu_event(
+                        event_loop,
+                        WindowEvent::MouseWheel {
+                            device_id: touch.device_id,
+                            delta: MouseScrollDelta::LineDelta(0.0, y),
+                            phase: TouchPhase::Moved,
+                        },
+                    )?;
+                }
+                MenuTouchAction::None => {}
             }
             return Ok(());
         }

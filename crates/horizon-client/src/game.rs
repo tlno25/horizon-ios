@@ -15978,10 +15978,23 @@ impl ApplicationHandler for Game<'_> {
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
             attributes, "horizon", "horizon",
         );
+        // On iOS, the Winit window must be the entire physical screen, not
+        // the desktop default of 1280×720 logical points.
+        #[cfg(target_os = "ios")]
+        let attributes = winit::platform::ios::WindowAttributesExtIOS::with_valid_orientations(
+            attributes,
+            winit::platform::ios::ValidOrientations::Landscape,
+        );
+        let attributes =
+            match horizon_client::ios_paths::preferred_window_size(size, cfg!(target_os = "ios")) {
+                Some([width, height]) => {
+                    attributes.with_inner_size(winit::dpi::LogicalSize::new(width, height))
+                }
+                None => attributes,
+            };
         // `--offscreen` renders into a texture: its window would only show white.
         let window = match event_loop.create_window(
             attributes
-                .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
                 .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
                 .with_visible(!self.options.offscreen),
         ) {
@@ -19860,10 +19873,23 @@ impl Loading {
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
             attributes, "horizon", "horizon",
         );
+        // On iOS, the Winit window must be the entire physical screen, not
+        // the desktop default of 1280×720 logical points.
+        #[cfg(target_os = "ios")]
+        let attributes = winit::platform::ios::WindowAttributesExtIOS::with_valid_orientations(
+            attributes,
+            winit::platform::ios::ValidOrientations::Landscape,
+        );
+        let attributes =
+            match horizon_client::ios_paths::preferred_window_size(size, cfg!(target_os = "ios")) {
+                Some([width, height]) => {
+                    attributes.with_inner_size(winit::dpi::LogicalSize::new(width, height))
+                }
+                None => attributes,
+            };
         // `--offscreen` renders into a texture: its window would only show white.
         let window = match event_loop.create_window(
             attributes
-                .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
                 .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
                 .with_visible(!self.options.as_ref().is_some_and(|o| o.offscreen)),
         ) {

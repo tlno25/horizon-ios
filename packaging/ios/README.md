@@ -23,7 +23,11 @@ folder are **not shared** with this distinct bundle ID. The build never
 includes Minecraft assets; they must come from the player's own Java Edition.
 
 **Do not mistake this build target for a finished, playable mobile client.**
-At this point game touch input, mobile HUD, iOS lifecycle handling,
+The native game and the loading window now request the device's own
+landscape viewport instead of a desktop-sized (1280×720 point) UIKit window.
+The **initial loading/title menu** uses Horizon's existing touch gesture
+recognizer for tap-on-release and scroll, preventing drag-to-open errors.
+Gameplay touch movement, a mobile HUD and controls, iOS lifecycle handling,
 account sign-in, audio output and actual world gameplay still require device
 validation or implementation. This native game IPA is a feasibility/compile
 milestone, not a claim that worlds can be played on iPhone. The IPA is also

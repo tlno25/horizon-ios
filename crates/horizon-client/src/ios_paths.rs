@@ -24,6 +24,12 @@ pub fn game_resources_dir(documents: &Path, version: &str) -> PathBuf {
     }
 }
 
+/// iOS's UIKit window must use its native screen dimensions. The desktop
+/// defaults (1280×720 in points) would crop the phone's Winit surface.
+pub fn preferred_window_size(size: [f64; 2], is_ios: bool) -> Option<[f64; 2]> {
+    (!is_ios).then_some(size)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,6 +59,15 @@ mod tests {
         std::fs::write(dir.join("resources/horizon-resources.json"), "{}").unwrap();
         assert_eq!(game_resources_dir(&dir, "26.3"), dir.join("resources"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ios_uses_native_screen_size_instead_of_desktop_default() {
+        assert_eq!(preferred_window_size([1280.0, 720.0], true), None);
+        assert_eq!(
+            preferred_window_size([1280.0, 720.0], false),
+            Some([1280.0, 720.0])
+        );
     }
 
     #[test]

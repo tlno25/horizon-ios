@@ -5,16 +5,22 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
+use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::error::EventLoopError;
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
 #[path = "metal_probe.rs"]
 mod metal_probe;
-use crate::ProbeLifecycle;
-use horizon_client::{gfx::Renderer, graphics::GraphicsApi, hud::HudBatch};
+use crate::{ProbeLifecycle, TitleRefresh};
+use horizon_client::{
+    gfx::{Renderer, panorama::Rotation},
+    graphics::GraphicsApi,
+    hud::{HudAtlas, HudBatch},
+    title::Title,
+};
 use metal_probe::MetalProbe;
 
 #[derive(Clone, Copy, Debug)]
@@ -111,14 +117,29 @@ fn report_graphics_error(message: &str) {
     unsafe { horizon_ios_report_graphics_error(message.as_ptr(), message.len()) };
 }
 
+/// Title visuals are exactly the native Horizon title screen, not duplicated
+/// SwiftUI buttons. World actions/input are not wired up in this milestone.
+struct PreparedTitle {
+    atlas: HudAtlas,
+    screen: Title,
+    rotation: Rotation,
+}
+
+struct PreparedRenderer {
+    renderer: Renderer,
+    title: Option<PreparedTitle>,
+}
+
 #[derive(Default)]
 struct Shell {
     window: Option<Arc<Window>>,
     metal: Option<MetalProbe>,
     horizon: Option<Renderer>,
+    title: Option<PreparedTitle>,
+    title_refresh: TitleRefresh,
     /// GPU pipelines are compiled offscreen on a worker. Winit/SwiftUI must
     /// remain responsive during this work; only surface attachment is on UIKit.
-    renderer_job: Option<JoinHandle<Result<Renderer, String>>>,
+    renderer_job: Option<JoinHandle<Result<PreparedRenderer, String>>>,
     lifecycle: ProbeLifecycle,
     /// CI opt-in: exercise the real Horizon GPU pipeline without distributing
     /// any proprietary game assets. This is not enabled in normal launches.
@@ -183,6 +204,7 @@ impl Shell {
             crate::CORE_LOAD.state() == 2,
             self.renderer_smoke || crate::horizon_ios_renderer_smoke_enabled() != 0,
         );
+        let saves_dir = crate::ENGINE_HOME.get().map(|home| home.join("saves"));
         let job = std::thread::Builder::new()
             .name("Horizon iOS GPU preparation".to_owned())
             .spawn(move || {
@@ -193,23 +215,28 @@ impl Shell {
                     // Once the shared block registry is loaded, draw with
                     // Minecraft's prepared UI atlas and title panorama.
                     // The resource-free Simulator smoke remains unchanged.
-                    let title = if let Some(root) = title_root.as_deref() {
+                    let prepared = if let Some(root) = title_root.as_deref() {
                         report_renderer_stage("Horizon renderer: loading prepared title textures");
+                        let atlas = HudAtlas::build(root).map_err(|error| error.to_string())?;
+                        let saves = saves_dir.as_deref().ok_or("Missing iOS game home")?;
                         Some((
-                            horizon_client::hud::HudAtlas::build(root)
-                                .map_err(|error| error.to_string())?,
+                            PreparedTitle {
+                                atlas,
+                                screen: Title::new(saves.to_path_buf(), root),
+                                rotation: Rotation::default(),
+                            },
                             horizon_client::gfx::panorama::Faces::load(root),
                         ))
                     } else {
                         None
                     };
-                    let boot = title.is_none().then(horizon_client::hud::HudAtlas::boot);
-                    let (atlas, panorama) = match title.as_ref() {
-                        Some((atlas, panorama)) => (atlas, Some(panorama)),
+                    let boot = prepared.is_none().then(HudAtlas::boot);
+                    let (atlas, panorama) = match prepared.as_ref() {
+                        Some((title, panorama)) => (&title.atlas, Some(panorama)),
                         None => (boot.as_ref().expect("boot atlas built"), None),
                     };
                     report_renderer_stage("Horizon renderer: compiling GPU pipelines offscreen");
-                    horizon_client::game_startup::loading_renderer(
+                    let renderer = horizon_client::game_startup::loading_renderer(
                         window,
                         true,
                         Some(atlas),
@@ -217,7 +244,11 @@ impl Shell {
                         None,
                         GraphicsApi::Auto,
                     )
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string())?;
+                    Ok(PreparedRenderer {
+                        renderer,
+                        title: prepared.map(|(title, _)| title),
+                    })
                 }))
                 .unwrap_or_else(|payload| Err(crate::describe_renderer_panic(payload.as_ref())));
                 // Wake the *one* UIKit/Winit event loop, never create another.
@@ -262,19 +293,21 @@ impl Shell {
             }
             return;
         }
-        let result = loaded.and_then(|mut renderer| {
+        let result = loaded.and_then(|mut prepared| {
             report_renderer_stage("Horizon renderer: attaching surface on UIKit thread");
             self.metal = None;
             crate::set_graphics_state(1);
-            renderer
+            prepared
+                .renderer
                 .attach_prepared_surface()
                 .map_err(|error| error.to_string())?;
-            Ok(renderer)
+            Ok(prepared)
         });
         match result {
-            Ok(renderer) => {
+            Ok(prepared) => {
                 report_renderer_stage("Horizon renderer: GPU initialization complete");
-                self.horizon = Some(renderer);
+                self.title = prepared.title;
+                self.horizon = Some(prepared.renderer);
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
@@ -287,14 +320,28 @@ impl Shell {
         let Some(renderer) = self.horizon.as_mut() else {
             return;
         };
-        let batch = HudBatch::new([renderer.config.width, renderer.config.height]);
-        let frame = horizon_client::game_startup::loading_frame(&batch);
-        let result = renderer.render(&frame);
+        let mut batch = HudBatch::new([renderer.config.width, renderer.config.height]);
+        let result = if let Some(title) = self.title.as_mut() {
+            let elapsed = title.screen.started.elapsed().as_secs_f32();
+            let frame = horizon_client::game_startup::loading_title_frame(
+                &mut batch,
+                &title.screen,
+                &title.atlas,
+                &mut title.rotation,
+                elapsed,
+            );
+            renderer.render(&frame)
+        } else {
+            // Resource-free Simulator probe retains its exact old behavior.
+            renderer.render(&horizon_client::game_startup::loading_frame(&batch))
+        };
         match result {
             Ok(true) => {
                 if self.lifecycle.present_frame() {
-                    crate::RENDERER_SWITCH.finished(true);
-                    unsafe { horizon_ios_renderer_status_changed() };
+                    if crate::RENDERER_SWITCH.state() != 3 {
+                        crate::RENDERER_SWITCH.finished(true);
+                        unsafe { horizon_ios_renderer_status_changed() };
+                    }
                     crate::set_graphics_state(2);
                 }
             }
@@ -306,6 +353,7 @@ impl Shell {
             Err(error) => {
                 report_graphics_error(&format!("Horizon first frame: {error}"));
                 self.horizon = None;
+                self.title = None;
                 crate::RENDERER_SWITCH.finished(false);
                 unsafe { horizon_ios_renderer_status_changed() };
                 self.start_metal();
@@ -355,9 +403,27 @@ impl ApplicationHandler<ShellEvent> for Shell {
         // Drop the surface and all GPU objects before UIKit enters background.
         self.metal = None;
         self.horizon = None;
+        self.title = None;
         crate::RENDERER_SWITCH.reset();
         crate::set_graphics_state(4);
         crate::shell_suspended();
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Title splash/panorama need animation, but an unconditional redraw
+        // in about_to_wait would spin the UIKit event loop at full speed.
+        let title_visible = self.title.is_some()
+            && self.horizon.is_some()
+            && self.lifecycle.drawable_size().is_some();
+        if self.title_refresh.due(Instant::now(), title_visible) {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+        event_loop.set_control_flow(match self.title_refresh.next_deadline() {
+            Some(next) => ControlFlow::WaitUntil(next),
+            None => ControlFlow::Wait,
+        });
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -471,6 +537,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.metal = None;
         self.horizon = None;
+        self.title = None;
         self.window = None;
         let _ = crate::horizon_ios_shutdown();
         crate::set_graphics_state(0);

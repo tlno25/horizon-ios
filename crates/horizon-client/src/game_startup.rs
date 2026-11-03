@@ -156,10 +156,61 @@ pub fn loading_frame(hud: &HudBatch) -> Frame<'_> {
     }
 }
 
+/// Draw the same native Minecraft/Horizon title widgets used by the desktop
+/// loading menu, then wrap them in the shared renderer's title frame. The
+/// platform host still owns all input, window events and world startup.
+/// A resource-free diagnostic keeps using `loading_frame` instead.
+pub fn loading_title_frame<'a>(
+    hud: &'a mut HudBatch,
+    title: &crate::title::Title,
+    atlas: &crate::hud::HudAtlas,
+    rotation: &mut crate::gfx::panorama::Rotation,
+    elapsed_seconds: f32,
+) -> Frame<'a> {
+    title.draw(atlas, hud, (-1.0, -1.0), false);
+    // The native loading menu publishes its widgets after each frame too.
+    // Without this, the collected buttons stay in a stale per-thread buffer.
+    crate::widgets::publish_frame();
+    let mut frame = loading_frame(hud);
+    frame.yaw = rotation.update(elapsed_seconds, 1.0);
+    frame
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::{fs, time::SystemTime};
+
+    #[test]
+    fn prepared_title_assets_can_cross_the_gpu_worker_boundary() {
+        fn assert_send<T: Send>() {}
+        assert_send::<crate::hud::HudAtlas>();
+        assert_send::<crate::title::Title>();
+    }
+
+    #[test]
+    fn prepared_title_frame_draws_existing_horizon_buttons_and_rotates_panorama() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-ios-title-test-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let title = crate::title::Title::new(root.join("saves"), &root);
+        let atlas = crate::hud::HudAtlas::boot();
+        let mut hud = HudBatch::new([1000, 700]);
+        let mut rotation = crate::gfx::panorama::Rotation::default();
+        let frame = loading_title_frame(&mut hud, &title, &atlas, &mut rotation, 2.0);
+        assert!(frame.title);
+        assert!(
+            frame.hud.vertices.len() > 0,
+            "the native title must draw HUD geometry"
+        );
+        assert_eq!(frame.yaw, -4.0, "reuse the native panorama rotation rate");
+        assert!(
+            !crate::widgets::last().is_empty(),
+            "publish the existing title buttons for future native input routing"
+        );
+        drop(frame);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn preview_frame_matches_the_native_game_loading_state() {

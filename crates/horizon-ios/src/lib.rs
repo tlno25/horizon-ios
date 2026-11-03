@@ -427,6 +427,9 @@ pub extern "C" fn horizon_ios_run() -> i32 {
     }
 }
 
+mod title_refresh;
+pub use title_refresh::TitleRefresh;
+
 mod probe_lifecycle;
 pub use probe_lifecycle::ProbeLifecycle;
 

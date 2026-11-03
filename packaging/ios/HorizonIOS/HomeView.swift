@@ -340,7 +340,7 @@ private struct HomeView: View {
                             .textSelection(.enabled)
                     }
 
-                    Text("The Metal probe renders the blue background. After loading game data, Preview Horizon renderer shows the prepared Minecraft title panorama. This does not start Minecraft gameplay.")
+                    Text("The Metal probe renders the blue background. After loading game data, Preview Horizon renderer shows Horizon's native title and animated panorama. Touch controls and launching worlds are not connected yet.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

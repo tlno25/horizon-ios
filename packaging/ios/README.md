@@ -41,9 +41,13 @@ The separate **Horizon iOS Engine Compatibility** check is also manual-only.
 
 The IPA currently contains the Horizon shell, Metal probe, shared-client
 profile, private resource importer, block-registry loader and an optional
-shared Horizon renderer preview with the prepared title panorama and GUI atlas,
-**not playable Minecraft**. The resource-free CI probe continues to use the
-lightweight boot atlas. Windows/Linux
+shared Horizon renderer preview. After the block registry is loaded, the
+preview draws the **existing native Horizon title screen** with its prepared
+GUI atlas, buttons and panorama using the shared GPU renderer, paced to about
+30 fps while foregrounded. The controls are *visual only* at this stage;
+iOS touch/button actions do not yet start games or open worlds. The resource-
+free CI probe continues to render the lightweight loading frame without
+private Minecraft files. This remains **not playable Minecraft**. Windows/Linux
 computers do not need local Xcode to download the unsigned IPA.
 
 ## Build on macOS

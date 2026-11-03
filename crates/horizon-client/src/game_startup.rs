@@ -31,14 +31,22 @@ pub struct WorldInspection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InitialChunkDiskState {
     Missing,
-    Saved { data_version: Option<i32> },
+    Saved {
+        data_version: Option<i32>,
+        sections: usize,
+        block_below_player: Option<String>,
+    },
 }
 
 /// Read the first existing chunk using the game's read-only Anvil decoder.
 /// Never generate missing regions, acquire a session lock or touch save data.
 /// Reject symlinks in the region path, including external `.mcc` payloads.
-pub fn inspect_saved_initial_chunk(world: &Path, chunk: [i32; 2]) -> Result<InitialChunkDiskState> {
-    use horizon_core::position::ChunkPos;
+pub fn inspect_saved_initial_chunk(
+    world: &Path,
+    chunk: [i32; 2],
+    player_position: Option<[f64; 3]>,
+) -> Result<InitialChunkDiskState> {
+    use horizon_core::position::{BlockPos, ChunkPos};
     use horizon_world::{
         nbt::{Limits, Tag},
         region::RegionFile,
@@ -84,17 +92,38 @@ pub fn inspect_saved_initial_chunk(world: &Path, chunk: [i32; 2]) -> Result<Init
         return Ok(InitialChunkDiskState::Missing);
     };
     let decoded = record.nbt(Limits::saved())?;
-    // Do not pass mismatched chunk coordinates to the future streaming stage.
-    if decoded.tag.get("xPos") != Some(&Tag::Int(x))
-        || decoded.tag.get("zPos") != Some(&Tag::Int(z))
-    {
-        return Err("Anvil chunk has mismatched or missing coordinates".into());
+    // Validate the complete section structure with the shared Horizon world
+    // decoder, not an iOS-specific palette parser. It also rejects old
+    // DataVersions and duplicate or malformed section coordinates.
+    let decoded = horizon_world::chunk::ChunkData::new(decoded)?;
+    if decoded.position() != ChunkPos::new(x, z) {
+        return Err("Anvil chunk has mismatched coordinates".into());
     }
-    let data_version = match decoded.tag.get("DataVersion") {
+    let root = &decoded.root().tag;
+    let data_version = match root.get("DataVersion") {
         Some(Tag::Int(n)) => Some(*n),
         _ => None,
     };
-    Ok(InitialChunkDiskState::Saved { data_version })
+    let sections = match root.get("sections") {
+        Some(Tag::List(sections)) => sections.len(),
+        _ => unreachable!("ChunkData validated sections"),
+    };
+    // Sample the block immediately below the saved player's feet, but only
+    // when that position belongs to the first chunk being inspected. This
+    // doesn't require loading the game registry or instantiating a world.
+    let block_below_player = player_position
+        .filter(|p| staged_player_chunk(Some(*p)) == Some(chunk))
+        .map(|[px, py, pz]| {
+            let pos = BlockPos::new(px.floor() as i32, py.floor() as i32 - 1, pz.floor() as i32);
+            decoded.block(pos).map(|state| state.map(|s| s.name))
+        })
+        .transpose()?
+        .flatten();
+    Ok(InitialChunkDiskState::Saved {
+        data_version,
+        sections,
+        block_below_player,
+    })
 }
 
 /// The native game first tries its last saved player position before finding
@@ -167,7 +196,7 @@ pub fn inspect_existing_world(saves: &Path, folder: &str) -> Result<WorldInspect
     // Other dimensions keep their metadata but await their storage mapping.
     let initial_chunk_disk = if level.dimension == "minecraft:overworld" {
         initial_chunk
-            .map(|chunk| inspect_saved_initial_chunk(&world, chunk))
+            .map(|chunk| inspect_saved_initial_chunk(&world, chunk, saved_position))
             .transpose()?
     } else {
         None
@@ -361,6 +390,55 @@ mod tests {
     use super::*;
     use std::{fs, time::SystemTime};
 
+    /// Synthetic Anvil region for tests only; never touches player saves.
+    fn write_stone_region(root: &Path) -> std::path::PathBuf {
+        use horizon_core::position::ChunkPos;
+        use horizon_world::{
+            compression::Compression,
+            nbt::{Limits, NamedTag, Tag},
+            region::{ChunkRecord, RegionFile},
+        };
+        let region_dir = root.join("region");
+        fs::create_dir_all(&region_dir).unwrap();
+        let file = region_dir.join("r.0.-1.mca");
+        let chunk = ChunkPos::new(8, -5);
+        let record = ChunkRecord::from_nbt(
+            &NamedTag {
+                name: "".into(),
+                tag: Tag::compound([
+                    ("xPos", Tag::Int(8)),
+                    ("zPos", Tag::Int(-5)),
+                    ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+                    (
+                        "sections",
+                        Tag::List(vec![Tag::compound([
+                            ("Y", Tag::Byte(4)),
+                            (
+                                "block_states",
+                                Tag::compound([(
+                                    "palette",
+                                    Tag::List(vec![Tag::compound([(
+                                        "id",
+                                        Tag::String("minecraft:stone".into()),
+                                    )])]),
+                                )]),
+                            ),
+                        ])]),
+                    ),
+                ]),
+            },
+            Compression::Zlib,
+            0,
+            Limits::default(),
+        )
+        .unwrap();
+        {
+            let mut region = RegionFile::open_writable(&file, true).unwrap();
+            region.write(chunk, &record).unwrap();
+        }
+        file
+    }
+
     #[test]
     fn ios_world_inspection_reads_valid_level_data_without_creating_a_lock() {
         let root =
@@ -424,6 +502,8 @@ mod tests {
             )]),
         )
         .unwrap();
+        let region_path = write_stone_region(&world);
+        let original_region = fs::read(&region_path).unwrap();
         let original = fs::read(&source).unwrap();
         let inspected = inspect_existing_world(&saves, "Test").unwrap();
         assert_eq!(inspected.folder, "Test");
@@ -435,9 +515,14 @@ mod tests {
         assert_eq!(inspected.initial_chunk, Some([8, -5]));
         assert_eq!(
             inspected.initial_chunk_disk,
-            Some(InitialChunkDiskState::Missing)
+            Some(InitialChunkDiskState::Saved {
+                data_version: Some(horizon_world::DATA_VERSION),
+                sections: 1,
+                block_below_player: Some("minecraft:stone".to_owned()),
+            })
         );
         assert_eq!(original, fs::read(&source).unwrap());
+        assert_eq!(original_region, fs::read(&region_path).unwrap());
         assert!(!world.join("session.lock").exists());
         #[cfg(unix)]
         {
@@ -454,45 +539,29 @@ mod tests {
 
     #[test]
     fn ios_preflight_reads_saved_anvil_chunk_without_modifying_any_file() {
-        use horizon_core::position::ChunkPos;
-        use horizon_world::{
-            compression::Compression,
-            nbt::{Limits, NamedTag, Tag},
-            region::{ChunkRecord, RegionFile},
-        };
         let root = std::env::temp_dir().join(format!("horizon-ios-anvil-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let region_dir = root.join("region");
-        fs::create_dir_all(&region_dir).unwrap();
-        let file = region_dir.join("r.0.-1.mca");
-        let chunk = ChunkPos::new(8, -5);
-        let record = ChunkRecord::from_nbt(
-            &NamedTag {
-                name: "".into(),
-                tag: Tag::compound([
-                    ("xPos", Tag::Int(8)),
-                    ("zPos", Tag::Int(-5)),
-                    ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
-                ]),
-            },
-            Compression::Zlib,
-            0,
-            Limits::default(),
-        )
-        .unwrap();
-        {
-            let mut region = RegionFile::open_writable(&file, true).unwrap();
-            region.write(chunk, &record).unwrap();
-        }
+        let file = write_stone_region(&root);
         let original = fs::read(&file).unwrap();
         assert_eq!(
-            inspect_saved_initial_chunk(&root, [8, -5]).unwrap(),
+            inspect_saved_initial_chunk(&root, [8, -5], Some([128.5, 72.0, -64.25])).unwrap(),
             InitialChunkDiskState::Saved {
-                data_version: Some(horizon_world::DATA_VERSION)
+                data_version: Some(horizon_world::DATA_VERSION),
+                sections: 1,
+                block_below_player: Some("minecraft:stone".to_owned()),
+            }
+        );
+        // Never sample a position from a different chunk into this palette.
+        assert_eq!(
+            inspect_saved_initial_chunk(&root, [8, -5], Some([144.0, 72.0, -64.25])).unwrap(),
+            InitialChunkDiskState::Saved {
+                data_version: Some(horizon_world::DATA_VERSION),
+                sections: 1,
+                block_below_player: None,
             }
         );
         assert_eq!(
-            inspect_saved_initial_chunk(&root, [9, -5]).unwrap(),
+            inspect_saved_initial_chunk(&root, [9, -5], None).unwrap(),
             InitialChunkDiskState::Missing
         );
         assert_eq!(fs::read(&file).unwrap(), original);
@@ -507,13 +576,13 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("region")).unwrap();
         assert_eq!(
-            inspect_saved_initial_chunk(&root, [0, 0]).unwrap(),
+            inspect_saved_initial_chunk(&root, [0, 0], None).unwrap(),
             InitialChunkDiskState::Missing
         );
         fs::write(root.join("region/r.0.0.mca"), b"bad").unwrap();
         // Anvil reader treats a truncated header as an empty (nonexistent) chunk.
         assert_eq!(
-            inspect_saved_initial_chunk(&root, [0, 0]).unwrap(),
+            inspect_saved_initial_chunk(&root, [0, 0], None).unwrap(),
             InitialChunkDiskState::Missing
         );
         #[cfg(unix)]
@@ -523,10 +592,10 @@ mod tests {
             let external = root.join("outside.mca");
             fs::write(&external, b"bad").unwrap();
             symlink(&external, root.join("region/r.0.0.mca")).unwrap();
-            assert!(inspect_saved_initial_chunk(&root, [0, 0]).is_err());
+            assert!(inspect_saved_initial_chunk(&root, [0, 0], None).is_err());
             fs::remove_dir_all(root.join("region")).unwrap();
             symlink("../..", root.join("region")).unwrap();
-            assert!(inspect_saved_initial_chunk(&root, [0, 0]).is_err());
+            assert!(inspect_saved_initial_chunk(&root, [0, 0], None).is_err());
         }
         fs::remove_dir_all(root).unwrap();
     }

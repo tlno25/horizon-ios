@@ -638,8 +638,18 @@ impl ApplicationHandler<ShellEvent> for Shell {
                                 _ => "Survival",
                             };
                             let disk_probe = match &world.initial_chunk_disk {
-                                Some(horizon_client::game_startup::InitialChunkDiskState::Saved { data_version }) => {
-                                    format!(" Anvil chunk NBT read successfully (data version {}).", data_version.map_or_else(|| "unknown".to_owned(), |n| n.to_string()))
+                                Some(horizon_client::game_startup::InitialChunkDiskState::Saved { data_version, sections, block_below_player }) => {
+                                    let sampled = block_below_player.as_deref().map_or(
+                                        "No saved block section at the player's feet".to_owned(),
+                                        |name| {
+                                            let safe_name: String = name.chars()
+                                                .filter(|ch| !ch.is_control())
+                                                .take(96)
+                                                .collect();
+                                            format!("Block below saved feet: {safe_name}")
+                                        },
+                                    );
+                                    format!(" Anvil chunk sections decoded: {sections} (data version {}). {sampled}.", data_version.map_or_else(|| "unknown".to_owned(), |n| n.to_string()))
                                 }
                                 Some(horizon_client::game_startup::InitialChunkDiskState::Missing) => {
                                     " No saved chunk exists at this position; generation will be required.".to_owned()

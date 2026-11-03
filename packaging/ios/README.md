@@ -59,11 +59,15 @@ tap). Read-only inspection now also stages the saved player feet position,
 rotation and corresponding initial chunk coordinate (including negative
 coordinates) when the saved data contains valid, finite coordinates. For the
 vanilla overworld, it now opens the corresponding existing Anvil `.mca` file
-read-only and decodes **one saved chunk NBT record**, reporting whether that
-chunk exists and its data version. Linked region files and linked external
-chunk payloads are rejected. This does **not** reconstruct the chunk palette,
-create chunk meshes, generate missing chunks, take a session lock, modify
-`level.dat`, start world simulation, or attach terrain to the GPU renderer.
+read-only and decodes **one saved chunk NBT record**. It now uses Horizon's
+existing `ChunkData` storage decoder to validate the saved section layout and
+sample the palette-resolved block directly beneath the saved player's feet
+(if that section is present). The diagnostic also reports the saved data
+version and section count. Linked region files and linked external chunk
+payloads are rejected. This does **not** turn all blocks into resident
+registry IDs, create chunk meshes, generate missing chunks, take a session
+lock, modify `level.dat`, start world simulation, or attach terrain to the
+GPU renderer.
 Other dimensions and worlds without a saved position await a different
 initial loading path. Remaining gameplay actions stay disabled.
 Use **Show game** to hide the full-screen diagnostics panel and touch the

@@ -34,6 +34,7 @@ enum ShellEvent {
     PreviewPhysicsToggle,
     PreviewPhysicsJump,
     PreviewSprintToggle,
+    PreviewCrouchToggle,
     PreviewWalk([f32; 2]),
     WorldInspected {
         generation: u64,
@@ -147,6 +148,12 @@ pub(super) fn request_preview_sprint_toggle_event() -> bool {
     EVENT_PROXY
         .get()
         .is_some_and(|proxy| proxy.send_event(ShellEvent::PreviewSprintToggle).is_ok())
+}
+
+pub(super) fn request_preview_crouch_toggle_event() -> bool {
+    EVENT_PROXY
+        .get()
+        .is_some_and(|proxy| proxy.send_event(ShellEvent::PreviewCrouchToggle).is_ok())
 }
 
 pub(super) fn request_preview_walk_event(axes: [f32; 2]) -> bool {
@@ -286,6 +293,7 @@ impl Shell {
         self.preview_walk = [0.0, 0.0];
         self.preview_sprint = false;
         crate::set_preview_sprinting(false);
+        crate::set_preview_crouching(false);
     }
 
     fn toggle_preview_physics(&mut self) {
@@ -889,10 +897,13 @@ impl Shell {
                 self.finish_terrain_preview(false, Some("Saved preview camera disappeared"));
                 return;
             };
-            let frame = horizon_client::game_startup::terrain_preview_frame(
+            let frame = horizon_client::game_startup::terrain_preview_frame_with_pose(
                 &batch,
                 camera.position(),
                 camera.rotation(),
+                self.preview_physics
+                    .as_ref()
+                    .is_some_and(|body| body.crouching()),
             );
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| renderer.render(&frame)))
                 .map_err(|panic| crate::describe_renderer_panic(panic.as_ref()))
@@ -1152,10 +1163,15 @@ impl ApplicationHandler<ShellEvent> for Shell {
                                             .ok_or("Native preview collision world is not ready")
                                             .and_then(|(stage, resources)| {
                                                 stage
-                                                    .resolve_preview_movement(
+                                                    .resolve_preview_movement_with_pose(
                                                         &resources.collisions,
                                                         from,
                                                         target,
+                                                        0.0,
+                                                        false,
+                                                        self.preview_physics
+                                                            .as_ref()
+                                                            .is_some_and(|body| body.crouching()),
                                                     )
                                                     .map_err(|_| "Native preview collision failed")
                                             });
@@ -1270,8 +1286,46 @@ impl ApplicationHandler<ShellEvent> for Shell {
             }
             ShellEvent::PreviewSprintToggle => {
                 if self.preview_physics.is_some() && crate::TERRAIN_PREVIEW.state() == 4 {
+                    // A crouched viewer may not sprint.
+                    if self
+                        .preview_physics
+                        .as_ref()
+                        .is_some_and(|body| body.crouching())
+                    {
+                        return;
+                    }
                     self.preview_sprint = !self.preview_sprint;
                     crate::set_preview_sprinting(self.preview_sprint);
+                }
+            }
+            ShellEvent::PreviewCrouchToggle => {
+                if crate::TERRAIN_PREVIEW.state() == 4
+                    && let (Some(body), Some(stage), Some(resources)) = (
+                        self.preview_physics.as_mut(),
+                        self.native_world.as_ref(),
+                        crate::PREVIEW_TERRAIN.get(),
+                    )
+                {
+                    let enable_crouch = !body.crouching();
+                    match body.set_crouching(enable_crouch, stage, &resources.collisions) {
+                        Ok(true) => {
+                            let crouching = body.crouching();
+                            crate::set_preview_crouching(crouching);
+                            if crouching {
+                                self.preview_sprint = false;
+                                crate::set_preview_sprinting(false);
+                            }
+                            if let Some(window) = &self.window {
+                                window.request_redraw();
+                            }
+                        }
+                        Ok(false) => report_graphics_error(
+                            "Cannot stand: a saved block obstructs the standing player body",
+                        ),
+                        Err(error) => report_graphics_error(&format!(
+                            "Cannot change read-only crouch: {error}"
+                        )),
+                    }
                 }
             }
             ShellEvent::TerrainPreviewResetCamera => {

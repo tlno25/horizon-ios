@@ -30,6 +30,9 @@ def validate(payload: object) -> str:
     terrain = payload.get("terrain_preview", 0)
     if type(terrain) is not int or terrain not in range(7):
         raise ValueError(f"Invalid read-only terrain preview state (terrain_preview={terrain})")
+    crouch = payload.get("preview_crouch", 0)
+    if type(crouch) is not int or crouch not in (0, 1):
+        raise ValueError(f"Invalid read-only crouch state (preview_crouch={crouch})")
     return "Metal ready"
 
 

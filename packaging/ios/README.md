@@ -142,6 +142,14 @@ complex supporting blocks and full entity step/landing effects still require
 the complete game runtime. Sprint here is an explicit opt-in toggle rather
 than vanilla's full double-tap / hunger-aware input state machine.
 
+A separate opt-in **Crouch** toggle now uses the same native collision
+resolver with a 0.6×1.5 player body, 1.27-block eye height, and the
+standard 30% crouched movement-input scale. Crouching excludes sprint.
+**Stand** checks the real saved block geometry for sufficient headroom
+before restoring the 0.6×1.8 standing body. This does not yet implement
+full gameplay sneak-edge backoff or fluid/ability rules; it only affects
+the temporary read-only viewer and never changes save data.
+
 The transient view camera moves through the read-only native block collision
 world (full voxel shapes, not an invented approximate physics implementation),
 while the saved player's pose never changes. By default this remains a

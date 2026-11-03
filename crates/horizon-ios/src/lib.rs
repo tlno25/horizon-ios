@@ -46,6 +46,9 @@ static PREVIEW_PHYSICS_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Native Winit owns this transient sprint flag; Swift only reads it.
 #[cfg(target_os = "ios")]
 static PREVIEW_SPRINT_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Native Winit owns the temporary crouch pose, not the saved player.
+#[cfg(target_os = "ios")]
+static PREVIEW_CROUCH_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Returns the ABI revision supported by this static library.
 #[unsafe(no_mangle)]
@@ -90,6 +93,8 @@ pub extern "C" fn horizon_ios_shutdown() -> i32 {
     PREVIEW_PHYSICS_ENABLED.store(false, Ordering::Release);
     #[cfg(target_os = "ios")]
     PREVIEW_SPRINT_ENABLED.store(false, Ordering::Release);
+    #[cfg(target_os = "ios")]
+    PREVIEW_CROUCH_ENABLED.store(false, Ordering::Release);
     #[cfg(target_os = "ios")]
     clear_touches();
     0
@@ -296,6 +301,39 @@ pub extern "C" fn horizon_ios_toggle_preview_sprint() -> i32 {
         return -1;
     }
     if app::request_preview_sprint_toggle_event() {
+        0
+    } else {
+        -2
+    }
+}
+
+/// Native C ABI status for the read-only crouching pose (0/1).
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_preview_crouching() -> u32 {
+    #[cfg(target_os = "ios")]
+    {
+        return u32::from(PREVIEW_CROUCH_ENABLED.load(Ordering::Acquire));
+    }
+    #[cfg(not(target_os = "ios"))]
+    0
+}
+
+#[cfg(target_os = "ios")]
+fn set_preview_crouching(enabled: bool) {
+    if PREVIEW_CROUCH_ENABLED.swap(enabled, Ordering::AcqRel) != enabled {
+        unsafe { app::preview_physics_changed() };
+    }
+}
+
+/// Ask the Winit thread to crouch or stand. A blocked ceiling rejects
+/// uncrouching without changing the read-only camera or the saved player.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_toggle_preview_crouch() -> i32 {
+    if TERRAIN_PREVIEW.state() != 4 || !PREVIEW_PHYSICS_ENABLED.load(Ordering::Acquire) {
+        return -1;
+    }
+    if app::request_preview_crouch_toggle_event() {
         0
     } else {
         -2

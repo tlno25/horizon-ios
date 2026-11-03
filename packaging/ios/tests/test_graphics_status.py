@@ -22,6 +22,15 @@ class GraphicsStatusTests(unittest.TestCase):
             with self.subTest(invalid=terrain), self.assertRaisesRegex(ValueError, "terrain_preview"):
                 validate({**base, "terrain_preview": terrain})
 
+    def test_crouch_status_must_be_optional_but_bounded_when_reported(self):
+        base = {"state": 2, "error": "", "engine": 1, "player": "Player00001"}
+        for value in (0, 1):
+            with self.subTest(valid=value):
+                self.assertEqual(validate({**base, "preview_crouch": value}), "Metal ready")
+        for value in ("1", None, True, -1, 2, []):
+            with self.subTest(invalid=value), self.assertRaisesRegex(ValueError, "preview_crouch"):
+                validate({**base, "preview_crouch": value})
+
     def test_core_load_status_must_be_numeric_when_reported(self):
         for status in ("2", None, True, 7, -1):
             with self.subTest(status=status), self.assertRaises(ValueError):

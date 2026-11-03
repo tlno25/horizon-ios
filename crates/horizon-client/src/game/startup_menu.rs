@@ -1216,8 +1216,19 @@ impl Loading {
             }
             match action {
                 MenuTouchAction::Click => {
-                    self.startup_mouse_button(event_loop, false, true)?;
-                    self.startup_mouse_button(event_loop, false, false)?;
+                    // The Android-only helper is not compiled into iOS.
+                    // Reuse the same desktop menu click path as keyboard/mouse
+                    // and dispatch a complete press/release pair on touch-up.
+                    for state in [ElementState::Pressed, ElementState::Released] {
+                        self.menu_event(
+                            event_loop,
+                            WindowEvent::MouseInput {
+                                device_id: touch.device_id,
+                                state,
+                                button: MouseButton::Left,
+                            },
+                        )?;
+                    }
                 }
                 MenuTouchAction::Scroll(y) => {
                     self.menu_event(
@@ -1467,11 +1478,31 @@ impl Loading {
             }
             #[cfg(target_os = "ios")]
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                use horizon_client::ios_touch::{LoadingTextTarget, loading_text_target};
                 let text = horizon_client::ios_touch::committed_ime_text(&text);
-                if !text.is_empty()
-                    && let Some(title) = &mut self.menu.title
-                {
-                    title.type_text(&text);
+                if !text.is_empty() {
+                    let title_focused = self
+                        .menu
+                        .title
+                        .as_mut()
+                        .is_some_and(|title| title.focused_field().is_some());
+                    match loading_text_target(
+                        self.menu.options_open,
+                        self.menu.options.typing(),
+                        title_focused,
+                    ) {
+                        LoadingTextTarget::Title => {
+                            if let Some(title) = &mut self.menu.title {
+                                title.type_text(&text);
+                            }
+                        }
+                        LoadingTextTarget::Options => {
+                            if let Some(gui) = &self.gui {
+                                self.menu.options.type_text(&gui.atlas, &text);
+                            }
+                        }
+                        LoadingTextTarget::None => {}
+                    }
                 }
             }
             #[cfg(target_os = "ios")]
@@ -1657,8 +1688,11 @@ impl Loading {
                 .title
                 .as_mut()
                 .is_some_and(|title| title.focused_field().is_some());
-            let wants_keyboard =
-                title_focused || (self.menu.options_open && self.menu.options.typing());
+            let wants_keyboard = horizon_client::ios_touch::loading_text_target(
+                self.menu.options_open,
+                self.menu.options.typing(),
+                title_focused,
+            ) != horizon_client::ios_touch::LoadingTextTarget::None;
             if wants_keyboard != self.ime_allowed {
                 if let Some(window) = &self.window {
                     window.set_ime_allowed(wants_keyboard);

@@ -12,6 +12,34 @@ pub fn committed_ime_text(text: &str) -> String {
         .collect()
 }
 
+/// Which text field owns iOS keyboard composition during loading/menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadingTextTarget {
+    None,
+    Title,
+    Options,
+}
+
+/// An open Options dialog always takes focus precedence over the title
+/// underneath. Typing in one must never mutate the other.
+pub fn loading_text_target(
+    options_open: bool,
+    options_typing: bool,
+    title_focused: bool,
+) -> LoadingTextTarget {
+    if options_open {
+        if options_typing {
+            LoadingTextTarget::Options
+        } else {
+            LoadingTextTarget::None
+        }
+    } else if title_focused {
+        LoadingTextTarget::Title
+    } else {
+        LoadingTextTarget::None
+    }
+}
+
 /// The same controls used by Android feed the game's native controller
 /// mapping. A short tap becomes a single frame of attack/use.
 pub fn poll_gamepad(controls: &mut TouchControls) -> PadState {
@@ -78,6 +106,26 @@ mod tests {
         assert!(!movement_input_enabled(false, false, false, true));
         assert!(!movement_input_enabled(false, true, true, true));
         assert!(!movement_input_enabled(false, true, false, false));
+    }
+
+    #[test]
+    fn title_ime_never_leaks_keystrokes_into_a_hidden_world_field() {
+        assert_eq!(
+            loading_text_target(true, false, true),
+            LoadingTextTarget::None,
+        );
+        assert_eq!(
+            loading_text_target(true, true, true),
+            LoadingTextTarget::Options,
+        );
+        assert_eq!(
+            loading_text_target(false, false, true),
+            LoadingTextTarget::Title,
+        );
+        assert_eq!(
+            loading_text_target(false, false, false),
+            LoadingTextTarget::None,
+        );
     }
 
     #[test]

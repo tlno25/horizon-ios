@@ -57,12 +57,15 @@ upgrade-required saves, and reads metadata through the shared `Level` parser.
 The result appears in the SwiftUI diagnostics (automatically shown after the
 tap). Read-only inspection now also stages the saved player feet position,
 rotation and corresponding initial chunk coordinate (including negative
-coordinates) when the saved data contains valid, finite coordinates. This is
-a future streaming request only: no chunks are loaded or generated yet.
-This does **not** create a session lock, modify `level.dat`, start world
-simulation, or attach chunks to the renderer. Those stages remain unimplemented.
- The
-remaining actions are intentionally disabled until gameplay is connected.
+coordinates) when the saved data contains valid, finite coordinates. For the
+vanilla overworld, it now opens the corresponding existing Anvil `.mca` file
+read-only and decodes **one saved chunk NBT record**, reporting whether that
+chunk exists and its data version. Linked region files and linked external
+chunk payloads are rejected. This does **not** reconstruct the chunk palette,
+create chunk meshes, generate missing chunks, take a session lock, modify
+`level.dat`, start world simulation, or attach terrain to the GPU renderer.
+Other dimensions and worlds without a saved position await a different
+initial loading path. Remaining gameplay actions stay disabled.
 Use **Show game** to hide the full-screen diagnostics panel and touch the
 renderer; the small **Diagnostics** button restores the panel. Taps are
 rejected after dragging, cancellation or backgrounding. The resource-free CI

@@ -21,6 +21,80 @@ pub struct WorldInspection {
     /// The first chunk to request once a real streaming world exists.
     /// This does not read, generate, load or render chunks.
     pub initial_chunk: Option<[i32; 2]>,
+    /// Read-only first chunk probe; absent when there is no saved position or
+    /// when a non-overworld dimension needs its own storage mapping.
+    pub initial_chunk_disk: Option<InitialChunkDiskState>,
+}
+
+/// Preflight of a single saved Anvil chunk. A saved NBT record does not mean
+/// that its block palette is decoded, meshed, or displayed on the GPU.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InitialChunkDiskState {
+    Missing,
+    Saved { data_version: Option<i32> },
+}
+
+/// Read the first existing chunk using the game's read-only Anvil decoder.
+/// Never generate missing regions, acquire a session lock or touch save data.
+/// Reject symlinks in the region path, including external `.mcc` payloads.
+pub fn inspect_saved_initial_chunk(world: &Path, chunk: [i32; 2]) -> Result<InitialChunkDiskState> {
+    use horizon_core::position::ChunkPos;
+    use horizon_world::{
+        nbt::{Limits, Tag},
+        region::RegionFile,
+    };
+    use std::{fs, io::ErrorKind};
+
+    let directory = world.join("region");
+    match fs::symlink_metadata(&directory) {
+        Ok(meta) if !meta.is_dir() || meta.file_type().is_symlink() => {
+            return Err("Invalid region directory".into());
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            return Ok(InitialChunkDiskState::Missing);
+        }
+        Err(err) => return Err(err.into()),
+        _ => {}
+    }
+    let [x, z] = chunk;
+    let path = directory.join(format!("r.{}.{}.mca", x >> 5, z >> 5));
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
+            return Err("Invalid or linked Anvil region file".into());
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            return Ok(InitialChunkDiskState::Missing);
+        }
+        Err(err) => return Err(err.into()),
+        _ => {}
+    }
+    // Large chunks may keep an external payload in `c.<x>.<z>.mcc`.
+    // The region codec opens this file when the chunk header points at it.
+    let external = directory.join(format!("c.{x}.{z}.mcc"));
+    match fs::symlink_metadata(&external) {
+        Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
+            return Err("Invalid or linked external chunk payload".into());
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+        _ => {}
+    }
+    let mut region = RegionFile::open(path)?;
+    let Some(record) = region.read(ChunkPos::new(x, z))? else {
+        return Ok(InitialChunkDiskState::Missing);
+    };
+    let decoded = record.nbt(Limits::saved())?;
+    // Do not pass mismatched chunk coordinates to the future streaming stage.
+    if decoded.tag.get("xPos") != Some(&Tag::Int(x))
+        || decoded.tag.get("zPos") != Some(&Tag::Int(z))
+    {
+        return Err("Anvil chunk has mismatched or missing coordinates".into());
+    }
+    let data_version = match decoded.tag.get("DataVersion") {
+        Some(Tag::Int(n)) => Some(*n),
+        _ => None,
+    };
+    Ok(InitialChunkDiskState::Saved { data_version })
 }
 
 /// The native game first tries its last saved player position before finding
@@ -89,6 +163,15 @@ pub fn inspect_existing_world(saves: &Path, folder: &str) -> Result<WorldInspect
         .filter(|p| staged_player_chunk(Some(*p)).is_some());
     let saved_rotation = saved_position.map(|_| level.rotation);
     let initial_chunk = staged_player_chunk(saved_position);
+    // Only the vanilla overworld layout is supported by the first disk probe.
+    // Other dimensions keep their metadata but await their storage mapping.
+    let initial_chunk_disk = if level.dimension == "minecraft:overworld" {
+        initial_chunk
+            .map(|chunk| inspect_saved_initial_chunk(&world, chunk))
+            .transpose()?
+    } else {
+        None
+    };
     Ok(WorldInspection {
         folder: folder.to_owned(),
         name: level.name,
@@ -98,6 +181,7 @@ pub fn inspect_existing_world(saves: &Path, folder: &str) -> Result<WorldInspect
         saved_position,
         saved_rotation,
         initial_chunk,
+        initial_chunk_disk,
     })
 }
 
@@ -349,6 +433,10 @@ mod tests {
         assert_eq!(inspected.saved_position, Some([128.5, 72.0, -64.25]));
         assert_eq!(inspected.saved_rotation, Some([45.0, -15.0]));
         assert_eq!(inspected.initial_chunk, Some([8, -5]));
+        assert_eq!(
+            inspected.initial_chunk_disk,
+            Some(InitialChunkDiskState::Missing)
+        );
         assert_eq!(original, fs::read(&source).unwrap());
         assert!(!world.join("session.lock").exists());
         #[cfg(unix)]
@@ -360,6 +448,85 @@ mod tests {
                 inspect_existing_world(&saves, "Test").is_err(),
                 "a symlinked level.dat may escape the app's world directory"
             );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ios_preflight_reads_saved_anvil_chunk_without_modifying_any_file() {
+        use horizon_core::position::ChunkPos;
+        use horizon_world::{
+            compression::Compression,
+            nbt::{Limits, NamedTag, Tag},
+            region::{ChunkRecord, RegionFile},
+        };
+        let root = std::env::temp_dir().join(format!("horizon-ios-anvil-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let region_dir = root.join("region");
+        fs::create_dir_all(&region_dir).unwrap();
+        let file = region_dir.join("r.0.-1.mca");
+        let chunk = ChunkPos::new(8, -5);
+        let record = ChunkRecord::from_nbt(
+            &NamedTag {
+                name: "".into(),
+                tag: Tag::compound([
+                    ("xPos", Tag::Int(8)),
+                    ("zPos", Tag::Int(-5)),
+                    ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+                ]),
+            },
+            Compression::Zlib,
+            0,
+            Limits::default(),
+        )
+        .unwrap();
+        {
+            let mut region = RegionFile::open_writable(&file, true).unwrap();
+            region.write(chunk, &record).unwrap();
+        }
+        let original = fs::read(&file).unwrap();
+        assert_eq!(
+            inspect_saved_initial_chunk(&root, [8, -5]).unwrap(),
+            InitialChunkDiskState::Saved {
+                data_version: Some(horizon_world::DATA_VERSION)
+            }
+        );
+        assert_eq!(
+            inspect_saved_initial_chunk(&root, [9, -5]).unwrap(),
+            InitialChunkDiskState::Missing
+        );
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert!(!root.join("session.lock").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ios_preflight_rejects_symlinked_and_corrupt_region_files() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-ios-anvil-bad-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("region")).unwrap();
+        assert_eq!(
+            inspect_saved_initial_chunk(&root, [0, 0]).unwrap(),
+            InitialChunkDiskState::Missing
+        );
+        fs::write(root.join("region/r.0.0.mca"), b"bad").unwrap();
+        // Anvil reader treats a truncated header as an empty (nonexistent) chunk.
+        assert_eq!(
+            inspect_saved_initial_chunk(&root, [0, 0]).unwrap(),
+            InitialChunkDiskState::Missing
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            fs::remove_file(root.join("region/r.0.0.mca")).unwrap();
+            let external = root.join("outside.mca");
+            fs::write(&external, b"bad").unwrap();
+            symlink(&external, root.join("region/r.0.0.mca")).unwrap();
+            assert!(inspect_saved_initial_chunk(&root, [0, 0]).is_err());
+            fs::remove_dir_all(root.join("region")).unwrap();
+            symlink("../..", root.join("region")).unwrap();
+            assert!(inspect_saved_initial_chunk(&root, [0, 0]).is_err());
         }
         fs::remove_dir_all(root).unwrap();
     }

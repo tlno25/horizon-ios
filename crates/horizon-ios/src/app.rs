@@ -637,9 +637,18 @@ impl ApplicationHandler<ShellEvent> for Shell {
                                 3 => "Spectator",
                                 _ => "Survival",
                             };
+                            let disk_probe = match &world.initial_chunk_disk {
+                                Some(horizon_client::game_startup::InitialChunkDiskState::Saved { data_version }) => {
+                                    format!(" Anvil chunk NBT read successfully (data version {}).", data_version.map_or_else(|| "unknown".to_owned(), |n| n.to_string()))
+                                }
+                                Some(horizon_client::game_startup::InitialChunkDiskState::Missing) => {
+                                    " No saved chunk exists at this position; generation will be required.".to_owned()
+                                }
+                                None => " No overworld chunk was inspected.".to_owned(),
+                            };
                             let initial_location = match (world.saved_position, world.initial_chunk) {
                                 (Some([x, y, z]), Some([cx, cz])) => format!(
-                                    " Saved player at ({x:.1}, {y:.1}, {z:.1}); next streaming chunk ({cx}, {cz}) is staged but not loaded."
+                                    " Saved player at ({x:.1}, {y:.1}, {z:.1}); first chunk ({cx}, {cz}).{disk_probe} Not decoded into terrain or rendered."
                                 ),
                                 _ => " No valid saved player location; spawn search will be required before gameplay.".to_owned(),
                             };

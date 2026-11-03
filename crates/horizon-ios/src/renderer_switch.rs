@@ -75,3 +75,24 @@ pub fn describe_renderer_panic(payload: &(dyn std::any::Any + Send)) -> String {
     let message: String = message.chars().take(950).collect();
     format!("Horizon GPU worker panicked: {message}")
 }
+
+/// Native GPU progress is meaningful during boot pipeline creation or
+/// static terrain replacement, never after those states have completed.
+#[must_use]
+pub fn renderer_stage_is_active(boot_state: u32, terrain_state: u32) -> bool {
+    boot_state == 2 || terrain_state == 3
+}
+
+#[cfg(test)]
+mod preview_stage_tests {
+    use super::renderer_stage_is_active;
+
+    #[test]
+    fn terrain_worker_progress_is_logged_after_title_renderer_is_ready() {
+        assert!(renderer_stage_is_active(2, 0));
+        assert!(renderer_stage_is_active(3, 3));
+        assert!(!renderer_stage_is_active(3, 4));
+        assert!(!renderer_stage_is_active(3, 0));
+        assert!(!renderer_stage_is_active(4, 5));
+    }
+}

@@ -499,6 +499,8 @@ pub use engine_bootstrap::{CoreLoadGate, EnginePreparation, prepare_engine_direc
 mod touch_input;
 pub use touch_input::{TouchInput, TouchPhase};
 mod renderer_switch;
-pub use renderer_switch::{RendererSwitch, describe_renderer_panic};
+pub use renderer_switch::{RendererSwitch, describe_renderer_panic, renderer_stage_is_active};
 mod terrain_preview;
 pub use terrain_preview::TerrainPreviewSwitch;
+mod preview_camera;
+pub use preview_camera::PreviewCamera;

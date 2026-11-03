@@ -94,8 +94,11 @@ draw the title until preparation finishes. UIKit then transfers the one live
 surface to the textured renderer and uploads the prepared section meshes with
 `Renderer::upload`. `terrain_preview_frame` points its camera at the saved
 player position. The preview automatically hides the diagnostics overlay so
-the player can see the scene; **Diagnostics → Back to title** restores the
-original renderer. If GPU initialization, upload or drawing fails, the iOS
+the player can see the scene. **Drag one finger** to look around the static
+chunk; the saved feet position does not move, multitouch is ignored, and
+no physics or game input is active. The preview redraws on touch/resize
+instead of animating an unchanged image at title-screen frame rate.
+**Diagnostics → Back to title** restores the original renderer. If GPU initialization, upload or drawing fails, the iOS
 shell attempts to restore the title renderer and exposes a retry action.
 Backgrounding drops the GPU view and invalidates in-flight preparation. There
 is no second UIApplicationMain, no automatic Mac build and no gameplay loop.

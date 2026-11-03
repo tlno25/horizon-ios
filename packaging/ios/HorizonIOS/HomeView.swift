@@ -355,6 +355,9 @@ private struct HomeView: View {
                     if terrainPreviewState == 4 {
                         Button("Back to title", action: leaveTerrainPreview)
                             .buttonStyle(.borderedProminent)
+                        Text("Drag one finger to look around the saved terrain. Your position remains fixed; this is not gameplay.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
                     if coreLoadState == 2 && rendererPreviewState == 3 {
                         Button("Show game") { setDiagnosticsVisible(false) }
@@ -425,7 +428,7 @@ private struct HomeView: View {
                             .textSelection(.enabled)
                     }
 
-                    Text("Load the game data, open the native title, then select a saved world. Preview saved terrain displays one static, read-only chunk with native block textures. Use Diagnostics to return to the title. World simulation, movement and saving are not active.")
+                    Text("Load game data, open the native title, then select a saved world. Preview saved terrain renders one static, read-only chunk with native block textures. Swipe one finger to look around; use Diagnostics to return to the title. World simulation, movement and saving are not active.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

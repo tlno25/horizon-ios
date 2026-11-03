@@ -67,7 +67,12 @@ impl log::Log for RendererStartupLogger {
     }
 
     fn log(&self, record: &log::Record<'_>) {
-        if !self.enabled(record.metadata()) || crate::RENDERER_SWITCH.state() != 2 {
+        if !self.enabled(record.metadata())
+            || !crate::renderer_stage_is_active(
+                crate::RENDERER_SWITCH.state(),
+                crate::TERRAIN_PREVIEW.state(),
+            )
+        {
             return;
         }
         let message = record.args().to_string();
@@ -194,7 +199,7 @@ struct Shell {
     /// the terrain renderer has the corresponding block sprite atlas.
     terrain: Option<horizon_client::game_startup::PreparedTerrain>,
     /// Saved first-person camera, supplied only with a validated CPU mesh.
-    terrain_camera: Option<([f64; 3], [f32; 2])>,
+    terrain_camera: Option<crate::PreviewCamera>,
     /// The original title renderer retains its GPU resources while a textured
     /// terrain replacement is active. Both share one WGPU device.
     title_renderer: Option<Renderer>,
@@ -527,6 +532,9 @@ impl Shell {
         if !crate::TERRAIN_PREVIEW.start() {
             return;
         }
+        if let Some(camera) = self.terrain_camera.as_mut() {
+            camera.clear();
+        }
         unsafe { horizon_ios_renderer_status_changed() };
         let job = std::thread::Builder::new()
             .name("Horizon iOS terrain GPU preparation".to_owned())
@@ -650,6 +658,9 @@ impl Shell {
             self.fail_terrain_preview("Title renderer was not retained");
             return;
         };
+        if let Some(camera) = self.terrain_camera.as_mut() {
+            camera.clear();
+        }
         // The terrain renderer owns the current surface. Drop it first.
         self.horizon = None;
         match title_renderer.recreate_surface() {
@@ -685,12 +696,15 @@ impl Shell {
         let terrain_active = self.title_renderer.is_some();
         let result: Result<bool, String> = if terrain_active {
             // A static view of the saved camera, not a running world.
-            let Some((position, rotation)) = self.terrain_camera else {
+            let Some(camera) = self.terrain_camera.as_ref() else {
                 self.finish_terrain_preview(false, Some("Saved preview camera disappeared"));
                 return;
             };
-            let frame =
-                horizon_client::game_startup::terrain_preview_frame(&batch, position, rotation);
+            let frame = horizon_client::game_startup::terrain_preview_frame(
+                &batch,
+                camera.position(),
+                camera.rotation(),
+            );
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| renderer.render(&frame)))
                 .map_err(|panic| crate::describe_renderer_panic(panic.as_ref()))
                 .and_then(|result| result.map_err(|error| error.to_string()))
@@ -811,6 +825,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
         // in about_to_wait would spin the UIKit event loop at full speed.
         let title_visible = self.title.is_some()
             && self.horizon.is_some()
+            && self.title_renderer.is_none()
             && self.lifecycle.drawable_size().is_some();
         if self.title_refresh.due(Instant::now(), title_visible) {
             if let Some(window) = &self.window {
@@ -834,6 +849,9 @@ impl ApplicationHandler<ShellEvent> for Shell {
             WindowEvent::Resized(size) => {
                 let previously_presented = self.lifecycle.has_presented_frame();
                 self.lifecycle.resize(size.width, size.height);
+                if let Some(camera) = self.terrain_camera.as_mut() {
+                    camera.clear();
+                }
                 if self.lifecycle.drawable_size().is_none() {
                     crate::clear_touches();
                     self.title_tap.clear();
@@ -912,7 +930,17 @@ impl ApplicationHandler<ShellEvent> for Shell {
                     };
                     let point = (touch.location.x as f32, touch.location.y as f32);
                     if crate::update_touch(touch.id, phase, point, size) {
-                        if self.title.is_some()
+                        if self.title_renderer.is_some() {
+                            // A one-finger drag looks around the already loaded
+                            // static world; movement/gameplay remain disabled.
+                            if self
+                                .terrain_camera
+                                .as_mut()
+                                .is_some_and(|camera| camera.touch(touch.id, phase, point, size))
+                            {
+                                window.request_redraw();
+                            }
+                        } else if self.title.is_some()
                             && self.horizon.is_some()
                             && self.title_renderer.is_none()
                             && crate::TERRAIN_PREVIEW.state() != 3
@@ -1001,7 +1029,11 @@ impl ApplicationHandler<ShellEvent> for Shell {
                             self.initial_column = initial_column;
                             self.terrain_camera =
                                 if self.terrain.is_some() && self.initial_column.is_some() {
-                                    world.saved_position.zip(world.saved_rotation)
+                                    world.saved_position.zip(world.saved_rotation).map(
+                                        |(position, rotation)| {
+                                            crate::PreviewCamera::new(position, rotation)
+                                        },
+                                    )
                                 } else {
                                     None
                                 };

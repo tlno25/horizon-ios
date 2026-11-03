@@ -7,13 +7,37 @@ use std::path::Path;
 
 /// Read-only metadata available before an iOS client has a gameplay loop.
 /// A completed inspection is not permission to start gameplay or modify saves.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WorldInspection {
     pub folder: String,
     pub name: String,
     pub game_mode: i32,
     pub seed: i64,
     pub dimension: String,
+    /// The last saved player feet position (not a safe respawn guarantee).
+    pub saved_position: Option<[f64; 3]>,
+    /// Yaw and pitch paired with that position; absent for unspawned players.
+    pub saved_rotation: Option<[f32; 2]>,
+    /// The first chunk to request once a real streaming world exists.
+    /// This does not read, generate, load or render chunks.
+    pub initial_chunk: Option<[i32; 2]>,
+}
+
+/// The native game first tries its last saved player position before finding
+/// a valid spawn. Only stage finite, in-bounds coordinates for future chunk
+/// streaming; never invent a valid spawn from untrusted level data.
+pub fn staged_player_chunk(position: Option<[f64; 3]>) -> Option<[i32; 2]> {
+    let [x, y, z] = position?;
+    if !x.is_finite()
+        || !y.is_finite()
+        || !z.is_finite()
+        || x.abs() > 30_000_000.0
+        || z.abs() > 30_000_000.0
+        || y.abs() > 20_000.0
+    {
+        return None;
+    }
+    Some([(x.floor() as i32) >> 4, (z.floor() as i32) >> 4])
 }
 
 /// Mirror the read/compatibility stages of the desktop's existing-world loader
@@ -60,12 +84,20 @@ pub fn inspect_existing_world(saves: &Path, folder: &str) -> Result<WorldInspect
     let level =
         crate::save::Level::read_summary(&world).ok_or("Cannot read the world's level.dat")?;
     let game_mode = level.mode();
+    let saved_position = level
+        .position
+        .filter(|p| staged_player_chunk(Some(*p)).is_some());
+    let saved_rotation = saved_position.map(|_| level.rotation);
+    let initial_chunk = staged_player_chunk(saved_position);
     Ok(WorldInspection {
         folder: folder.to_owned(),
         name: level.name,
         game_mode,
         seed: level.seed,
         dimension: level.dimension,
+        saved_position,
+        saved_rotation,
+        initial_chunk,
     })
 }
 
@@ -268,6 +300,29 @@ mod tests {
                     ),
                     ("GameType", horizon_world::nbt::Tag::Int(1)),
                     (
+                        "Player",
+                        horizon_world::nbt::Tag::compound([
+                            (
+                                "Pos",
+                                horizon_world::nbt::Tag::List(
+                                    [128.5_f64, 72.0, -64.25]
+                                        .into_iter()
+                                        .map(|v| horizon_world::nbt::Tag::Double(v.to_bits()))
+                                        .collect(),
+                                ),
+                            ),
+                            (
+                                "Rotation",
+                                horizon_world::nbt::Tag::List(
+                                    [45.0_f64, -15.0]
+                                        .into_iter()
+                                        .map(|v| horizon_world::nbt::Tag::Double(v.to_bits()))
+                                        .collect(),
+                                ),
+                            ),
+                        ]),
+                    ),
+                    (
                         "WorldGenSettings",
                         horizon_world::nbt::Tag::compound([(
                             "seed",
@@ -291,6 +346,9 @@ mod tests {
         assert_eq!(inspected.name, "My World");
         assert_eq!(inspected.game_mode, 1);
         assert_eq!(inspected.seed, 12345);
+        assert_eq!(inspected.saved_position, Some([128.5, 72.0, -64.25]));
+        assert_eq!(inspected.saved_rotation, Some([45.0, -15.0]));
+        assert_eq!(inspected.initial_chunk, Some([8, -5]));
         assert_eq!(original, fs::read(&source).unwrap());
         assert!(!world.join("session.lock").exists());
         #[cfg(unix)]
@@ -304,6 +362,17 @@ mod tests {
             );
         }
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ios_world_player_start_location_ignores_invalid_coordinates() {
+        let position = |coords| staged_player_chunk(Some(coords));
+        assert_eq!(position([0.0, 70.0, -0.01]), Some([0, -1]));
+        assert_eq!(position([31.99, 65.0, 48.0]), Some([1, 3]));
+        assert_eq!(staged_player_chunk(None), None);
+        assert_eq!(position([f64::NAN, 64.0, 0.0]), None);
+        assert_eq!(position([0.0, f64::INFINITY, 0.0]), None);
+        assert_eq!(position([50_000_000.0, 64.0, 0.0]), None);
     }
 
     #[test]

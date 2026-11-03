@@ -637,10 +637,22 @@ impl ApplicationHandler<ShellEvent> for Shell {
                                 3 => "Spectator",
                                 _ => "Survival",
                             };
+                            let initial_location = match (world.saved_position, world.initial_chunk) {
+                                (Some([x, y, z]), Some([cx, cz])) => format!(
+                                    " Saved player at ({x:.1}, {y:.1}, {z:.1}); next streaming chunk ({cx}, {cz}) is staged but not loaded."
+                                ),
+                                _ => " No valid saved player location; spawn search will be required before gameplay.".to_owned(),
+                            };
+                            let dimension: String = world
+                                .dimension
+                                .chars()
+                                .filter(|c| !c.is_control())
+                                .take(96)
+                                .collect();
                             report_world_inspection(
                                 &format!(
-                                    "World '{safe_name}' verified: {mode}, seed {}, dimension {}. Gameplay is not implemented yet; no save files were changed.",
-                                    world.seed, world.dimension
+                                    "World '{safe_name}' verified: {mode}, seed {}, dimension {dimension}.{initial_location} Gameplay is not implemented yet; no save files were changed.",
+                                    world.seed
                                 ),
                                 2,
                             );

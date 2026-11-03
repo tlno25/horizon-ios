@@ -55,7 +55,11 @@ preflight**, not gameplay. A background Rust worker validates the selected
 save folder, rejects path traversal, symlinked worlds and incompatible or
 upgrade-required saves, and reads metadata through the shared `Level` parser.
 The result appears in the SwiftUI diagnostics (automatically shown after the
-tap). This does **not** create a session lock, modify `level.dat`, start world
+tap). Read-only inspection now also stages the saved player feet position,
+rotation and corresponding initial chunk coordinate (including negative
+coordinates) when the saved data contains valid, finite coordinates. This is
+a future streaming request only: no chunks are loaded or generated yet.
+This does **not** create a session lock, modify `level.dat`, start world
 simulation, or attach chunks to the renderer. Those stages remain unimplemented.
  The
 remaining actions are intentionally disabled until gameplay is connected.

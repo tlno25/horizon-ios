@@ -25,11 +25,13 @@ private var mostRecentWorldInspectionState: Int32 = 0
 // stays available to restore the diagnostics without duplicating game UI.
 private weak var diagnosticsOverlayView: UIView?
 private weak var diagnosticsRestoreButton: UIButton?
+private weak var physicsJumpButton: UIButton?
 
 private func setDiagnosticsVisible(_ visible: Bool) {
     guard Thread.isMainThread else { return }
     diagnosticsOverlayView?.isHidden = !visible
     diagnosticsRestoreButton?.isHidden = visible
+    physicsJumpButton?.isHidden = visible || horizon_ios_preview_physics_enabled() == 0
 }
 
 /// The iOS sandbox is owned by Swift/UIKit, not inferred by a desktop-style
@@ -82,6 +84,7 @@ private func saveGraphicsStatus() {
         "core_load": Int(horizon_ios_core_load_state()),
         "renderer_preview": Int(horizon_ios_renderer_preview_state()),
         "terrain_preview": Int(horizon_ios_terrain_preview_state()),
+        "preview_physics": Int(horizon_ios_preview_physics_enabled()),
         "renderer_stage": mostRecentRendererStage,
         "smoke_mode": Int(horizon_ios_renderer_smoke_enabled()),
         "player": horizon_ios_player_name().map { String(cString: $0) } ?? ""
@@ -102,6 +105,7 @@ private struct HomeView: View {
     @State private var coreLoadState = horizon_ios_core_load_state()
     @State private var rendererPreviewState = horizon_ios_renderer_preview_state()
     @State private var terrainPreviewState = horizon_ios_terrain_preview_state()
+    @State private var previewPhysicsEnabled = horizon_ios_preview_physics_enabled() != 0
     @State private var rendererStage = mostRecentRendererStage
     @State private var coreLoadMessage = mostRecentCoreLoadMessage
     @State private var worldInspectionMessage = mostRecentWorldInspectionMessage
@@ -182,7 +186,7 @@ private struct HomeView: View {
         case 1: return "Saved CPU terrain is ready"
         case 2: return "Preview requested"
         case 3: return "Preparing textured GPU renderer"
-        case 4: return "Showing static terrain (read-only)"
+        case 4: return previewPhysicsEnabled ? "Gravity and jump (read-only 20 TPS)" : "Showing static terrain (read-only)"
         case 5: return "Preview failed — retry available"
         case 6: return "Returning to title"
         default: return "Not prepared"
@@ -213,6 +217,21 @@ private struct HomeView: View {
         refreshStatus()
     }
 
+    private func togglePreviewPhysics() {
+        let code = horizon_ios_toggle_preview_physics()
+        if code != 0 {
+            graphicsError = "Cannot change preview physics (code \(code))"
+        }
+        refreshStatus()
+    }
+
+    private func jumpInPreview() {
+        let code = horizon_ios_preview_physics_jump()
+        if code != 0 {
+            graphicsError = "Cannot jump in the physics preview (code \(code))"
+        }
+    }
+
     private func previewGameRenderer() {
         let result = horizon_ios_preview_game_renderer()
         if result != 0 {
@@ -228,6 +247,7 @@ private struct HomeView: View {
         coreLoadState = horizon_ios_core_load_state()
         rendererPreviewState = horizon_ios_renderer_preview_state()
         terrainPreviewState = horizon_ios_terrain_preview_state()
+        previewPhysicsEnabled = horizon_ios_preview_physics_enabled() != 0
         rendererStage = mostRecentRendererStage
         worldInspectionMessage = mostRecentWorldInspectionMessage
         worldInspectionState = mostRecentWorldInspectionState
@@ -367,7 +387,19 @@ private struct HomeView: View {
                             Button("Reset camera", action: resetTerrainCamera)
                                 .buttonStyle(.bordered)
                         }
-                        Text("One finger: look around. Two fingers: pan or pinch through collision-tested saved terrain. Reset restores the saved camera. Gravity, gameplay and saving are still disabled.")
+                        HStack {
+                            Button(previewPhysicsEnabled ? "Stop physics" : "Enable physics preview") {
+                                togglePreviewPhysics()
+                            }
+                            .buttonStyle(.bordered)
+                            if previewPhysicsEnabled {
+                                Button("Jump", action: jumpInPreview)
+                                    .buttonStyle(.borderedProminent)
+                            }
+                        }
+                        Text(previewPhysicsEnabled
+                            ? "Experimental 20 TPS gravity and jumping use native block collisions. No mobs, crafting, health, world ticks or saving. Jump is also available over the game view."
+                            : "One finger: look around. Two fingers: pan or pinch through collision-tested saved terrain. Enable physics explicitly to test falling and jumping. Reset restores the saved camera; gameplay and saves are unchanged.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -440,7 +472,7 @@ private struct HomeView: View {
                             .textSelection(.enabled)
                     }
 
-                    Text("Load game data, open the native title, then select a saved world. Preview saved terrain displays up to 3×3 saved chunks. The camera uses native block collision shapes; one finger looks around and two fingers pan or pinch. This is read-only, without game ticks, gravity or saving.")
+                    Text("Load game data, open the native title, then select a saved world. Up to 3×3 existing chunks render read-only. Native block collision applies to camera movement; experimental 20 TPS gravity and jump can be enabled explicitly, without game world ticks or saving.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -531,6 +563,19 @@ public func horizon_ios_world_inspection_changed(_ bytes: UnsafePointer<UInt8>?,
     }
 }
 
+/// Rust notifies UIKit after the opt-in Winit physics state changes.
+/// The Jump control never intercepts game touches unless it is enabled.
+@_cdecl("horizon_ios_preview_physics_changed")
+public func horizon_ios_preview_physics_changed() {
+    guard Thread.isMainThread else { return }
+    let diagnosticsVisible = !(diagnosticsOverlayView?.isHidden ?? true)
+    physicsJumpButton?.isHidden = diagnosticsVisible || horizon_ios_preview_physics_enabled() == 0
+    DispatchQueue.main.async {
+        saveGraphicsStatus()
+        NotificationCenter.default.post(name: .horizonGraphicsChanged, object: nil)
+    }
+}
+
 /// Called by Rust on Winit's main thread whenever GPU status changes.
 /// Notification delivery is deferred to avoid re-entering SwiftUI during Winit callbacks.
 @_cdecl("horizon_ios_graphics_changed")
@@ -613,6 +658,10 @@ public func horizon_ios_mount_home(_ parentPointer: UnsafeMutableRawPointer?) {
         if let restore = diagnosticsRestoreButton {
             parent.view.bringSubviewToFront(restore)
         }
+        if let jump = physicsJumpButton {
+            parent.view.bringSubviewToFront(jump)
+        }
+        setDiagnosticsVisible(!existing.view.isHidden)
         return
     }
     let hosting = UIHostingController(rootView: HomeView())
@@ -640,6 +689,22 @@ public func horizon_ios_mount_home(_ parentPointer: UnsafeMutableRawPointer?) {
     ])
     diagnosticsRestoreButton = restore
     restore.isHidden = true
+
+    let jump = UIButton(type: .system)
+    jump.setTitle("Jump", for: .normal)
+    jump.accessibilityLabel = "Jump in read-only physics preview"
+    jump.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.88)
+    jump.layer.cornerRadius = 12
+    jump.contentEdgeInsets = UIEdgeInsets(top: 13, left: 20, bottom: 13, right: 20)
+    jump.translatesAutoresizingMaskIntoConstraints = false
+    jump.addAction(UIAction { _ in _ = horizon_ios_preview_physics_jump() }, for: .touchUpInside)
+    parent.view.addSubview(jump)
+    NSLayoutConstraint.activate([
+        jump.trailingAnchor.constraint(equalTo: parent.view.safeAreaLayoutGuide.trailingAnchor, constant: -20),
+        jump.bottomAnchor.constraint(equalTo: parent.view.safeAreaLayoutGuide.bottomAnchor, constant: -30)
+    ])
+    physicsJumpButton = jump
+    jump.isHidden = true
 }
 
 // These callbacks are used only by the shared Horizon clipboard hooks after

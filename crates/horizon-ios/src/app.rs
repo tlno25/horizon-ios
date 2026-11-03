@@ -5,7 +5,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::error::EventLoopError;
 use winit::event::WindowEvent;
@@ -31,6 +31,8 @@ enum ShellEvent {
     TerrainPreviewCompleted,
     TerrainPreviewExitRequested,
     TerrainPreviewResetCamera,
+    PreviewPhysicsToggle,
+    PreviewPhysicsJump,
     WorldInspected {
         generation: u64,
         result: Result<PreparedWorldPreview, String>,
@@ -127,6 +129,22 @@ pub(super) fn request_terrain_camera_reset_event() -> bool {
     })
 }
 
+pub(super) fn request_preview_physics_toggle_event() -> bool {
+    EVENT_PROXY
+        .get()
+        .is_some_and(|proxy| proxy.send_event(ShellEvent::PreviewPhysicsToggle).is_ok())
+}
+
+pub(super) fn request_preview_physics_jump_event() -> bool {
+    EVENT_PROXY
+        .get()
+        .is_some_and(|proxy| proxy.send_event(ShellEvent::PreviewPhysicsJump).is_ok())
+}
+
+pub(super) unsafe fn preview_physics_changed() {
+    unsafe { horizon_ios_preview_physics_changed() };
+}
+
 fn notify_renderer_worker_complete() {
     if let Some(proxy) = EVENT_PROXY.get() {
         let _ = proxy.send_event(ShellEvent::RendererCompleted);
@@ -150,6 +168,8 @@ unsafe extern "C" {
     fn horizon_ios_core_load_result(message: *const u8, length: usize, succeeded: i32);
     /// 1=inspecting, 2=read-only validation succeeded, 3=failed.
     fn horizon_ios_world_inspection_changed(message: *const u8, length: usize, state: i32);
+    /// Swift refreshes the optional Jump overlay and diagnostic state.
+    fn horizon_ios_preview_physics_changed();
 }
 
 pub(super) unsafe fn graphics_changed(state: u32) {
@@ -207,8 +227,8 @@ struct Shell {
     /// The saved centre column, kept for startup diagnostics. The separate
     /// read-only native World owns Arc references to up to nine saved columns.
     initial_column: Option<horizon_client::chunk::Chunk>,
-    /// Native CPU mesh vertices for the initial saved column, staged until
-    /// the terrain renderer has the corresponding block sprite atlas.
+    /// Native CPU meshes for up to nine saved columns, staged until the
+    /// terrain renderer has the corresponding block sprite atlas.
     terrain: Option<horizon_client::game_startup::PreparedTerrain>,
     /// Native resident World, retaining the same Arc chunks as the CPU mesher.
     /// Read-only: no ticks, writes, session locks or live game simulation.
@@ -218,6 +238,11 @@ struct Shell {
     preview_collision_failed: bool,
     /// Saved first-person camera, supplied only with a validated CPU mesh.
     terrain_camera: Option<crate::PreviewCamera>,
+    /// Opt-in native living gravity/jump, kept separate from saved player data.
+    preview_physics: Option<horizon_client::preview_physics::PreviewPhysics>,
+    preview_clock: Option<horizon_client::clock::FixedStep>,
+    preview_last_tick: Option<Instant>,
+    preview_jump_queued: bool,
     /// The original title renderer retains its GPU resources while a textured
     /// terrain replacement is active. Both share one WGPU device.
     title_renderer: Option<Renderer>,
@@ -233,6 +258,94 @@ struct Shell {
 }
 
 impl Shell {
+    fn stop_preview_physics(&mut self) {
+        if self.preview_physics.take().is_some() {
+            crate::set_preview_physics_enabled(false);
+        }
+        self.preview_clock = None;
+        self.preview_last_tick = None;
+        self.preview_jump_queued = false;
+    }
+
+    fn toggle_preview_physics(&mut self) {
+        if self.preview_physics.is_some() {
+            self.stop_preview_physics();
+        } else if self.title_renderer.is_some()
+            && self.native_world.is_some()
+            && self.terrain_camera.is_some()
+            && crate::TERRAIN_PREVIEW.state() == 4
+        {
+            let position = self.terrain_camera.as_ref().expect("checked").position();
+            self.preview_physics = Some(horizon_client::preview_physics::PreviewPhysics::new(
+                position,
+            ));
+            self.preview_clock = Some(horizon_client::clock::FixedStep::default());
+            self.preview_last_tick = Some(Instant::now());
+            crate::set_preview_physics_enabled(true);
+        }
+    }
+
+    /// Drive only the temporary camera body from Horizon's own 20 TPS clock.
+    /// Never advance the World's block or entity simulation, and never replay
+    /// suspended time. A missing/unmeshed target fails closed.
+    fn tick_preview_physics(&mut self, now: Instant) {
+        let Some(last) = self.preview_last_tick.replace(now) else {
+            return;
+        };
+        let Some(clock) = self.preview_clock.as_mut() else {
+            return;
+        };
+        let elapsed = now
+            .saturating_duration_since(last)
+            .min(Duration::from_millis(500));
+        let ticks = clock.advance(elapsed);
+        let mut changed = false;
+        let mut error = None;
+        for _ in 0..ticks {
+            let outcome = (|| -> Result<bool, String> {
+                let motion = self
+                    .preview_physics
+                    .as_mut()
+                    .ok_or("Preview physics is not active")?;
+                let stage = self
+                    .native_world
+                    .as_ref()
+                    .ok_or("Native world was released")?;
+                let resources = crate::PREVIEW_TERRAIN
+                    .get()
+                    .ok_or("Collision table was released")?;
+                let jump = std::mem::take(&mut self.preview_jump_queued);
+                let moved = motion
+                    .tick(stage, &resources.collisions, jump)
+                    .map_err(|e| e.to_string())?;
+                let camera = self
+                    .terrain_camera
+                    .as_mut()
+                    .ok_or("Preview camera disappeared")?;
+                if !camera.set_collision_resolved_position(motion.position()) {
+                    return Err("Reached the edge of the read-only terrain preview".to_owned());
+                }
+                Ok(moved)
+            })();
+            match outcome {
+                Ok(moved) => changed |= moved,
+                Err(message) => {
+                    error = Some(message);
+                    break;
+                }
+            }
+        }
+        if let Some(message) = error {
+            self.stop_preview_physics();
+            report_graphics_error(&format!("Physics preview stopped: {message}"));
+        }
+        if changed {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+    }
+
     /// Request the desktop loader's read-only world preparation stage.
     /// A native World with saved chunks is constructed for collision queries,
     /// but no simulation loop, session lock or save writer is started.
@@ -250,6 +363,7 @@ impl Shell {
             return;
         };
         self.world_inspection_pending = true;
+        self.stop_preview_physics();
         self.initial_column = None;
         self.terrain = None;
         self.native_world = None;
@@ -685,6 +799,7 @@ impl Shell {
     }
 
     fn finish_terrain_preview(&mut self, requested_exit: bool, error: Option<&str>) {
+        self.stop_preview_physics();
         let Some(mut title_renderer) = self.title_renderer.take() else {
             self.fail_terrain_preview("Title renderer was not retained");
             return;
@@ -832,6 +947,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        self.stop_preview_physics();
         self.lifecycle.suspend();
         crate::clear_touches();
         // Drop the surface and all GPU objects before UIKit enters background.
@@ -854,18 +970,32 @@ impl ApplicationHandler<ShellEvent> for Shell {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // The opt-in body is driven at a fixed 20 TPS without spinning the
+        // display at full speed. UIKit background/suspension drops this clock.
+        let now = Instant::now();
+        if self.preview_physics.is_some() && crate::TERRAIN_PREVIEW.state() == 4 {
+            self.tick_preview_physics(now);
+        }
         // Title splash/panorama need animation, but an unconditional redraw
         // in about_to_wait would spin the UIKit event loop at full speed.
         let title_visible = self.title.is_some()
             && self.horizon.is_some()
             && self.title_renderer.is_none()
             && self.lifecycle.drawable_size().is_some();
-        if self.title_refresh.due(Instant::now(), title_visible) {
+        if self.title_refresh.due(now, title_visible) {
             if let Some(window) = &self.window {
                 window.request_redraw();
             }
         }
-        event_loop.set_control_flow(match self.title_refresh.next_deadline() {
+        let deadline = self.title_refresh.next_deadline();
+        let deadline = if self.preview_physics.is_some() && crate::TERRAIN_PREVIEW.state() == 4 {
+            Some(deadline.map_or(now + Duration::from_millis(25), |next| {
+                next.min(now + Duration::from_millis(25))
+            }))
+        } else {
+            deadline
+        };
+        event_loop.set_control_flow(match deadline {
             Some(next) => ControlFlow::WaitUntil(next),
             None => ControlFlow::Wait,
         });
@@ -1004,6 +1134,13 @@ impl ApplicationHandler<ShellEvent> for Shell {
                                             }
                                         }
                                     }
+                                    if let Some(motion) = self.preview_physics.as_mut() {
+                                        if let Some(camera) = &self.terrain_camera {
+                                            if target != from {
+                                                motion.sync_camera(camera.position());
+                                            }
+                                        }
+                                    }
                                     window.request_redraw();
                                 }
                             }
@@ -1038,6 +1175,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
                                         self.world_inspection_generation =
                                             self.world_inspection_generation.wrapping_add(1);
                                         self.world_inspection_pending = false;
+                                        self.stop_preview_physics();
                                         self.initial_column = None;
                                         self.terrain = None;
                                         self.native_world = None;
@@ -1076,10 +1214,23 @@ impl ApplicationHandler<ShellEvent> for Shell {
             ShellEvent::TerrainPreviewRequested => self.try_terrain_preview(),
             ShellEvent::TerrainPreviewCompleted => self.complete_terrain_preview(),
             ShellEvent::TerrainPreviewExitRequested => self.restore_title_renderer(),
+            ShellEvent::PreviewPhysicsToggle => self.toggle_preview_physics(),
+            ShellEvent::PreviewPhysicsJump => {
+                if self.preview_physics.is_some() && crate::TERRAIN_PREVIEW.state() == 4 {
+                    self.preview_jump_queued = true;
+                }
+            }
             ShellEvent::TerrainPreviewResetCamera => {
                 if crate::TERRAIN_PREVIEW.state() == 4 && self.title_renderer.is_some() {
                     if let Some(camera) = self.terrain_camera.as_mut() {
                         camera.reset_view();
+                        if let Some(motion) = self.preview_physics.as_mut() {
+                            motion.sync_camera(camera.position());
+                        }
+                        if let Some(clock) = self.preview_clock.as_mut() {
+                            clock.reset();
+                        }
+                        self.preview_last_tick = Some(Instant::now());
                         if let Some(window) = &self.window {
                             window.request_redraw();
                         }

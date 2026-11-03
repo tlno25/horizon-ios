@@ -40,6 +40,9 @@ static RENDERER_SWITCH: RendererSwitch = RendererSwitch::new();
 static TERRAIN_PREVIEW: TerrainPreviewSwitch = TerrainPreviewSwitch::new();
 #[cfg(target_os = "ios")]
 static RENDERER_SMOKE_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Opt-in, read-only 20 TPS physics preview. Not actual gameplay.
+#[cfg(target_os = "ios")]
+static PREVIEW_PHYSICS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Returns the ABI revision supported by this static library.
 #[unsafe(no_mangle)]
@@ -80,6 +83,8 @@ pub extern "C" fn horizon_ios_shutdown() -> i32 {
     RENDERER_SWITCH.reset();
     #[cfg(target_os = "ios")]
     TERRAIN_PREVIEW.reset();
+    #[cfg(target_os = "ios")]
+    PREVIEW_PHYSICS_ENABLED.store(false, Ordering::Release);
     #[cfg(target_os = "ios")]
     clear_touches();
     0
@@ -221,6 +226,52 @@ pub extern "C" fn horizon_ios_reset_terrain_preview_camera() -> i32 {
         return -1;
     }
     if app::request_terrain_camera_reset_event() {
+        0
+    } else {
+        -2
+    }
+}
+
+/// Whether the opt-in 20 TPS read-only camera physics is active (0/1).
+/// Inactive on every ordinary launch and after world/surface teardown.
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_preview_physics_enabled() -> u32 {
+    #[cfg(target_os = "ios")]
+    {
+        return u32::from(PREVIEW_PHYSICS_ENABLED.load(Ordering::Acquire));
+    }
+    #[cfg(not(target_os = "ios"))]
+    0
+}
+
+#[cfg(target_os = "ios")]
+fn set_preview_physics_enabled(enabled: bool) {
+    PREVIEW_PHYSICS_ENABLED.store(enabled, Ordering::Release);
+    unsafe { app::preview_physics_changed() };
+}
+
+/// Toggle physics explicitly; the Winit thread owns its clock and player.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_toggle_preview_physics() -> i32 {
+    if TERRAIN_PREVIEW.state() != 4 {
+        return -1;
+    }
+    if app::request_preview_physics_toggle_event() {
+        0
+    } else {
+        -2
+    }
+}
+
+/// Queue one jump impulse in the next native 20 TPS simulation tick.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_preview_physics_jump() -> i32 {
+    if TERRAIN_PREVIEW.state() != 4 || !PREVIEW_PHYSICS_ENABLED.load(Ordering::Acquire) {
+        return -1;
+    }
+    if app::request_preview_physics_jump_event() {
         0
     } else {
         -2

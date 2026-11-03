@@ -114,9 +114,18 @@ three or more fingers cancel the gesture. A bounded 3×3 saved region is the
 largest preview; missing or truncated columns are not traversable.
 The transient view camera moves through the read-only native block collision
 world (full voxel shapes, not an invented approximate physics implementation),
-while the saved player's pose never changes. This is a **collision-only preview**:
-there is no gravity, jumping, player-state simulation or active gameplay loop.
-Three or more fingers still cancel the gesture.
+while the saved player's pose never changes. By default this remains a
+**static collision-only preview**. After opening Diagnostics, the user may
+explicitly select **Enable physics preview** to run a temporary standing
+camera body at **20 TPS**, using Horizon's existing `FixedStep`, native
+`living_motion::jump_from_ground` / `apply_gravity`, and full voxel collision
+resolver. This enables falling, landing and jumping without executing World
+block/entity ticks. Tap **Jump** in Diagnostics or its small floating button
+when diagnostics are hidden. Stop physics at any time to return to static
+camera movement. The opt-in clock and temporary velocity are discarded on
+world replacement, backgrounding and title return; **Reset camera** restores
+only the transient viewpoint and motion, never the saved pose.
+Three or more fingers still cancel the touch gesture.
 **Diagnostics → Reset camera** restores the original saved viewpoint, while
 **Back to title** restores the original renderer. The preview redraws on
 touch/resize rather than animating an unchanged image at title-frame rate. If GPU initialization, upload or drawing fails, the iOS
@@ -124,10 +133,12 @@ shell attempts to restore the title renderer and exposes a retry action.
 Backgrounding drops the GPU view and invalidates in-flight preparation. There
 is no second UIApplicationMain, no automatic Mac build and no gameplay loop.
 
-This is still a **static, read-only render of at most nine saved columns**. Light and
-face occlusion for unsaved neighbours, custom biome packs, missing chunks,
-movement, simulation, inventory and saving still require the world streamer
-and game runtime. Neither the preview nor the title joins a game session or
+This remains a **read-only render of at most nine saved columns**. The
+optional gravity/jump preview is deliberately **not a playable Minecraft
+session**: it does not run full `PlayerMotion` (fluids, sprinting, status effects,
+health and block effects), server/world ticks, terrain generation, multiplayer,
+inventory or saving. Missing neighbours, light and face occlusion beyond the
+saved region still require the full world streamer and game runtime. Neither the preview nor the title joins a game session or
 changes `level.dat`; no session lock is acquired. Real-device/Simulator GPU
 behavior is not guaranteed until the next explicit macOS verification. This keeps native-Rust ownership of
 the game's data, as seen in the separate

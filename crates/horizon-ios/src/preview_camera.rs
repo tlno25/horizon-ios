@@ -1,5 +1,6 @@
-//! Touch-driven, read-only first-person look for the static saved terrain view.
-//! No movement, collision, gameplay or world mutations.
+//! Touch-driven, read-only first-person camera for saved terrain.
+//! Camera displacement is resolved against native block collisions by the
+//! UIKit shell; this module never changes gameplay or the saved world.
 
 use crate::TouchPhase;
 use std::collections::{BTreeMap, BTreeSet};

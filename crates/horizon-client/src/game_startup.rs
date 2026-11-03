@@ -1543,7 +1543,38 @@ mod tests {
             "stone wall must stop native player box: {side:?}"
         );
         assert!(stage.world.modified.is_empty());
-        assert_eq!(fs::read(region_path).unwrap(), bytes);
+        assert_eq!(fs::read(&region_path).unwrap(), bytes);
+        // An opt-in 20 TPS read-only motion probe starts above the same
+        // saved stone. Native gravity/voxel collisions land on its top,
+        // and the shared jump impulse lifts the camera without save writes.
+        let mut motion = crate::preview_physics::PreviewPhysics::new([128.5, 83.0, -64.25]);
+        for _ in 0..35 {
+            motion.tick(&stage, &collisions, false).unwrap();
+        }
+        assert!(
+            (motion.position()[1] - 80.0).abs() < 1.0e-6,
+            "must land on stone: {:?}",
+            motion.position()
+        );
+        assert!(motion.grounded(), "must detect solid ground");
+        motion.tick(&stage, &collisions, true).unwrap();
+        assert!(
+            motion.position()[1] > 80.3,
+            "native jump impulse moves upward"
+        );
+        let first = motion.position()[1];
+        motion.tick(&stage, &collisions, false).unwrap();
+        assert!(
+            motion.position()[1] > first,
+            "upward velocity continues on next tick"
+        );
+        for _ in 0..45 {
+            motion.tick(&stage, &collisions, false).unwrap();
+        }
+        assert!(motion.grounded());
+        assert!((motion.position()[1] - 80.0).abs() < 1.0e-6);
+        assert!(stage.world.modified.is_empty());
+        assert_eq!(fs::read(&region_path).unwrap(), bytes);
         assert!(!root.join("session.lock").exists());
         fs::remove_dir_all(root).unwrap();
     }

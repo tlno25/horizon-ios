@@ -1666,6 +1666,20 @@ impl Loading {
                         );
                         self.menu_option_events(events);
                     }
+                    // UIKit's native WinitView emits ordinary KeyboardInput
+                    // with an Unidentified physical key and committed UTF-8
+                    // text, not necessarily Ime::Commit. The title already
+                    // handles this path; Options text fields must as well.
+                    #[cfg(target_os = "ios")]
+                    if !handled
+                        && matches!(event.physical_key, PhysicalKey::Unidentified(_))
+                        && let Some(text) = event.text.as_deref()
+                    {
+                        let text = horizon_client::ios_touch::committed_ime_text(text);
+                        if !text.is_empty() {
+                            self.menu.options.type_text(atlas, &text);
+                        }
+                    }
                 } else {
                     let batch = HudBatch::new(self.menu_size());
                     let action = self.menu.title_key(&event, (batch.width, batch.height));

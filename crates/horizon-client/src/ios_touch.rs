@@ -62,6 +62,13 @@ pub fn normalized_point(point: [f64; 2], size: [u32; 2]) -> Option<[f32; 2]> {
     ])
 }
 
+/// UIKit does not implement an OS mouse pointer lock. Gameplay still owns
+/// the touch surface logically while no menu is open. Desktop platforms must
+/// only claim capture if the native pointer grab actually succeeded.
+pub fn touchscreen_capture(native_grab_succeeded: bool, ios_touch_surface: bool) -> bool {
+    ios_touch_surface || native_grab_succeeded
+}
+
 /// Movement on mobile must not require a separate gamepad to be enabled.
 /// Menu and focus checks still apply to prevent stuck movement.
 pub fn movement_input_enabled(
@@ -98,6 +105,14 @@ pub fn menu_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ios_gameplay_capture_is_logical_without_os_pointer_lock() {
+        assert!(touchscreen_capture(false, true));
+        assert!(touchscreen_capture(true, true));
+        assert!(touchscreen_capture(true, false));
+        assert!(!touchscreen_capture(false, false));
+    }
 
     #[test]
     fn touchscreen_movement_remains_available_with_hardware_pads_disabled() {

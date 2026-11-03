@@ -7685,16 +7685,27 @@ impl Game<'_> {
             // so everywhere else warp after grabbing.
             #[cfg(target_os = "macos")]
             warp(window);
-            self.captured = window
-                .set_cursor_grab(CursorGrabMode::Locked)
-                .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
-                .is_ok();
+            // iOS's WinitView is touch-only: CursorGrabMode is unsupported.
+            // Treat the playing surface as logically captured so a tap does
+            // not become an endless attempt to grab a nonexistent mouse.
+            let native_grabbed = if cfg!(target_os = "ios") {
+                false
+            } else {
+                window
+                    .set_cursor_grab(CursorGrabMode::Locked)
+                    .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
+                    .is_ok()
+            };
+            self.captured = horizon_client::ios_touch::touchscreen_capture(
+                native_grabbed,
+                cfg!(target_os = "ios"),
+            );
             #[cfg(target_os = "android")]
             {
                 self.captured =
                     !crate::keyboard_mouse_input() || crate::platform::capture_mouse(true);
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", target_os = "ios")))]
             if self.captured && self.focused {
                 warp(window);
             }

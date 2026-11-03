@@ -205,6 +205,14 @@ private struct HomeView: View {
         refreshStatus()
     }
 
+    private func resetTerrainCamera() {
+        let code = horizon_ios_reset_terrain_preview_camera()
+        if code != 0 {
+            graphicsError = "Cannot reset preview camera (code \(code))"
+        }
+        refreshStatus()
+    }
+
     private func previewGameRenderer() {
         let result = horizon_ios_preview_game_renderer()
         if result != 0 {
@@ -353,9 +361,13 @@ private struct HomeView: View {
                         ProgressView(terrainPreviewLabel)
                     }
                     if terrainPreviewState == 4 {
-                        Button("Back to title", action: leaveTerrainPreview)
-                            .buttonStyle(.borderedProminent)
-                        Text("Drag one finger to look around the saved terrain. Your position remains fixed; this is not gameplay.")
+                        HStack {
+                            Button("Back to title", action: leaveTerrainPreview)
+                                .buttonStyle(.borderedProminent)
+                            Button("Reset camera", action: resetTerrainCamera)
+                                .buttonStyle(.bordered)
+                        }
+                        Text("One finger: look around. Two fingers: pan inside the saved chunk. Reset returns to the saved view; gameplay and saves are unchanged.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -428,7 +440,7 @@ private struct HomeView: View {
                             .textSelection(.enabled)
                     }
 
-                    Text("Load game data, open the native title, then select a saved world. Preview saved terrain renders one static, read-only chunk with native block textures. Swipe one finger to look around; use Diagnostics to return to the title. World simulation, movement and saving are not active.")
+                    Text("Load game data, open the native title, then select a saved world. Preview saved terrain shows one read-only chunk. One finger looks around, two fingers pan within the initial chunk, and Diagnostics provides reset/back. World simulation, player movement and saving remain inactive.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

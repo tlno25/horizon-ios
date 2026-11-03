@@ -209,6 +209,24 @@ pub extern "C" fn horizon_ios_leave_terrain_preview() -> i32 {
     }
 }
 
+/// Restore the read-only viewer camera to the original saved player pose.
+/// The Winit event loop owns the camera; UIKit only queues a reset request.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_reset_terrain_preview_camera() -> i32 {
+    if !app::renderer_events_available() {
+        return -2;
+    }
+    if TERRAIN_PREVIEW.state() != 4 {
+        return -1;
+    }
+    if app::request_terrain_camera_reset_event() {
+        0
+    } else {
+        -2
+    }
+}
+
 /// Number of active touches recorded by the native input bridge.
 #[unsafe(no_mangle)]
 pub extern "C" fn horizon_ios_touch_count() -> u32 {

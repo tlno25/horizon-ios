@@ -31,6 +31,8 @@ int32_t horizon_ios_preview_game_renderer(void);
 uint32_t horizon_ios_terrain_preview_state(void);
 int32_t horizon_ios_preview_selected_terrain(void);
 int32_t horizon_ios_leave_terrain_preview(void);
+/* Reset only the transient view camera, never write the saved player pose. */
+int32_t horizon_ios_reset_terrain_preview_camera(void);
 uint32_t horizon_ios_touch_count(void);
 uint64_t horizon_ios_touch_events(void);
 /* Diagnostic SwiftUI touch pad: 0=start, 1=move, 2=end, 3=cancel.

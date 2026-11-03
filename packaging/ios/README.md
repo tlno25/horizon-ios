@@ -95,10 +95,13 @@ surface to the textured renderer and uploads the prepared section meshes with
 `Renderer::upload`. `terrain_preview_frame` points its camera at the saved
 player position. The preview automatically hides the diagnostics overlay so
 the player can see the scene. **Drag one finger** to look around the static
-chunk; the saved feet position does not move, multitouch is ignored, and
-no physics or game input is active. The preview redraws on touch/resize
-instead of animating an unchanged image at title-screen frame rate.
-**Diagnostics → Back to title** restores the original renderer. If GPU initialization, upload or drawing fails, the iOS
+chunk. **Drag two fingers** together to pan the camera horizontally, constrained
+to the original 16×16 saved column (neighbours contribute only face occlusion).
+The view camera can move but the actual saved player pose never changes;
+three-finger contacts are rejected and no physics or gameplay is active.
+**Diagnostics → Reset camera** restores the original saved viewpoint, while
+**Back to title** restores the original renderer. The preview redraws on
+touch/resize rather than animating an unchanged image at title-frame rate. If GPU initialization, upload or drawing fails, the iOS
 shell attempts to restore the title renderer and exposes a retry action.
 Backgrounding drops the GPU view and invalidates in-flight preparation. There
 is no second UIApplicationMain, no automatic Mac build and no gameplay loop.

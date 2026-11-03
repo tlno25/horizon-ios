@@ -30,6 +30,7 @@ enum ShellEvent {
     TerrainPreviewRequested,
     TerrainPreviewCompleted,
     TerrainPreviewExitRequested,
+    TerrainPreviewResetCamera,
     WorldInspected {
         generation: u64,
         result: Result<PreparedWorldPreview, String>,
@@ -111,6 +112,14 @@ pub(super) fn request_terrain_exit_event() -> bool {
     EVENT_PROXY.get().is_some_and(|proxy| {
         proxy
             .send_event(ShellEvent::TerrainPreviewExitRequested)
+            .is_ok()
+    })
+}
+
+pub(super) fn request_terrain_camera_reset_event() -> bool {
+    EVENT_PROXY.get().is_some_and(|proxy| {
+        proxy
+            .send_event(ShellEvent::TerrainPreviewResetCamera)
             .is_ok()
     })
 }
@@ -1007,6 +1016,16 @@ impl ApplicationHandler<ShellEvent> for Shell {
             ShellEvent::TerrainPreviewRequested => self.try_terrain_preview(),
             ShellEvent::TerrainPreviewCompleted => self.complete_terrain_preview(),
             ShellEvent::TerrainPreviewExitRequested => self.restore_title_renderer(),
+            ShellEvent::TerrainPreviewResetCamera => {
+                if crate::TERRAIN_PREVIEW.state() == 4 && self.title_renderer.is_some() {
+                    if let Some(camera) = self.terrain_camera.as_mut() {
+                        camera.reset_view();
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
+                }
+            }
             ShellEvent::WorldInspected { generation, result } => {
                 if generation == self.world_inspection_generation
                     && self.lifecycle.drawable_size().is_some()

@@ -27,9 +27,14 @@ The native game and the loading window now request the device's own
 landscape viewport instead of a desktop-sized (1280×720 point) UIKit window.
 The **initial loading/title menu** uses Horizon's existing touch gesture
 recognizer for tap-on-release and scroll, preventing drag-to-open errors.
-Gameplay touch movement, a mobile HUD and controls, iOS lifecycle handling,
-account sign-in, audio output and actual world gameplay still require device
-validation or implementation. This native game IPA is a feasibility/compile
+The game window now also routes native iOS touches through the **existing
+Horizon touch pad** (movement, look, jump, sneak, attack/use, hotbar and
+pause/inventory), drawing its existing HUD and retaining the user's touch
+control layout. App suspension releases held inputs and suspends its GPU
+surface; resume recreates the surface. These iOS paths still require
+on-device verification, especially menu text entry and multiplayer. Account
+sign-in, a native text keyboard, audio output and actual world gameplay
+remain incomplete or unverified. This native game IPA is a feasibility/compile
 milestone, not a claim that worlds can be played on iPhone. The IPA is also
 **unsigned** and must be signed with a valid development/sideloading identity
 before installation. The bundle identifier `com.example.horizonios.game` is

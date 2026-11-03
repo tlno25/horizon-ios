@@ -34,7 +34,7 @@ pub(super) struct Pads {
     last_input_mode: Option<horizon_client::android_gamepad::InputMode>,
     #[cfg(target_os = "android")]
     pub(super) touch_shield: bool,
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     pub(super) touch: horizon_client::touch::TouchControls,
     /// Keep a released tap's ray until the tick consumed its queued click.
     #[cfg(target_os = "android")]
@@ -225,7 +225,7 @@ impl Game<'_> {
             self.pad.touch.clear_world_gesture();
         }
         let settings = &self.settings.controller;
-        if !settings.enabled && !cfg!(target_os = "android") {
+        if !settings.enabled && !cfg!(any(target_os = "android", target_os = "ios")) {
             self.pad_output_off();
             if self.pad.state != PadState::default() {
                 self.pad.state = PadState::default();
@@ -305,6 +305,18 @@ impl Game<'_> {
                 }
             }
             state.merge(&touch)
+        };
+        #[cfg(target_os = "ios")]
+        let state = {
+            // The native gameplay controls reuse the same shared pad mappings
+            // as Android: no duplicate physics or Java action handlers.
+            if self.pad_in_menu() || !self.focused {
+                self.pad.touch.clear();
+                state
+            } else {
+                let touch = horizon_client::ios_touch::poll_gamepad(&mut self.pad.touch);
+                state.merge(&touch)
+            }
         };
         self.pad.virtual_input = self.pad.injected != PadState::default();
         for button in std::mem::take(&mut self.pad.taps) {
@@ -611,10 +623,12 @@ impl Game<'_> {
     /// The left stick as the move vector, while playing.
     pub(super) fn pad_move(&self) -> Option<[f32; 2]> {
         let settings = &self.settings.controller;
-        if (!settings.enabled && !cfg!(target_os = "android"))
-            || self.pad_in_menu()
-            || !self.pad_focused()
-        {
+        if !horizon_client::ios_touch::movement_input_enabled(
+            settings.enabled,
+            cfg!(any(target_os = "android", target_os = "ios")),
+            self.pad_in_menu(),
+            self.pad_focused(),
+        ) {
             return None;
         }
         #[cfg(target_os = "android")]

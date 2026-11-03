@@ -143,6 +143,8 @@ mod ime;
 mod initial_spawn;
 mod integrated;
 mod interactions;
+#[cfg(target_os = "ios")]
+mod ios_input;
 mod item_draw;
 mod item_particles;
 mod item_use;
@@ -2281,6 +2283,8 @@ struct Game<'a> {
     last_input: Instant,
     /// Controllers (Horizon's own).
     pad: pad::Pads,
+    #[cfg(target_os = "ios")]
+    ios_menu_touch: horizon_client::touch_ui::TouchUi,
     frames: u64,
     /// The glint clock and options, read once at the start of each frame
     /// (game/item_draw.rs).
@@ -7954,6 +7958,15 @@ impl Game<'_> {
                 .draw(self.settings.horizon.overlay, b, &self.gui.atlas);
         });
         self.draw_pad_cursor(&mut batch);
+        #[cfg(target_os = "ios")]
+        if !self.pad_in_menu() && self.focused {
+            // Initialize the layout at the real display size before the first
+            // touch; keep the same saved touch-control layout as Android.
+            self.pad.touch.viewport(size[0], size[1]);
+            self.pad.touch.settings = self.settings.touch.clone();
+            self.pad.touch.force_crosshair = true;
+            self.pad.touch.draw(&mut batch, &self.gui.atlas);
+        }
         self.resolve_inline_profiles(&batch.inline_profiles);
         batch
     }
@@ -15927,11 +15940,14 @@ impl Game<'_> {
     }
 }
 impl ApplicationHandler for Game<'_> {
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
-        // Android may recreate the surface while the IME changes window size.
-        // Preserve the text session; Android hides its window on real backgrounding.
+        // Mobile platforms can suspend the surface while retaining the event
+        // loop. Release all live controls before UIKit/Android backgrounds.
+        #[cfg(target_os = "android")]
         self.android_release_touch_keys(true);
+        #[cfg(target_os = "ios")]
+        self.ios_menu_touch.cancel();
         self.capture(false);
         self.keys.clear();
         self.physical_keys.clear();
@@ -15944,8 +15960,9 @@ impl ApplicationHandler for Game<'_> {
         }
     }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         if let Some(renderer) = &mut self.renderer {
+            #[cfg(target_os = "android")]
             if let Some(window) = &self.window {
                 match crate::display::prepare(window) {
                     Ok(Some(size)) => renderer.resize(size[0], size[1]),
@@ -16021,6 +16038,14 @@ impl ApplicationHandler for Game<'_> {
         self.ime_allowed = false;
         self.ime_area = None;
         self.apply_settings();
+        #[cfg(target_os = "ios")]
+        if let Some(window) = &self.window {
+            // Initialize the visible touch overlay *before* a first finger
+            // arrives; otherwise the HUD can start with uninitialized layout.
+            let size = window.inner_size();
+            self.pad.touch.viewport(size.width, size.height);
+            self.pad.touch.settings = self.settings.touch.clone();
+        }
         self.previous = Instant::now();
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -16221,6 +16246,13 @@ impl Game<'_> {
             self.pad.touch.cancel_editor();
             self.settings.touch = self.pad.touch.settings.clone();
             self.pause = false;
+            return;
+        }
+        #[cfg(target_os = "ios")]
+        if let WindowEvent::Touch(touch) = &event {
+            if let Err(error) = self.ios_handle_touch(event_loop, id, touch) {
+                log::warn!("iOS touch event failed: {error}");
+            }
             return;
         }
         #[cfg(target_os = "android")]
@@ -18073,6 +18105,8 @@ impl<'a> Game<'a> {
             previous: now,
             last_input: now,
             pad: Default::default(),
+            #[cfg(target_os = "ios")]
+            ios_menu_touch: Default::default(),
             frames: 0,
             glint_frame: Default::default(),
             kept_block_entities: Default::default(),
@@ -19842,7 +19876,7 @@ impl Loading {
         Ok(())
     }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         if let Some(renderer) = &mut self.renderer {
             if let Err(error) = renderer.recreate_surface() {
                 self.error = Some(error);
@@ -20191,7 +20225,7 @@ enum App {
     Ready(Box<split::Split<'static>>),
 }
 impl ApplicationHandler for App {
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
         match self {
             App::Ready(game) => game.suspended(event_loop),

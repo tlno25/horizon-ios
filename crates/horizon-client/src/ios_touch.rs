@@ -1,8 +1,41 @@
 //! Platform-neutral menu gestures for the native iOS Winit window.
 //! Input is transient: a finger cannot directly mutate a saved world.
 
-use crate::touch_ui::TouchUi;
+use crate::{gamepad::PadState, touch::TouchControls, touch_ui::TouchUi};
 use winit::event::TouchPhase;
+
+/// The same controls used by Android feed the game's native controller
+/// mapping. A short tap becomes a single frame of attack/use.
+pub fn poll_gamepad(controls: &mut TouchControls) -> PadState {
+    let mut state = controls.poll_state();
+    if let Some(use_item) = controls.take_tap() {
+        state.triggers[if use_item { 0 } else { 1 }] = 1.0;
+    }
+    state
+}
+
+/// UIKit touch coordinates are physical window pixels. Reject invalid events
+/// instead of forwarding NaN, infinity or zero viewport sizes to physics.
+pub fn normalized_point(point: [f64; 2], size: [u32; 2]) -> Option<[f32; 2]> {
+    if size.contains(&0) || !point.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    Some([
+        (point[0] / f64::from(size[0])).clamp(0.0, 1.0) as f32,
+        (point[1] / f64::from(size[1])).clamp(0.0, 1.0) as f32,
+    ])
+}
+
+/// Movement on mobile must not require a separate gamepad to be enabled.
+/// Menu and focus checks still apply to prevent stuck movement.
+pub fn movement_input_enabled(
+    controller_enabled: bool,
+    mobile_touchscreen: bool,
+    menu_open: bool,
+    focused: bool,
+) -> bool {
+    (controller_enabled || mobile_touchscreen) && !menu_open && focused
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MenuTouchAction {
@@ -29,6 +62,47 @@ pub fn menu_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn touchscreen_movement_remains_available_with_hardware_pads_disabled() {
+        assert!(movement_input_enabled(false, true, false, true));
+        assert!(movement_input_enabled(true, false, false, true));
+        assert!(!movement_input_enabled(false, false, false, true));
+        assert!(!movement_input_enabled(false, true, true, true));
+        assert!(!movement_input_enabled(false, true, false, false));
+    }
+
+    #[test]
+    fn shared_touch_button_reaches_gamepad_for_one_poll_only() {
+        use crate::gamepad::Button;
+        use crate::touch::TouchControls;
+        let mut controls = TouchControls::default();
+        controls.tap(Button::South);
+        let first = poll_gamepad(&mut controls);
+        assert!(
+            first.held(Button::South),
+            "jump must reach the shared gamepad"
+        );
+        assert!(
+            !poll_gamepad(&mut controls).held(Button::South),
+            "tap must not stick"
+        );
+    }
+
+    #[test]
+    fn normalized_point_rejects_invalid_dimensions_and_nonfinite_coordinates() {
+        assert_eq!(
+            normalized_point([160.0, 90.0], [320, 180]),
+            Some([0.5, 0.5])
+        );
+        assert_eq!(
+            normalized_point([-50.0, 400.0], [320, 180]),
+            Some([0.0, 1.0])
+        );
+        assert_eq!(normalized_point([10.0, 10.0], [0, 180]), None);
+        assert_eq!(normalized_point([f64::NAN, 10.0], [320, 180]), None);
+        assert_eq!(normalized_point([10.0, f64::INFINITY], [320, 180]), None);
+    }
 
     #[test]
     fn tap_clicks_only_after_release() {

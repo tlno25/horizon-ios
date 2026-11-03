@@ -1,5 +1,37 @@
 # Horizon iOS development shell (vertical slice in progress)
 
+## Experimental native game executable (separate IPA)
+
+The manual GitHub Actions **Horizon iOS Manual Build** workflow now also offers
+`build_target=game`. It compiles the **actual Horizon Rust game binary**
+(`horizon-client`) for iPhoneOS arm64 and uploads **horizon-ios-native-game-ipa**
+containing `Horizon-game-unsigned.ipa`. This is separate from the existing
+`device` option, which continues to output the original SwiftUI/Metal
+diagnostic shell `horizon-ios-unsigned.ipa`. The `both` option retains its
+existing meaning (device shell + Simulator shell). None of the expensive macOS
+workflows run automatically after each push.
+
+The native game uses Horizon's existing `loading_app` and gameplay code
+rather than a second, rewritten SwiftUI simulation. It enters its **own**
+writable app sandbox `Documents/` before loading resources, settings or saves.
+Use iOS file sharing to copy the **legally prepared** Horizon resource tree
+into the game's **Documents/resources/** with `horizon-resources.json` directly
+inside that `resources` directory. An older import into
+`Documents/.local/horizon-client/<game-version>/` is accepted as fallback.
+The resources imported into the diagnostic SwiftUI shell's Application Support
+folder are **not shared** with this distinct bundle ID. The build never
+includes Minecraft assets; they must come from the player's own Java Edition.
+
+**Do not mistake this build target for a finished, playable mobile client.**
+At this point game touch input, mobile HUD, iOS lifecycle handling,
+account sign-in, audio output and actual world gameplay still require device
+validation or implementation. This native game IPA is a feasibility/compile
+milestone, not a claim that worlds can be played on iPhone. The IPA is also
+**unsigned** and must be signed with a valid development/sideloading identity
+before installation. The bundle identifier `com.example.horizonios.game` is
+a development placeholder. The original shell and the native game can be
+installed side by side (distinct bundle IDs).
+
 This app is the iOS port of the **Horizon Rust engine**, not Pomme/Client.
 The SwiftUI home screen is still a shell; it **does not launch playable
 Minecraft**. The iOS static library now links the shared `horizon-client`

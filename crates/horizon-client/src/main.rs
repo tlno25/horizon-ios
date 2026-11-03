@@ -12,8 +12,25 @@ static ALLOCATOR: horizon_threads::Allocator = horizon_threads::Allocator;
 /// reads it, so the linker keeps it.
 static MOD_API_LEVEL: [u8; 27] = horizon_mods::api_level::MARK;
 
+/// Enter the iOS app's writable sandbox before any argument/resource parsing.
+#[cfg(target_os = "ios")]
+fn enter_ios_game_directory() -> Result<(), String> {
+    let home = std::env::var_os("HOME").ok_or("iOS HOME is unavailable")?;
+    let documents = horizon_client::ios_paths::game_documents_dir(std::path::Path::new(&home))?;
+    std::fs::create_dir_all(&documents)
+        .map_err(|error| format!("Cannot create iOS Documents directory: {error}"))?;
+    std::env::set_current_dir(&documents)
+        .map_err(|error| format!("Cannot enter iOS Documents directory: {error}"))?;
+    Ok(())
+}
+
 fn main() {
     horizon_threads::configure_allocator();
+    #[cfg(target_os = "ios")]
+    if let Err(error) = enter_ios_game_directory() {
+        eprintln!("Horizon iOS sandbox: {error}");
+        std::process::exit(1);
+    }
     std::hint::black_box(&MOD_API_LEVEL);
     horizon_client::telemetry::mark_start();
     let args: Vec<String> = std::env::args().skip(1).collect();

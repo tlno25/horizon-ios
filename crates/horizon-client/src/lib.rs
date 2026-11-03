@@ -75,6 +75,7 @@ pub mod hotbar;
 pub mod hunger;
 pub mod ime_edit;
 pub mod inv_sort;
+pub mod ios_paths;
 pub mod item_activation;
 pub mod item_render;
 pub mod item_sync;

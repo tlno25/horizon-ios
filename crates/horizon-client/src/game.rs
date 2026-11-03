@@ -576,6 +576,13 @@ impl Options {
         let mut o = Self {
             resources: if sibling.join("horizon-resources.json").exists() {
                 sibling
+            } else if cfg!(target_os = "ios") {
+                // A visible Documents/resources directory allows players to
+                // supply legally prepared assets using Finder or Files.app.
+                horizon_client::ios_paths::game_resources_dir(
+                    &std::env::current_dir()?,
+                    horizon_core::VANILLA_VERSION,
+                )
             } else {
                 std::path::Path::new(".local/horizon-client").join(horizon_core::VANILLA_VERSION)
             },

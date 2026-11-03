@@ -96,6 +96,23 @@ impl PreviewCamera {
         }
     }
 
+    /// Apply a displacement resolved by the game's native voxel collision
+    /// engine, without ever accepting a position in unmeshed terrain.
+    /// Saved player position/rotation are not changed by this viewer.
+    pub fn set_collision_resolved_position(&mut self, position: [f64; 3]) -> bool {
+        if !position.iter().all(|v| v.is_finite())
+            || (position[1] - self.saved_position[1]).abs() > 16.0
+            || !self.allowed_chunks.contains(&(
+                (position[0].floor() as i32) >> 4,
+                (position[2].floor() as i32) >> 4,
+            ))
+        {
+            return false;
+        }
+        self.position = position;
+        true
+    }
+
     /// Restore only the preview camera; never write the player's save.
     pub fn reset_view(&mut self) {
         self.position = self.saved_position;
@@ -318,6 +335,23 @@ mod tests {
         assert!((-79.9..=-64.1).contains(&z));
         assert_eq!(y, 72.0);
         assert_eq!(camera.rotation(), [90.0, 20.0]);
+    }
+
+    #[test]
+    fn collision_resolution_may_reduce_preview_motion_but_never_modify_save() {
+        let mut camera = PreviewCamera::new([8.0, 64.0, 8.0], [0.0, 0.0]);
+        camera.touch(1, TouchPhase::Started, (200.0, 200.0), (1000, 500));
+        camera.touch(2, TouchPhase::Started, (400.0, 200.0), (1000, 500));
+        camera.touch(1, TouchPhase::Moved, (300.0, 200.0), (1000, 500));
+        assert!(camera.position()[0] > 8.0);
+        assert!(camera.set_collision_resolved_position([8.1, 64.0, 8.0]));
+        assert_eq!(camera.position(), [8.1, 64.0, 8.0]);
+        assert_eq!(camera.saved_position(), [8.0, 64.0, 8.0]);
+        assert!(!camera.set_collision_resolved_position([f64::NAN, 64.0, 8.0]));
+        assert!(!camera.set_collision_resolved_position([1000.0, 64.0, 8.0]));
+        assert_eq!(camera.position(), [8.1, 64.0, 8.0]);
+        camera.reset_view();
+        assert_eq!(camera.position(), [8.0, 64.0, 8.0]);
     }
 
     #[test]

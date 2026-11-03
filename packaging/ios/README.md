@@ -77,8 +77,8 @@ terrain stage. The column is cleared on a new world inspection, title
 navigation, or suspension. On a player-triggered preflight with prepared
 resources, the same background worker now:
 
-1. Loads and caches the actual block-model atlas, block facts and native
-   visibility/meshing tables **on demand** (not during title startup).
+1. Loads and caches the block-model atlas, visibility/meshing tables, and
+   **native collision shape registry** **on demand** (not at title startup).
 2. Reads up to eight existing neighbouring Anvil columns read-only, without
    generating any missing chunks, to preserve native face occlusion.
 3. Runs Horizon's shared `Mesher` over non-air sections of **up to nine saved
@@ -88,9 +88,14 @@ resources, the same background worker now:
    The saved centre column is prioritized; if a further column does not fit,
    that column and subsequent neighbours are skipped rather than partially
    displayed. No missing columns are generated.
-4. Reports solid/translucent quad counts, visible sections, included columns,
-   and columns skipped by the memory cap. The CPU vertices stay on the Winit/UI thread only
-   until a new selection, navigation, or app suspension clears them.
+4. Builds a separate **read-only native `World`**, backed by the same Arc
+   chunks. It uses Horizon's canonical collision shapes and native movement
+   resolver against the standard standing-player body (0.6×1.8 blocks) to
+   constrain the temporary preview camera. Missing chunks remain absent and
+   no world tick, block mutation, lock or save writer starts.
+5. Reports quad counts, visible sections, included columns, columns skipped
+   by the memory cap and native collision snapshot size. The CPU vertices and
+   resident chunks are released on selection changes, navigation or suspension.
 
 The **Preview saved terrain** action in SwiftUI now makes this an explicit
 opt-in GPU preview instead of only a CPU diagnostic. After the saved world
@@ -107,8 +112,11 @@ columns for which the CPU mesher actually produced geometry. **Pinch two fingers
 to raise or lower the preview camera within 16 blocks of the saved height;
 three or more fingers cancel the gesture. A bounded 3×3 saved region is the
 largest preview; missing or truncated columns are not traversable.
-The view camera can move but the actual saved player pose never changes;
-three-finger contacts are rejected and no physics or gameplay is active.
+The transient view camera moves through the read-only native block collision
+world (full voxel shapes, not an invented approximate physics implementation),
+while the saved player's pose never changes. This is a **collision-only preview**:
+there is no gravity, jumping, player-state simulation or active gameplay loop.
+Three or more fingers still cancel the gesture.
 **Diagnostics → Reset camera** restores the original saved viewpoint, while
 **Back to title** restores the original renderer. The preview redraws on
 touch/resize rather than animating an unchanged image at title-frame rate. If GPU initialization, upload or drawing fails, the iOS

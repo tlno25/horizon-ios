@@ -103,6 +103,8 @@ pub fn mesh_section_candidates(column: &crate::chunk::Chunk) -> Vec<i32> {
 pub struct TerrainMeshingResources {
     pub render: crate::assets::RenderAssets,
     pub tables: crate::mesher::MeshTables,
+    /// Canonical block collision shapes, shared with the native gameplay world.
+    pub collisions: horizon_world::block_collision::BlockCollisionRegistry<'static>,
 }
 
 impl TerrainMeshingResources {
@@ -111,7 +113,12 @@ impl TerrainMeshingResources {
         let facts = crate::blocks::BlockFacts::load(root, core.registry)?;
         let visibility = crate::models::load_visibility(root, core.registry)?;
         let tables = crate::mesher::MeshTables::new(core, &render, &facts, visibility)?;
-        Ok(Self { render, tables })
+        let collisions = crate::collisions::load(root, core.registry)?;
+        Ok(Self {
+            render,
+            tables,
+            collisions,
+        })
     }
 }
 
@@ -181,6 +188,106 @@ pub fn load_saved_initial_region(
         }
     }
     Ok(region)
+}
+
+/// A resident read-only subset of the real native `World`. It shares the
+/// exact Arc-backed decoded chunk columns that the native mesher uses; no
+/// block edit, entity spawn, tick scheduling or disk save can occur here.
+/// This is the base for wiring iOS input to the normal world simulation.
+pub struct ReadOnlyWorldStage {
+    pub world: crate::world::World,
+    saved_columns: usize,
+}
+
+impl ReadOnlyWorldStage {
+    pub fn from_region(
+        region: &crate::mesher::Region,
+        seed: i64,
+        air: horizon_world::registry::BlockStateId,
+    ) -> Result<Self> {
+        let center = region[1][1].as_ref().ok_or("Missing native centre chunk")?;
+        let mut world = crate::world::World::new(air, seed);
+        let mut saved_columns = 0;
+        for (z, row) in region.iter().enumerate() {
+            for (x, column) in row.iter().enumerate() {
+                let Some(column) = column else { continue };
+                let expected_x = center
+                    .x
+                    .checked_add(x as i32 - 1)
+                    .ok_or("Chunk X overflow")?;
+                let expected_z = center
+                    .z
+                    .checked_add(z as i32 - 1)
+                    .ok_or("Chunk Z overflow")?;
+                if column.x != expected_x || column.z != expected_z {
+                    return Err("Read-only world chunk coordinates mismatch".into());
+                }
+                world
+                    .chunks
+                    .insert((column.x, column.z), std::sync::Arc::clone(column));
+                saved_columns += 1;
+            }
+        }
+        Ok(Self {
+            world,
+            saved_columns,
+        })
+    }
+
+    #[must_use]
+    pub fn saved_columns(&self) -> usize {
+        self.saved_columns
+    }
+
+    /// Use native voxel shapes and `resolve_world_movement`, without changing
+    /// the world or saved player pose. Maximum one block of motion per event.
+    /// Missing chunks remain absent and the caller additionally clamps to
+    /// columns whose meshes reached the GPU.
+    pub fn resolve_preview_movement(
+        &self,
+        binding: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
+        from: [f64; 3],
+        target: [f64; 3],
+    ) -> Result<[f64; 3]> {
+        use horizon_core::geometry::Vec3;
+        let body = preview_player_bounds(from)?;
+        if !target.iter().all(|v| v.is_finite()) {
+            return Err("Preview movement target is not finite".into());
+        }
+        let requested = Vec3::new(
+            (target[0] - from[0]).clamp(-1.0, 1.0),
+            (target[1] - from[1]).clamp(-1.0, 1.0),
+            (target[2] - from[2]).clamp(-1.0, 1.0),
+        );
+        if requested.length_squared() == 0.0 {
+            return Ok(from);
+        }
+        let mut collisions = crate::collisions::SceneCollisions {
+            world: &self.world,
+            binding,
+            subject: None,
+        };
+        let resolved = collisions.resolve(body, requested, 0.0, false)?;
+        Ok([
+            from[0] + resolved.x,
+            from[1] + resolved.y,
+            from[2] + resolved.z,
+        ])
+    }
+}
+
+/// Standard standing-player 0.6×1.8 block volume at the saved feet pose.
+/// This is a passive collision probe, not a living simulated entity.
+pub fn preview_player_bounds(position: [f64; 3]) -> Result<horizon_core::geometry::Aabb> {
+    use horizon_core::geometry::{Aabb, Vec3};
+    if !position.iter().all(|v| v.is_finite()) {
+        return Err("Preview camera has nonfinite coordinates".into());
+    }
+    let [x, y, z] = position;
+    Ok(Aabb::new(
+        Vec3::new(x - 0.3, y, z - 0.3),
+        Vec3::new(x + 0.3, y + 1.8, z + 0.3),
+    ))
 }
 
 /// Shared read-only Anvil path for both the centre column and its neighbours.
@@ -1326,6 +1433,165 @@ mod tests {
             ]
         );
         assert_eq!(before, fs::read(&file).unwrap());
+        assert!(!root.join("session.lock").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ios_read_only_preview_uses_native_collision_shapes_to_stop_at_saved_stone() {
+        use horizon_core::geometry::{Axis, VoxelShape};
+        use horizon_world::{
+            block_collision::BlockCollisionRegistry, collision::CachedCollisionRegistry, nbt::Tag,
+            registry::BlockStateId,
+        };
+        let root =
+            std::env::temp_dir().join(format!("horizon-ios-collision-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let region_path = write_stone_region(&root);
+        let bytes = fs::read(&region_path).unwrap();
+        let (registry, biomes) = synthetic_native_tables(&root);
+        let centre = read_existing_saved_column(&root, [8, -5], &registry, &biomes)
+            .unwrap()
+            .unwrap();
+        let region = load_saved_initial_region(&root, &centre, &registry, &biomes).unwrap();
+        let stage = ReadOnlyWorldStage::from_region(&region, 23, BlockStateId(0)).unwrap();
+        // Public, synthetic collision table: canonical empty and solid cube,
+        // in the same native NBT wire format the exporter normally writes.
+        let make_shape = |shape: VoxelShape, canonical: i8| {
+            let axes = shape.cube_coordinate_axes();
+            let axes = axes.iter().enumerate().fold(0i8, |mask, (i, enabled)| {
+                mask | if *enabled { 1 << i } else { 0 }
+            });
+            let (minimum, maximum) = shape.discrete_bounds();
+            Tag::compound([
+                ("canonical", Tag::Byte(canonical)),
+                (
+                    "x",
+                    Tag::LongArray(
+                        shape
+                            .coordinates(Axis::X)
+                            .iter()
+                            .map(|n| n.to_bits() as i64)
+                            .collect(),
+                    ),
+                ),
+                (
+                    "y",
+                    Tag::LongArray(
+                        shape
+                            .coordinates(Axis::Y)
+                            .iter()
+                            .map(|n| n.to_bits() as i64)
+                            .collect(),
+                    ),
+                ),
+                (
+                    "z",
+                    Tag::LongArray(
+                        shape
+                            .coordinates(Axis::Z)
+                            .iter()
+                            .map(|n| n.to_bits() as i64)
+                            .collect(),
+                    ),
+                ),
+                (
+                    "occupied",
+                    Tag::ByteArray(if canonical == 2 { vec![1] } else { vec![] }),
+                ),
+                ("cube_axes", Tag::Byte(axes)),
+                ("cube", Tag::Byte(i8::from(shape.is_cube()))),
+                ("discrete_min", Tag::IntArray(minimum.to_vec())),
+                ("discrete_max", Tag::IntArray(maximum.to_vec())),
+            ])
+        };
+        let mut state_shapes = vec![0; registry.len()];
+        state_shapes[1] = 1;
+        let data = Tag::compound([
+            ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+            (
+                "states",
+                Tag::List(
+                    (0..registry.len())
+                        .map(|i| registry.state(BlockStateId(i as u32)).unwrap().to_nbt())
+                        .collect(),
+                ),
+            ),
+            (
+                "shapes",
+                Tag::List(vec![
+                    make_shape(VoxelShape::empty(), 1),
+                    make_shape(VoxelShape::block(), 2),
+                ]),
+            ),
+            ("cached_shapes", Tag::IntArray(state_shapes)),
+        ]);
+        let cached = CachedCollisionRegistry::from_nbt(&data, &registry).unwrap();
+        let collisions = BlockCollisionRegistry::new(std::sync::Arc::new(cached)).unwrap();
+        let below = stage
+            .resolve_preview_movement(&collisions, [128.5, 80.5, -64.25], [128.5, 79.7, -64.25])
+            .unwrap();
+        assert!(
+            (below[1] - 80.0).abs() < 1.0e-6,
+            "stone top must stop feet: {below:?}"
+        );
+        let side = stage
+            .resolve_preview_movement(&collisions, [127.5, 70.0, -64.25], [128.5, 70.0, -64.25])
+            .unwrap();
+        assert!(
+            (side[0] - 127.7).abs() < 1.0e-6,
+            "stone wall must stop native player box: {side:?}"
+        );
+        assert!(stage.world.modified.is_empty());
+        assert_eq!(fs::read(region_path).unwrap(), bytes);
+        assert!(!root.join("session.lock").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ios_native_preview_player_body_uses_saved_feet_with_vanilla_dimensions() {
+        let bounds = preview_player_bounds([128.5, 72.0, -64.25]).unwrap();
+        assert_eq!(
+            bounds.min_position(),
+            horizon_core::geometry::Vec3::new(128.2, 72.0, -64.55)
+        );
+        assert_eq!(
+            bounds.max_position(),
+            horizon_core::geometry::Vec3::new(128.8, 73.8, -63.95)
+        );
+        assert!(preview_player_bounds([0.0, f64::INFINITY, 0.0]).is_err());
+        assert!(preview_player_bounds([f64::NAN, 64.0, 0.0]).is_err());
+    }
+
+    #[test]
+    fn ios_read_only_world_stage_retains_native_chunks_without_dirtying_saves() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-ios-world-stage-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let file = write_stone_region(&root);
+        let bytes = fs::read(&file).unwrap();
+        let (registry, biomes) = synthetic_native_tables(&root);
+        let center = read_existing_saved_column(&root, [8, -5], &registry, &biomes)
+            .unwrap()
+            .unwrap();
+        let region = load_saved_initial_region(&root, &center, &registry, &biomes).unwrap();
+        let stage = ReadOnlyWorldStage::from_region(
+            &region,
+            12345,
+            horizon_world::registry::BlockStateId(0),
+        )
+        .unwrap();
+        assert_eq!(stage.saved_columns(), 1);
+        assert_eq!(stage.world.chunks.len(), 1);
+        assert_eq!(stage.world.block(128, 71, -65).0, 1);
+        assert_eq!(stage.world.block(144, 71, -65).0, 0);
+        assert_eq!(stage.world.shape.column().min_y(), -64);
+        assert!(stage.world.modified.is_empty());
+        assert!(stage.world.dirty_sections.is_empty());
+        assert!(stage.world.loaded_chunks.is_empty());
+        fn assert_send<T: Send>() {}
+        assert_send::<ReadOnlyWorldStage>();
+        assert_eq!(fs::read(file).unwrap(), bytes);
         assert!(!root.join("session.lock").exists());
         fs::remove_dir_all(root).unwrap();
     }

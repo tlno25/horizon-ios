@@ -42,6 +42,8 @@ enum ShellEvent {
 struct PreparedWorldPreview {
     world: horizon_client::game_startup::PreparedWorld,
     terrain: Option<horizon_client::game_startup::PreparedTerrain>,
+    /// Shared native chunk-map snapshot for read-only collision queries.
+    native_world: Option<horizon_client::game_startup::ReadOnlyWorldStage>,
 }
 
 impl std::fmt::Debug for PreparedWorldPreview {
@@ -49,6 +51,7 @@ impl std::fmt::Debug for PreparedWorldPreview {
         f.debug_struct("PreparedWorldPreview")
             .field("world", &self.world)
             .field("terrain_summary", &self.terrain.as_ref().map(|t| t.summary))
+            .field("has_native_world", &self.native_world.is_some())
             .finish()
     }
 }
@@ -201,12 +204,18 @@ struct Shell {
     title_tap: TitleTap,
     world_inspection_pending: bool,
     world_inspection_generation: u64,
-    /// At most one decoded saved column, prepared on the file-I/O worker and
-    /// owned by UIKit's Winit thread. Not yet attached to the terrain renderer.
+    /// The saved centre column, kept for startup diagnostics. The separate
+    /// read-only native World owns Arc references to up to nine saved columns.
     initial_column: Option<horizon_client::chunk::Chunk>,
     /// Native CPU mesh vertices for the initial saved column, staged until
     /// the terrain renderer has the corresponding block sprite atlas.
     terrain: Option<horizon_client::game_startup::PreparedTerrain>,
+    /// Native resident World, retaining the same Arc chunks as the CPU mesher.
+    /// Read-only: no ticks, writes, session locks or live game simulation.
+    native_world: Option<horizon_client::game_startup::ReadOnlyWorldStage>,
+    /// Avoid showing an error popup for every collision touch while the
+    /// selected saved world has an unsupported contextual block shape.
+    preview_collision_failed: bool,
     /// Saved first-person camera, supplied only with a validated CPU mesh.
     terrain_camera: Option<crate::PreviewCamera>,
     /// The original title renderer retains its GPU resources while a textured
@@ -224,9 +233,10 @@ struct Shell {
 }
 
 impl Shell {
-    /// Request only the desktop loader's read-only world metadata stage.
-    /// The real game world, session lock, simulation and save writers are not
-    /// constructed by this preview yet. Never block UIKit on file access.
+    /// Request the desktop loader's read-only world preparation stage.
+    /// A native World with saved chunks is constructed for collision queries,
+    /// but no simulation loop, session lock or save writer is started.
+    /// Never block UIKit on file access.
     fn inspect_selected_world(&mut self, folder: String) {
         if self.world_inspection_pending {
             return;
@@ -242,6 +252,8 @@ impl Shell {
         self.world_inspection_pending = true;
         self.initial_column = None;
         self.terrain = None;
+        self.native_world = None;
+        self.preview_collision_failed = false;
         self.terrain_camera = None;
         crate::TERRAIN_PREVIEW.reset();
         self.world_inspection_generation = self.world_inspection_generation.wrapping_add(1);
@@ -272,6 +284,7 @@ impl Shell {
                                 initial_column: None,
                             },
                             terrain: None,
+                            native_world: None,
                         });
                     };
                     let biomes = if let Some(biomes) = crate::PREVIEW_BIOMES.get() {
@@ -291,7 +304,7 @@ impl Shell {
                         biomes,
                     )
                     .map_err(|error| error.to_string())?;
-                    let terrain = if let Some(column) = &world.initial_column {
+                    let (terrain, native_world) = if let Some(column) = &world.initial_column {
                         // Full block models and sprite atlas are loaded only on
                         // demand, never during the title's initial GPU boot.
                         let assets = if let Some(assets) = crate::PREVIEW_TERRAIN.get() {
@@ -315,20 +328,33 @@ impl Shell {
                             biomes,
                         )
                         .map_err(|error| error.to_string())?;
-                        Some(
-                            horizon_client::game_startup::mesh_prepared_column(
-                                &region,
-                                world.inspection.seed,
-                                core,
-                                biomes,
-                                assets,
-                            )
-                            .map_err(|error| error.to_string())?,
+                        let air = core
+                            .registry
+                            .default_state("minecraft:air")
+                            .ok_or("No air state in prepared native block registry")?;
+                        let staged = horizon_client::game_startup::ReadOnlyWorldStage::from_region(
+                            &region,
+                            world.inspection.seed,
+                            air,
                         )
+                        .map_err(|error| error.to_string())?;
+                        let meshes = horizon_client::game_startup::mesh_prepared_column(
+                            &region,
+                            world.inspection.seed,
+                            core,
+                            biomes,
+                            assets,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        (Some(meshes), Some(staged))
                     } else {
-                        None
+                        (None, None)
                     };
-                    Ok(PreparedWorldPreview { world, terrain })
+                    Ok(PreparedWorldPreview {
+                        world,
+                        terrain,
+                        native_world,
+                    })
                 })
                 .unwrap_or_else(|payload| Err(crate::describe_renderer_panic(payload.as_ref())));
                 let _ = proxy.send_event(ShellEvent::WorldInspected { generation, result });
@@ -816,6 +842,8 @@ impl ApplicationHandler<ShellEvent> for Shell {
         self.world_inspection_pending = false;
         self.initial_column = None;
         self.terrain = None;
+        self.native_world = None;
+        self.preview_collision_failed = false;
         self.terrain_camera = None;
         self.title_renderer = None;
         crate::TERRAIN_PREVIEW.reset();
@@ -936,14 +964,48 @@ impl ApplicationHandler<ShellEvent> for Shell {
                     let point = (touch.location.x as f32, touch.location.y as f32);
                     if crate::update_touch(touch.id, phase, point, size) {
                         if self.title_renderer.is_some() {
-                            // A one-finger drag looks around the already loaded
-                            // static world; movement/gameplay remain disabled.
-                            if self
-                                .terrain_camera
-                                .as_mut()
-                                .is_some_and(|camera| camera.touch(touch.id, phase, point, size))
-                            {
-                                window.request_redraw();
+                            // Read-only native World collision queries bind
+                            // to the exact saved chunks used by the mesher.
+                            // Only the transient view camera may move.
+                            if let Some(camera) = self.terrain_camera.as_mut() {
+                                let from = camera.position();
+                                if camera.touch(touch.id, phase, point, size) {
+                                    let target = camera.position();
+                                    if target != from {
+                                        let outcome = self
+                                            .native_world
+                                            .as_ref()
+                                            .zip(crate::PREVIEW_TERRAIN.get())
+                                            .ok_or("Native preview collision world is not ready")
+                                            .and_then(|(stage, resources)| {
+                                                stage
+                                                    .resolve_preview_movement(
+                                                        &resources.collisions,
+                                                        from,
+                                                        target,
+                                                    )
+                                                    .map_err(|_| "Native preview collision failed")
+                                            });
+                                        match outcome {
+                                            Ok(resolved) => {
+                                                if !camera.set_collision_resolved_position(resolved)
+                                                {
+                                                    let _ = camera
+                                                        .set_collision_resolved_position(from);
+                                                }
+                                            }
+                                            Err(error) => {
+                                                let _ =
+                                                    camera.set_collision_resolved_position(from);
+                                                if !self.preview_collision_failed {
+                                                    self.preview_collision_failed = true;
+                                                    report_graphics_error(error);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    window.request_redraw();
+                                }
                             }
                         } else if self.title.is_some()
                             && self.horizon.is_some()
@@ -978,6 +1040,8 @@ impl ApplicationHandler<ShellEvent> for Shell {
                                         self.world_inspection_pending = false;
                                         self.initial_column = None;
                                         self.terrain = None;
+                                        self.native_world = None;
+                                        self.preview_collision_failed = false;
                                         self.terrain_camera = None;
                                         crate::TERRAIN_PREVIEW.reset();
                                         unsafe { horizon_ios_renderer_status_changed() };
@@ -1032,8 +1096,11 @@ impl ApplicationHandler<ShellEvent> for Shell {
                             let PreparedWorldPreview {
                                 world: prepared,
                                 terrain,
+                                native_world,
                             } = loaded;
                             self.terrain = terrain;
+                            self.native_world = native_world;
+                            self.preview_collision_failed = false;
                             let horizon_client::game_startup::PreparedWorld {
                                 inspection: world,
                                 initial_column,
@@ -1090,6 +1157,13 @@ impl ApplicationHandler<ShellEvent> for Shell {
                                     self.initial_column.is_some(),
                                 ),
                             );
+                            let native_status = self.native_world.as_ref().map_or(
+                                " Native collision world not staged.".to_owned(),
+                                |stage| format!(
+                                    " Native read-only collision world: {} saved chunks (0 writes, 0 simulation ticks).",
+                                    stage.saved_columns(),
+                                ),
+                            );
                             let mesh_status = self.terrain.as_ref().map_or(
                                 " CPU terrain mesh not prepared.".to_owned(),
                                 |prepared| format!(
@@ -1123,7 +1197,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
                             };
                             let initial_location = match (world.saved_position, world.initial_chunk) {
                                 (Some([x, y, z]), Some([cx, cz])) => format!(
-                                    " Saved player at ({x:.1}, {y:.1}, {z:.1}); first chunk ({cx}, {cz}).{disk_probe}{resident}{mesh_status}"
+                                    " Saved player at ({x:.1}, {y:.1}, {z:.1}); first chunk ({cx}, {cz}).{disk_probe}{resident}{native_status}{mesh_status}"
                                 ),
                                 _ => " No valid saved player location; spawn search will be required before gameplay.".to_owned(),
                             };
@@ -1143,6 +1217,8 @@ impl ApplicationHandler<ShellEvent> for Shell {
                         }
                         Err(error) => {
                             self.terrain = None;
+                            self.native_world = None;
+                            self.preview_collision_failed = false;
                             self.terrain_camera = None;
                             self.initial_column = None;
                             crate::TERRAIN_PREVIEW.reset();

@@ -21,10 +21,13 @@ select **Run workflow**, choose branch **ios**, and select `build_target`:
   Download the `horizon-ios-unsigned-ipa` artifact, extract GitHub's outer ZIP,
   and use the enclosed **`horizon-ios-unsigned.ipa`**. The IPA is **unsigned**;
   signing with your own credentials is required before installing it.
-- **simulator**: build x86_64 `HorizonIOS.app`, run the iPhone Simulator,
-  verify that Metal presented a frame, and upload a screenshot and diagnostics.
-  Download the `horizon-ios-simulator-app` artifact containing the Simulator
-  `.app.zip`. A Simulator binary cannot run on a physical iPhone.
+- **simulator**: build and upload an x86_64 `HorizonIOS.app` without booting
+  Simulator by default. This **compile-only** option validates Xcode, Swift
+  and iOS-target Rust while avoiding costly `simctl bootstatus` stalls. Enable
+  `simulator_smoke` to boot iPhone Simulator, verify Metal presentation and
+  capture a screenshot. `renderer_probe` also enables the basic smoke and then
+  tests Horizon's experimental native boot renderer. Download the
+  `horizon-ios-simulator-app` `.app.zip` artifact; it cannot run on a real iPhone.
 - **both**: build both artifacts. This consumes more macOS runner minutes and
   should be used only when both are needed.
 
@@ -78,11 +81,15 @@ resources, the same background worker now:
    visibility/meshing tables **on demand** (not during title startup).
 2. Reads up to eight existing neighbouring Anvil columns read-only, without
    generating any missing chunks, to preserve native face occlusion.
-3. Runs Horizon's shared `Mesher` over non-air sections of the saved centre
-   column, sorts solid faces and retains their CPU vertices, with a bounded
-   1,048,576-vertex safety limit (about 24 MiB of vertices).
-4. Reports real solid/translucent quad counts, meshed sections and the number
-   of saved neighbours. The CPU vertices stay on the Winit/UI thread only
+3. Runs Horizon's shared `Mesher` over non-air sections of **up to nine saved
+   columns** (centre, cardinal neighbours, diagonals). Every section has its
+   own `(chunkX, sectionY, chunkZ)` GPU upload key, and the **combined**
+   1,048,576-vertex safety budget (about 24 MiB of vertices) is respected.
+   The saved centre column is prioritized; if a further column does not fit,
+   that column and subsequent neighbours are skipped rather than partially
+   displayed. No missing columns are generated.
+4. Reports solid/translucent quad counts, visible sections, included columns,
+   and columns skipped by the memory cap. The CPU vertices stay on the Winit/UI thread only
    until a new selection, navigation, or app suspension clears them.
 
 The **Preview saved terrain** action in SwiftUI now makes this an explicit
@@ -95,8 +102,11 @@ surface to the textured renderer and uploads the prepared section meshes with
 `Renderer::upload`. `terrain_preview_frame` points its camera at the saved
 player position. The preview automatically hides the diagnostics overlay so
 the player can see the scene. **Drag one finger** to look around the static
-chunk. **Drag two fingers** together to pan the camera horizontally, constrained
-to the original 16×16 saved column (neighbours contribute only face occlusion).
+area. **Drag two fingers** together to pan horizontally, entering only nearby
+columns for which the CPU mesher actually produced geometry. **Pinch two fingers**
+to raise or lower the preview camera within 16 blocks of the saved height;
+three or more fingers cancel the gesture. A bounded 3×3 saved region is the
+largest preview; missing or truncated columns are not traversable.
 The view camera can move but the actual saved player pose never changes;
 three-finger contacts are rejected and no physics or gameplay is active.
 **Diagnostics → Reset camera** restores the original saved viewpoint, while
@@ -106,7 +116,7 @@ shell attempts to restore the title renderer and exposes a retry action.
 Backgrounding drops the GPU view and invalidates in-flight preparation. There
 is no second UIApplicationMain, no automatic Mac build and no gameplay loop.
 
-This is still a **static, read-only render of one saved column**. Light and
+This is still a **static, read-only render of at most nine saved columns**. Light and
 face occlusion for unsaved neighbours, custom biome packs, missing chunks,
 movement, simulation, inventory and saving still require the world streamer
 and game runtime. Neither the preview nor the title joins a game session or
@@ -298,8 +308,10 @@ minutes after every small change:
   Its `build_target` input is `device` (default), `simulator`, or `both`.
   Select `device` to produce the artifact `horizon-ios-unsigned-ipa` containing
   `horizon-ios-unsigned.ipa` for a real arm64 iPhone or iPad. Select
-  `simulator` to build, launch, screenshot and check the Metal probe in the
-  x86_64 Simulator. The `renderer_probe` checkbox additionally attempts the
+  `simulator` to build the x86_64 app **without booting a Simulator** by default.
+  Check `simulator_smoke` only when an actual launch, screenshot and Metal
+  health check are needed. The `renderer_probe` checkbox additionally enables
+  the smoke step and attempts the
   experimental **real Horizon GPU boot renderer** (Simulator only). When
   requested, failure **fails the job** and captures diagnostic status/logs.
   A successful normal Metal probe does **not** imply that real Horizon's GPU
@@ -314,8 +326,9 @@ static library. Xcode **Release** still uses the fully optimized Cargo
 `release` profile. Build success and total runner time should be measured
 on the next macOS run; cached builds are not guaranteed to be faster.
 
-The Simulator job now reuses the already booted iPhone simulator for the
-experimental GPU probe instead of shutting it down and booting it again. The
+The Simulator job skips runtime boot entirely unless `simulator_smoke` or
+`renderer_probe` is selected. When the latter is selected, it reuses the
+already booted iPhone simulator rather than restarting it. The
 regular Metal test has a 6-minute step limit, the optional GPU probe has a
 separate 5-minute limit, and the overall Simulator job has a 35-minute cap.
 This prevents a stalled `simctl bootstatus` from consuming the previous

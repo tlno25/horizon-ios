@@ -615,12 +615,8 @@ impl Shell {
             prepared
                 .activate_replacement(&mut old_title)
                 .map_err(|error| error.to_string())?;
-            let column = self
-                .initial_column
-                .as_ref()
-                .ok_or("Saved chunk was released")?;
             let terrain = self.terrain.as_ref().ok_or("Saved mesh was released")?;
-            horizon_client::game_startup::upload_prepared_terrain(&mut prepared, column, terrain);
+            horizon_client::game_startup::upload_prepared_terrain(&mut prepared, terrain);
             Ok::<(), String>(())
         }))
         .unwrap_or_else(|payload| Err(crate::describe_renderer_panic(payload.as_ref())));
@@ -1056,6 +1052,15 @@ impl ApplicationHandler<ShellEvent> for Shell {
                                 } else {
                                     None
                                 };
+                            if let (Some(camera), Some(terrain)) =
+                                (self.terrain_camera.as_mut(), self.terrain.as_ref())
+                            {
+                                // Only loaded, successfully meshed columns
+                                // become traversable by the read-only viewer.
+                                for (key, _) in &terrain.meshes {
+                                    camera.allow_rendered_chunk([key.0, key.2]);
+                                }
+                            }
                             if self.terrain_camera.is_some()
                                 && self.horizon.is_some()
                                 && self.title.is_some()
@@ -1088,11 +1093,13 @@ impl ApplicationHandler<ShellEvent> for Shell {
                             let mesh_status = self.terrain.as_ref().map_or(
                                 " CPU terrain mesh not prepared.".to_owned(),
                                 |prepared| format!(
-                                    " CPU mesh retained: {} visible sections, {} solid quads, {} translucent quads, {} of 8 saved neighbours used (not uploaded to GPU).",
+                                    " CPU mesh ready: {} of {} saved columns ({} skipped by budget), {} visible sections, {} solid quads, {} translucent quads (read-only; GPU preview available after preparing).",
+                                    prepared.meshed_columns,
+                                    prepared.saved_neighbors + 1,
+                                    prepared.skipped_columns,
                                     prepared.summary.sections,
                                     prepared.summary.solid_quads,
                                     prepared.summary.translucent_quads,
-                                    prepared.saved_neighbors,
                                 ),
                             );
                             let disk_probe = match &world.initial_chunk_disk {

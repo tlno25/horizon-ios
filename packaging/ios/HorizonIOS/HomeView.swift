@@ -367,7 +367,7 @@ private struct HomeView: View {
                             Button("Reset camera", action: resetTerrainCamera)
                                 .buttonStyle(.bordered)
                         }
-                        Text("One finger: look around. Two fingers: pan inside the saved chunk. Reset returns to the saved view; gameplay and saves are unchanged.")
+                        Text("One finger: look around. Two-finger drag: pan across displayed saved chunks. Pinch: change viewing height (±16 blocks). Reset restores the saved camera; gameplay and saves are unchanged.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -440,7 +440,7 @@ private struct HomeView: View {
                             .textSelection(.enabled)
                     }
 
-                    Text("Load game data, open the native title, then select a saved world. Preview saved terrain shows one read-only chunk. One finger looks around, two fingers pan within the initial chunk, and Diagnostics provides reset/back. World simulation, player movement and saving remain inactive.")
+                    Text("Load game data, open the native title, then select a saved world. Preview saved terrain displays up to 3×3 saved chunks without generating missing terrain. One finger looks around, two fingers pan or pinch, and Diagnostics provides reset/back. World simulation and saves remain inactive.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

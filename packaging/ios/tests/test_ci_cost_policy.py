@@ -36,6 +36,17 @@ class CIWorkflowsDoNotRunMacOSAutomatically(unittest.TestCase):
         self.assertIn('if: ${{ inputs.renderer_probe }}', text)
         self.assertIn('cancel-in-progress: false', text)
 
+    def test_simulator_compile_only_skips_slow_runtime_by_default(self):
+        text = (WORKFLOWS / 'ios-simulator.yml').read_text()
+        self.assertRegex(text, r'(?ms)^      simulator_smoke:\n.*?^        default: false$')
+        match = re.search(
+            r'(?m)^      - name: Launch in iPhone Simulator.*?'
+            r'(?=^      - name: |^  device-build:)', text, re.S | re.M
+        )
+        self.assertIsNotNone(match)
+        self.assertIn('if: ${{ inputs.simulator_smoke || inputs.renderer_probe }}', match.group())
+        self.assertIn('if: ${{ inputs.renderer_probe }}', text)
+
     def test_gpu_probe_has_its_own_short_timeout_and_reuses_simulator(self):
         text = (WORKFLOWS / 'ios-simulator.yml').read_text()
         match = re.search(

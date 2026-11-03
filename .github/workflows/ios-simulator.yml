@@ -16,6 +16,11 @@ on:
           - both
         required: true
         default: device
+      simulator_smoke:
+        description: 'Launch Simulator and test Metal (slower; skip for compile-only checks)'
+        type: boolean
+        required: false
+        default: false
       renderer_probe:
         description: 'Run the experimental real Horizon GPU preview (Simulator only)'
         type: boolean
@@ -71,6 +76,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Launch in iPhone Simulator and capture preview
+        if: ${{ inputs.simulator_smoke || inputs.renderer_probe }}
         timeout-minutes: 6
         env:
           DERIVED_DATA: ${{ runner.temp }}/HorizonDerivedData

@@ -2,12 +2,12 @@
 //! No movement, collision, gameplay or world mutations.
 
 use crate::TouchPhase;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-/// A read-only camera with one-finger look and two-finger horizontal pan.
-/// Translation is confined to the saved initial chunk, which is the only
-/// column currently meshed for GPU preview. The saved player pose is immutable.
-/// Once a third finger enters, suppress all input until contacts are released.
+/// A read-only camera with one-finger look, two-finger pan and pinch-height.
+/// Translation is confined to actually rendered columns in the initial 3x3
+/// saved region. The saved player pose remains immutable. Three or more
+/// fingers suppress all input until all contacts are released.
 #[derive(Debug)]
 pub struct PreviewCamera {
     saved_position: [f64; 3],
@@ -17,6 +17,9 @@ pub struct PreviewCamera {
     touches: BTreeMap<u64, (f32, f32)>,
     suppressed: bool,
     pan_anchor: Option<(f32, f32)>,
+    pinch_anchor: Option<f32>,
+    /// Only the saved centre and nearby columns with actual CPU meshes.
+    allowed_chunks: BTreeSet<(i32, i32)>,
 }
 
 impl PreviewCamera {
@@ -26,7 +29,12 @@ impl PreviewCamera {
         } else {
             [0.0, 0.0]
         };
+        let centre = (
+            (position[0].floor() as i32) >> 4,
+            (position[2].floor() as i32) >> 4,
+        );
         Self {
+            allowed_chunks: BTreeSet::from([centre]),
             saved_position: position,
             saved_rotation: rotation,
             position,
@@ -34,6 +42,7 @@ impl PreviewCamera {
             touches: BTreeMap::new(),
             suppressed: false,
             pan_anchor: None,
+            pinch_anchor: None,
         }
     }
 
@@ -50,6 +59,41 @@ impl PreviewCamera {
     #[must_use]
     pub fn saved_position(&self) -> [f64; 3] {
         self.saved_position
+    }
+
+    /// Allow travel to a saved neighbour only if that column produced an
+    /// actual mesh. The 3x3 region is fixed until another world is selected.
+    pub fn allow_rendered_chunk(&mut self, chunk: [i32; 2]) -> bool {
+        let centre = (
+            (self.saved_position[0].floor() as i32) >> 4,
+            (self.saved_position[2].floor() as i32) >> 4,
+        );
+        if (chunk[0] - centre.0).abs() > 1 || (chunk[1] - centre.1).abs() > 1 {
+            return false;
+        }
+        self.allowed_chunks.insert((chunk[0], chunk[1]))
+    }
+
+    /// Walk one axis only when the destination has rendered blocks. Otherwise
+    /// stop just inside the edge of the current column, never in unloaded void.
+    fn constrain_axis(&self, proposed: f64, along_x: bool) -> f64 {
+        let current = if along_x {
+            self.position[0]
+        } else {
+            self.position[2]
+        };
+        let (x, z) = if along_x {
+            (proposed, self.position[2])
+        } else {
+            (self.position[0], proposed)
+        };
+        let destination = ((x.floor() as i32) >> 4, (z.floor() as i32) >> 4);
+        if self.allowed_chunks.contains(&destination) {
+            proposed
+        } else {
+            let origin = ((current.floor() as i32) >> 4) as f64 * 16.0;
+            proposed.clamp(origin + 0.1, origin + 15.9)
+        }
     }
 
     /// Restore only the preview camera; never write the player's save.
@@ -70,14 +114,26 @@ impl PreviewCamera {
         Some(((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5))
     }
 
+    /// Distance between two fingers, in physical pixels.
+    fn touch_separation(&self) -> Option<f32> {
+        if self.touches.len() != 2 {
+            return None;
+        }
+        let mut points = self.touches.values();
+        let a = points.next()?;
+        let b = points.next()?;
+        Some((a.0 - b.0).hypot(a.1 - b.1))
+    }
+
     /// Drops transient gesture state when UIKit cancels or resizes contacts.
     pub fn clear(&mut self) {
         self.touches.clear();
         self.suppressed = false;
         self.pan_anchor = None;
+        self.pinch_anchor = None;
     }
 
-    /// Returns true only if the camera orientation actually changed.
+    /// Returns true only when the view position or orientation changed.
     pub fn touch(
         &mut self,
         id: u64,
@@ -88,6 +144,7 @@ impl PreviewCamera {
         if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
             self.touches.remove(&id);
             self.pan_anchor = None;
+            self.pinch_anchor = None;
             if self.touches.is_empty() {
                 self.suppressed = false;
             }
@@ -108,8 +165,10 @@ impl PreviewCamera {
                 self.touches.insert(id, point);
                 if self.touches.len() >= 3 {
                     self.pan_anchor = None;
+                    self.pinch_anchor = None;
                 } else if self.touches.len() == 2 && !self.suppressed {
                     self.pan_anchor = self.touch_midpoint();
+                    self.pinch_anchor = self.touch_separation();
                 }
                 self.suppressed |= self.touches.len() > 1;
                 false
@@ -128,17 +187,34 @@ impl PreviewCamera {
                         .pan_anchor
                         .replace(midpoint)
                         .expect("pan anchor checked");
+                    let altitude_changed = if let (Some(distance), Some(previous_distance)) =
+                        (self.touch_separation(), self.pinch_anchor)
+                    {
+                        self.pinch_anchor = Some(distance);
+                        let delta = (distance - previous_distance).clamp(
+                            -(size.0.min(size.1) as f32) * 0.5,
+                            size.0.min(size.1) as f32 * 0.5,
+                        );
+                        let new_y = (self.position[1]
+                            + f64::from(delta) * 16.0 / f64::from(size.0.min(size.1)))
+                        .clamp(self.saved_position[1] - 16.0, self.saved_position[1] + 16.0);
+                        let changed = new_y != self.position[1];
+                        self.position[1] = new_y;
+                        changed
+                    } else {
+                        false
+                    };
                     if !self.position.iter().all(|v| v.is_finite()) {
                         return false;
                     }
-                    // Pan within the *saved* centre chunk; neighbours only
-                    // provide face occlusion and are not meshed for viewing.
+                    // Pan only across saved columns with retained GPU meshes.
+                    // Pinch adjusts the transient view height separately.
                     let dx = (midpoint.0 - previous.0)
                         .clamp(-(size.0 as f32) * 0.25, size.0 as f32 * 0.25);
                     let dy = (midpoint.1 - previous.1)
                         .clamp(-(size.1 as f32) * 0.5, size.1 as f32 * 0.5);
                     if dx == 0.0 && dy == 0.0 {
-                        return false;
+                        return altitude_changed;
                     }
                     let right = f64::from(dx) * 8.0 / f64::from(size.0);
                     let forward = -f64::from(dy) * 8.0 / f64::from(size.1);
@@ -147,10 +223,13 @@ impl PreviewCamera {
                     let next_z = self.position[2] + yaw_sin * right + yaw_cos * forward;
                     let origin_x = self.saved_position[0].floor().div_euclid(16.0) * 16.0;
                     let origin_z = self.saved_position[2].floor().div_euclid(16.0) * 16.0;
-                    let next_x = next_x.clamp(origin_x + 0.1, origin_x + 15.9);
-                    let next_z = next_z.clamp(origin_z + 0.1, origin_z + 15.9);
-                    let changed = next_x != self.position[0] || next_z != self.position[2];
+                    let next_x = next_x.clamp(origin_x - 15.9, origin_x + 31.9);
+                    let next_z = next_z.clamp(origin_z - 15.9, origin_z + 31.9);
+                    let next_x = self.constrain_axis(next_x, true);
+                    let changed_x = next_x != self.position[0];
                     self.position[0] = next_x;
+                    let next_z = self.constrain_axis(next_z, false);
+                    let changed = altitude_changed || changed_x || next_z != self.position[2];
                     self.position[2] = next_z;
                     return changed;
                 }
@@ -239,6 +318,42 @@ mod tests {
         assert!((-79.9..=-64.1).contains(&z));
         assert_eq!(y, 72.0);
         assert_eq!(camera.rotation(), [90.0, 20.0]);
+    }
+
+    #[test]
+    fn pan_can_enter_a_rendered_neighbour_but_not_an_unmeshed_chunk() {
+        let mut camera = PreviewCamera::new([15.7, 64.0, 8.0], [0.0, 0.0]);
+        camera.touch(1, TouchPhase::Started, (200.0, 200.0), (1000, 500));
+        camera.touch(2, TouchPhase::Started, (400.0, 200.0), (1000, 500));
+        assert!(camera.touch(1, TouchPhase::Moved, (300.0, 200.0), (1000, 500)));
+        assert!(camera.position()[0] <= 15.9);
+        camera.reset_view();
+        assert!(camera.allow_rendered_chunk([1, 0]));
+        assert!(!camera.allow_rendered_chunk([10, 0]));
+        camera.touch(1, TouchPhase::Started, (200.0, 200.0), (1000, 500));
+        camera.touch(2, TouchPhase::Started, (400.0, 200.0), (1000, 500));
+        assert!(camera.touch(1, TouchPhase::Moved, (300.0, 200.0), (1000, 500)));
+        assert!(camera.position()[0] > 16.0);
+        assert_eq!(camera.position()[2], 8.0);
+        assert_eq!(camera.saved_position(), [15.7, 64.0, 8.0]);
+    }
+
+    #[test]
+    fn pinch_changes_only_preview_altitude_with_safe_bounds_and_reset() {
+        let mut camera = PreviewCamera::new([8.0, 64.0, 8.0], [0.0, 0.0]);
+        camera.touch(1, TouchPhase::Started, (300.0, 200.0), (1000, 500));
+        camera.touch(2, TouchPhase::Started, (500.0, 200.0), (1000, 500));
+        assert!(camera.touch(1, TouchPhase::Moved, (200.0, 200.0), (1000, 500)));
+        assert!((camera.position()[1] - 67.2).abs() < 0.001);
+        assert_eq!(camera.rotation(), [0.0, 0.0]);
+        assert_eq!(camera.saved_position(), [8.0, 64.0, 8.0]);
+        for _ in 0..200 {
+            camera.touch(1, TouchPhase::Moved, (0.0, 0.0), (1000, 500));
+            camera.touch(1, TouchPhase::Moved, (1000.0, 500.0), (1000, 500));
+        }
+        assert!((48.0..=80.0).contains(&camera.position()[1]));
+        camera.reset_view();
+        assert_eq!(camera.position(), [8.0, 64.0, 8.0]);
     }
 
     #[test]

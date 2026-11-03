@@ -124,7 +124,9 @@ pub struct TerrainMeshSummary {
 }
 
 /// Count real quads, not padded or uniform-air sections.
-pub fn terrain_mesh_summary(meshes: &[(i32, crate::mesher::SectionMesh)]) -> TerrainMeshSummary {
+pub fn terrain_mesh_summary(
+    meshes: &[((i32, i32, i32), crate::mesher::SectionMesh)],
+) -> TerrainMeshSummary {
     let mut summary = TerrainMeshSummary::default();
     for (_, mesh) in meshes {
         if !mesh.solid.is_empty() || !mesh.translucent.is_empty() {
@@ -136,14 +138,17 @@ pub fn terrain_mesh_summary(meshes: &[(i32, crate::mesher::SectionMesh)]) -> Ter
     summary
 }
 
-/// Meshed sections retain their native terrain vertices for a future GPU
-/// upload. This is a bounded preview of the *saved* initial column only, not
-/// a running world. Saved neighbours are consulted for face occlusion; missing
-/// or ungenerated neighbours and ongoing lighting still need the world streamer.
+/// Read-only GPU staging for up to 3x3 existing saved columns. Each mesh
+/// has its own (chunk x, section y, chunk z) address for Renderer::upload.
+/// No generation, ticks, locks or save modification are performed.
 pub struct PreparedTerrain {
-    pub meshes: Vec<(i32, crate::mesher::SectionMesh)>,
+    pub meshes: Vec<((i32, i32, i32), crate::mesher::SectionMesh)>,
     pub summary: TerrainMeshSummary,
-    /// Saved neighbour columns actually used for edge face culling (0..=8).
+    /// Number of nonempty saved columns included within the vertex budget.
+    pub meshed_columns: usize,
+    /// Saved columns skipped when the aggregate vertex budget is exhausted.
+    pub skipped_columns: usize,
+    /// Saved neighbour columns actually found on disk (0..=8).
     pub saved_neighbors: usize,
 }
 
@@ -216,6 +221,27 @@ fn read_existing_saved_column(
     Ok(Some(column))
 }
 
+/// Centre-first ordering keeps at least the saved player's own column
+/// visible when the bounded mobile preview runs out of mesh budget.
+/// The four adjacent columns precede the diagonals.
+pub fn saved_terrain_mesh_targets(region: &crate::mesher::Region) -> Vec<(usize, usize)> {
+    const ORDER: [(usize, usize); 9] = [
+        (1, 1),
+        (1, 0),
+        (0, 1),
+        (2, 1),
+        (1, 2),
+        (0, 0),
+        (2, 0),
+        (0, 2),
+        (2, 2),
+    ];
+    ORDER
+        .into_iter()
+        .filter(|&(x, z)| region[z][x].is_some())
+        .collect()
+}
+
 /// Run the game's native CPU mesher over the already validated initial column
 /// with vanilla models, lighting, palette IDs and biome tint logic.
 /// This performs no GPU operations or save writes and can run on a worker.
@@ -229,10 +255,9 @@ pub fn mesh_prepared_column(
     use crate::mesher::Mesher;
     use horizon_core::biome::{BiomeZoom, obfuscate_seed};
 
-    let column = region[1][1]
-        .as_deref()
-        .ok_or("No centre chunk for terrain meshing")?;
-    let borrowed = crate::mesher::borrow(region);
+    if region[1][1].is_none() {
+        return Err("No centre chunk for terrain meshing".into());
+    }
     let mut mesher = Mesher {
         nether_shading: false,
         shader_pack_lighting: false,
@@ -246,23 +271,61 @@ pub fn mesh_prepared_column(
         smooth_lighting: true,
         cutout_leaves: true,
     };
+    // The same cap applies to all nine columns combined, not per column.
+    const MAX_PREVIEW_VERTICES: usize = 1_048_576;
     let mut meshes = Vec::new();
     let mut emitted_vertices = 0usize;
-    // One-column iOS preview only: keep CPU geometry under ~24 MiB of vertices.
-    const MAX_PREVIEW_VERTICES: usize = 1_048_576;
-    for sy in mesh_section_candidates(column) {
-        let mut mesh = mesher.mesh(&borrowed, sy);
-        if mesh.solid.is_empty() && mesh.translucent.is_empty() {
+    let mut meshed_columns = 0;
+    let mut skipped_columns = 0;
+    let mut exhausted = false;
+    for (ix, iz) in saved_terrain_mesh_targets(region) {
+        let column = region[iz][ix].as_deref().expect("saved mesh target");
+        if exhausted {
+            skipped_columns += 1;
             continue;
         }
-        emitted_vertices = emitted_vertices
-            .saturating_add(mesh.solid.len())
-            .saturating_add(mesh.translucent.len());
-        if emitted_vertices > MAX_PREVIEW_VERTICES {
-            return Err("Saved terrain preview exceeds the bounded CPU mesh budget".into());
+        // Reframe the stored 3x3 snapshot so each saved column is the native
+        // mesher's centre. Off-grid neighbours are absent, never generated.
+        let local = std::array::from_fn(|z| {
+            std::array::from_fn(|x| {
+                let rx = ix as isize + x as isize - 1;
+                let rz = iz as isize + z as isize - 1;
+                if (0..3).contains(&rx) && (0..3).contains(&rz) {
+                    region[rz as usize][rx as usize].as_deref()
+                } else {
+                    None
+                }
+            })
+        });
+        let mut column_meshes = Vec::new();
+        let mut column_vertices = 0usize;
+        for sy in mesh_section_candidates(column) {
+            let mut mesh = mesher.mesh(&local, sy);
+            if mesh.solid.is_empty() && mesh.translucent.is_empty() {
+                continue;
+            }
+            column_vertices = column_vertices
+                .saturating_add(mesh.solid.len())
+                .saturating_add(mesh.translucent.len());
+            if emitted_vertices.saturating_add(column_vertices) > MAX_PREVIEW_VERTICES {
+                if ix == 1 && iz == 1 {
+                    return Err("Saved centre column exceeds the mobile terrain mesh budget".into());
+                }
+                // Avoid leaving incomplete neighbour columns floating in the
+                // world: discard the entire neighbour if it cannot fit.
+                exhausted = true;
+                skipped_columns += 1;
+                column_meshes.clear();
+                break;
+            }
+            mesh.sort_solid();
+            column_meshes.push(((column.x, sy, column.z), mesh));
         }
-        mesh.sort_solid();
-        meshes.push((sy, mesh));
+        if !column_meshes.is_empty() {
+            emitted_vertices += column_vertices;
+            meshed_columns += 1;
+            meshes.extend(column_meshes);
+        }
     }
     let summary = terrain_mesh_summary(&meshes);
     let saved_neighbors = region
@@ -274,6 +337,8 @@ pub fn mesh_prepared_column(
     Ok(PreparedTerrain {
         meshes,
         summary,
+        meshed_columns,
+        skipped_columns,
         saved_neighbors,
     })
 }
@@ -808,13 +873,9 @@ pub fn safe_preview_rotation(rotation: [f32; 2]) -> [f32; 2] {
 /// the same `TerrainMeshingResources`. This must run on Winit/UIKit's thread
 /// while the game's display surface is valid. Only saved static terrain is
 /// staged: no world ticks or save modifications take place.
-pub fn upload_prepared_terrain(
-    renderer: &mut Renderer,
-    column: &crate::chunk::Chunk,
-    prepared: &PreparedTerrain,
-) {
-    for (sy, mesh) in &prepared.meshes {
-        renderer.upload((column.x, *sy, column.z), mesh);
+pub fn upload_prepared_terrain(renderer: &mut Renderer, prepared: &PreparedTerrain) {
+    for (key, mesh) in &prepared.meshes {
+        renderer.upload(*key, mesh);
     }
 }
 
@@ -1241,6 +1302,29 @@ mod tests {
         assert_eq!(nearby[1][1].as_ref().unwrap().block(128, 71, -65).0, 1);
         assert_eq!(nearby[1][2].as_ref().unwrap().block(144, 71, -65).0, 1);
         assert!(nearby[0][1].is_none());
+        // Mesh the centre first, then saved orthogonal neighbours. Never
+        // include chunks which are absent on disk or outside the 3x3 bounds.
+        assert_eq!(saved_terrain_mesh_targets(&nearby), vec![(1, 1), (2, 1)]);
+        let mut complete = nearby.clone();
+        for row in &mut complete {
+            for column in row {
+                *column = nearby[1][1].clone();
+            }
+        }
+        assert_eq!(
+            saved_terrain_mesh_targets(&complete),
+            vec![
+                (1, 1),
+                (1, 0),
+                (0, 1),
+                (2, 1),
+                (1, 2),
+                (0, 0),
+                (2, 0),
+                (0, 2),
+                (2, 2)
+            ]
+        );
         assert_eq!(before, fs::read(&file).unwrap());
         assert!(!root.join("session.lock").exists());
         fs::remove_dir_all(root).unwrap();
@@ -1305,9 +1389,18 @@ mod tests {
         let vertex = TerrainVertex::new([0.0, 0.0, 0.0], [0.0, 0.0], 0, 0, 0);
         one.solid.extend([vertex; 8]);
         one.translucent.extend([vertex; 4]);
-        let summary = terrain_mesh_summary(&[(8, one), (9, SectionMesh::default())]);
-        assert_eq!(summary.sections, 1);
-        assert_eq!(summary.solid_quads, 2);
+        let mut neighbour = SectionMesh::default();
+        neighbour.solid.extend([vertex; 4]);
+        let meshes = [
+            ((8, 8, -5), one),
+            ((9, 8, -5), neighbour),
+            ((9, 9, -5), SectionMesh::default()),
+        ];
+        let summary = terrain_mesh_summary(&meshes);
+        assert_eq!(meshes[0].0, (8, 8, -5));
+        assert_eq!(meshes[1].0, (9, 8, -5));
+        assert_eq!(summary.sections, 2);
+        assert_eq!(summary.solid_quads, 3);
         assert_eq!(summary.translucent_quads, 1);
         assert_eq!(terrain_mesh_summary(&[]).sections, 0);
         // Rendering resources and CPU meshes move to and from the iOS worker.

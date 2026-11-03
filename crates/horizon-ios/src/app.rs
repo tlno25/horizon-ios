@@ -178,6 +178,11 @@ impl Shell {
             self.fail_horizon_renderer("Horizon window was not created");
             return;
         };
+        let title_root = crate::title_resources_root(
+            crate::ENGINE_HOME.get().map(|home| home.as_path()),
+            crate::CORE_LOAD.state() == 2,
+            self.renderer_smoke || crate::horizon_ios_renderer_smoke_enabled() != 0,
+        );
         let job = std::thread::Builder::new()
             .name("Horizon iOS GPU preparation".to_owned())
             .spawn(move || {
@@ -185,14 +190,30 @@ impl Shell {
                 // window surface is neither created nor touched on this thread.
                 // Catch Rust panics so the event loop receives a failure, too.
                 let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    report_renderer_stage("Horizon renderer: preparing boot atlas offscreen");
-                    let atlas = horizon_client::hud::HudAtlas::boot();
+                    // Once the shared block registry is loaded, draw with
+                    // Minecraft's prepared UI atlas and title panorama.
+                    // The resource-free Simulator smoke remains unchanged.
+                    let title = if let Some(root) = title_root.as_deref() {
+                        report_renderer_stage("Horizon renderer: loading prepared title textures");
+                        Some((
+                            horizon_client::hud::HudAtlas::build(root)
+                                .map_err(|error| error.to_string())?,
+                            horizon_client::gfx::panorama::Faces::load(root),
+                        ))
+                    } else {
+                        None
+                    };
+                    let boot = title.is_none().then(horizon_client::hud::HudAtlas::boot);
+                    let (atlas, panorama) = match title.as_ref() {
+                        Some((atlas, panorama)) => (atlas, Some(panorama)),
+                        None => (boot.as_ref().expect("boot atlas built"), None),
+                    };
                     report_renderer_stage("Horizon renderer: compiling GPU pipelines offscreen");
                     horizon_client::game_startup::loading_renderer(
                         window,
                         true,
-                        Some(&atlas),
-                        None,
+                        Some(atlas),
+                        panorama,
                         None,
                         GraphicsApi::Auto,
                     )

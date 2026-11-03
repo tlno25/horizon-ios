@@ -243,6 +243,25 @@ pub extern "C" fn horizon_ios_core_load_state() -> u32 {
     0
 }
 
+/// The title preview reads from the same prepared-resource root as the core
+/// registry, but never touches private game files during resource-free CI
+/// smoke tests. Constructing the GPU renderer remains on its worker thread.
+#[must_use]
+pub fn title_resources_root(
+    home: Option<&std::path::Path>,
+    core_ready: bool,
+    diagnostic_smoke: bool,
+) -> Option<std::path::PathBuf> {
+    if !core_ready || diagnostic_smoke {
+        return None;
+    }
+    Some(
+        home?
+            .join(".local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION),
+    )
+}
+
 /// Execute the first real CPU asset loading stage used by the native game.
 /// May take time: call only from a background worker, never the UIKit thread.
 /// One successful load is cached for the lifetime of the process; an invalid

@@ -9,50 +9,42 @@ probe clears the background blue behind the SwiftUI panel.
 
 ## Building entirely on GitHub Actions (no Mac or Xcode needed locally)
 
-GitHub-hosted `macos-15` runs on Apple Silicon and includes Xcode. Once
-`.github/workflows/ios-simulator.yml` has been committed and pushed to the
-**default `ios` branch**, open the GitHub repository's **Actions** tab,
-choose **Horizon iOS Build**, and select **Run workflow** / branch **ios**.
-The workflow also runs automatically for matching changes pushed to `ios` and
-on pull requests that change the iOS project.
+The **Horizon iOS Quick Checks** workflow runs Rust, Python,
+C ABI and portability tests automatically on Ubuntu for relevant `ios` pushes.
+It does **not** build a macOS/iOS app or use a macOS runner.
 
-The `simulator-build` job runs Xcode and attempts to launch the app in an iPhone
-Simulator. Regardless of whether the simulator smoke step passes, the build
-artifact is uploaded immediately after a **successful build**. On the workflow
-run page, open the **Artifacts** section and download:
+To produce an iPhone/iPad app, open
+[Horizon iOS Manual Build](https://github.com/tlno25/horizon-ios/actions/workflows/ios-simulator.yml),
+select **Run workflow**, choose branch **ios**, and select `build_target`:
 
-- `horizon-ios-simulator-app`: ZIP containing `HorizonIOS-simulator-unsigned.zip`
-  (an unsigned `HorizonIOS.app` for **arm64 iOS Simulator only**, not a real
-  iPhone/iPad). Extract the nested ZIP to inspect/use the app bundle on a Mac.
-- `horizon-ios-simulator-preview`: optional screenshot from the Simulator run.
-  The simulator job writes `Library/Caches/horizon-ios-graphics.json`
-  inside the app container and checks for a ready GPU (`state=2`) **and** an
-  initialized game profile (engine state 1 or 2, nonempty player name). A valid
-  screenshot alone cannot hide a failed Metal or profile initialization.
+- **device** (default): build an unsigned arm64 iPhone/iPad IPA with Xcode.
+  Download the `horizon-ios-unsigned-ipa` artifact, extract GitHub's outer ZIP,
+  and use the enclosed **`horizon-ios-unsigned.ipa`**. The IPA is **unsigned**;
+  signing with your own credentials is required before installing it.
+- **simulator**: build x86_64 `HorizonIOS.app`, run the iPhone Simulator,
+  verify that Metal presented a frame, and upload a screenshot and diagnostics.
+  Download the `horizon-ios-simulator-app` artifact containing the Simulator
+  `.app.zip`. A Simulator binary cannot run on a physical iPhone.
+- **both**: build both artifacts. This consumes more macOS runner minutes and
+  should be used only when both are needed.
 
-**An unsigned real-device IPA is now built by default** on pushes to the `ios`
-branch and on manual workflow runs (the `build_device` checkbox is enabled by
-default). Pull requests still build and smoke-test the Simulator app, without
-producing a device IPA. The `device-build` job compiles for `iphoneos` arm64
-with code signing disabled, then packages `Payload/HorizonIOS.app` into the
-exact file **`horizon-ios-unsigned.ipa`**. It checks the arm64 executable,
-unsigned status, bundle structure, permissions, and ZIP integrity before
-uploading the artifact `horizon-ios-unsigned-ipa`.
+Enable `renderer_probe` only when investigating the experimental **real Horizon
+GPU boot renderer**. The Simulator then checks the shared Horizon pipeline
+and fails if it cannot present a frame. This diagnostic does **not** load a
+Minecraft world. The ordinary Metal smoke test remains available without it.
 
-To get it: open [Horizon iOS Build](https://github.com/tlno25/horizon-ios/actions/workflows/ios-simulator.yml),
-open a successful run, then download **`horizon-ios-unsigned-ipa`** from
-**Artifacts**. Extract GitHub's outer artifact ZIP; the contained file is
-`horizon-ios-unsigned.ipa`. The IPA is for actual iPhone/iPad hardware,
-**not the Simulator**. It is intentionally **unsigned**, so it cannot be
-installed as-is. A separate signing process (for example using your own
-Apple ID in an appropriate sideloading tool) is required. No Apple signing
-credentials are stored in this repository or Actions workflow.
+The manual workflow builds using `macos-15-intel` and cross-compiles to the
+selected iOS architecture. Xcode Debug uses Cargo's `fast` profile to reduce
+link and compilation time. Packages and screenshots are retained for 7 days.
+**No macOS build is triggered automatically by a push or pull request.**
+The separate **Horizon iOS Engine Compatibility** check is also manual-only.
 
-The IPA currently contains the Horizon shell, Metal integration probe,
-shared client profile, private resource importer, block registry loading and
-an opt-in shared Horizon renderer preview, **not playable Minecraft**. Minecraft engine loading and gameplay will be added in
-later iterations. Neither GitHub nor your Windows/Linux computer needs a
-local Xcode installation to produce the unsigned IPA through Actions.
+The IPA currently contains the Horizon shell, Metal probe, shared-client
+profile, private resource importer, block-registry loader and an optional
+shared Horizon renderer preview with the prepared title panorama and GUI atlas,
+**not playable Minecraft**. The resource-free CI probe continues to use the
+lightweight boot atlas. Windows/Linux
+computers do not need local Xcode to download the unsigned IPA.
 
 ## Build on macOS
 

@@ -340,7 +340,7 @@ private struct HomeView: View {
                             .textSelection(.enabled)
                     }
 
-                    Text("The Metal probe renders the blue background. You can optionally switch to the real Horizon boot renderer after loading game data. This does not start Minecraft gameplay.")
+                    Text("The Metal probe renders the blue background. After loading game data, Preview Horizon renderer shows the prepared Minecraft title panorama. This does not start Minecraft gameplay.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

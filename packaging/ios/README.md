@@ -68,8 +68,13 @@ payloads are rejected. After the core block registry is loaded, the optional res
 also uses Horizon's existing `save::decode_with` to build the full in-memory
 block/biome column for this one saved chunk. It reports the registry's numeric
 block-state ID below the player, numeric biome ID, resident section count and
-approximate section-memory usage. The temporary column is then dropped; no
-terrain buffers are retained, meshed, sent to Metal or modified on disk.
+approximate section-memory usage. After validation, the Winit shell now
+retains **at most one decoded initial column** in Rust memory for the next
+terrain stage. The column is cleared on a new world inspection, title
+navigation, or suspension. It is not yet meshed, sent to Metal, or modified
+on disk. This keeps native-Rust ownership of the game's data, as seen in the
+separate [heyskylo/horizon-ios](https://github.com/heyskylo/horizon-ios)
+experiment, without copying its app entry point or implementation.
 Custom world biome packs are not yet resolved during this preflight, so IDs
 are based on the bundled vanilla biome registry; custom-biome mappings must
 be integrated before actual gameplay. This does **not** generate missing

@@ -29,7 +29,7 @@ enum ShellEvent {
     RendererCompleted,
     WorldInspected {
         generation: u64,
-        result: Result<horizon_client::game_startup::WorldInspection, String>,
+        result: Result<horizon_client::game_startup::PreparedWorld, String>,
     },
 }
 
@@ -151,6 +151,9 @@ struct Shell {
     title_tap: TitleTap,
     world_inspection_pending: bool,
     world_inspection_generation: u64,
+    /// At most one decoded saved column, prepared on the file-I/O worker and
+    /// owned by UIKit's Winit thread. Not yet attached to the terrain renderer.
+    initial_column: Option<horizon_client::chunk::Chunk>,
     /// GPU pipelines are compiled offscreen on a worker. Winit/SwiftUI must
     /// remain responsive during this work; only surface attachment is on UIKit.
     renderer_job: Option<JoinHandle<Result<PreparedRenderer, String>>>,
@@ -177,6 +180,7 @@ impl Shell {
             return;
         };
         self.world_inspection_pending = true;
+        self.initial_column = None;
         self.world_inspection_generation = self.world_inspection_generation.wrapping_add(1);
         let generation = self.world_inspection_generation;
         let saves = home.join("saves");
@@ -199,7 +203,10 @@ impl Shell {
                         Some(horizon_client::game_startup::InitialChunkDiskState::Saved { .. })
                     );
                     let Some(core) = crate::CORE_ASSETS.get().filter(|_| native_ready) else {
-                        return Ok(basic);
+                        return Ok(horizon_client::game_startup::PreparedWorld {
+                            inspection: basic,
+                            initial_column: None,
+                        });
                     };
                     let biomes = if let Some(biomes) = crate::PREVIEW_BIOMES.get() {
                         biomes
@@ -211,7 +218,7 @@ impl Shell {
                             .get()
                             .ok_or("Could not cache prepared biome tables")?
                     };
-                    horizon_client::game_startup::inspect_existing_world_with_registry(
+                    horizon_client::game_startup::prepare_existing_world_with_registry(
                         &saves,
                         &folder,
                         core.registry,
@@ -487,6 +494,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
         self.title = None;
         self.title_tap.clear();
         self.world_inspection_pending = false;
+        self.initial_column = None;
         self.world_inspection_generation = self.world_inspection_generation.wrapping_add(1);
         crate::RENDERER_SWITCH.reset();
         crate::set_graphics_state(4);
@@ -621,6 +629,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
                                     } else if self.title.as_mut().is_some_and(|title| {
                                         title.screen.preview_tap(pointer.0, pointer.1, view)
                                     }) {
+                                        self.initial_column = None;
                                         window.request_redraw();
                                     }
                                 } else if let Some((dy, start)) = swipe {
@@ -655,7 +664,15 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 {
                     self.world_inspection_pending = false;
                     match result {
-                        Ok(world) => {
+                        Ok(prepared) => {
+                            let horizon_client::game_startup::PreparedWorld {
+                                inspection: world,
+                                initial_column,
+                            } = prepared;
+                            // The Winit thread owns the native column after the
+                            // worker finishes. Later stages will transfer it
+                            // into the terrain/chunk manager, not save it.
+                            self.initial_column = initial_column;
                             let safe_name: String = world
                                 .name
                                 .chars()
@@ -671,8 +688,9 @@ impl ApplicationHandler<ShellEvent> for Shell {
                             let resident = world.resident_chunk_preview.as_ref().map_or(
                                 " No resident block/biome ID conversion available.".to_owned(),
                                 |r| format!(
-                                    " Native resident chunk: {} sections, block state ID {}, biome ID {}, approx. {} section heap bytes. No terrain rendered.",
+                                    " Native resident chunk: {} sections, block state ID {}, biome ID {}, approx. {} section heap bytes. Held: {}. No terrain rendered.",
                                     r.resident_sections, r.block_state_id, r.biome_id, r.heap_bytes,
+                                    self.initial_column.is_some(),
                                 ),
                             );
                             let disk_probe = match &world.initial_chunk_disk {

@@ -52,10 +52,25 @@ pub struct ResidentChunkPreview {
     pub heap_bytes: usize,
 }
 
-/// Construct a resident `Chunk` with the same decoder used for gameplay,
-/// then return only bounded diagnostic metadata. The Anvil path has already
-/// been verified by `inspect_saved_initial_chunk` below, preventing linked
-/// region and external payload files from being silently followed.
+/// A read-only prepared world keeps exactly one fully decoded initial column
+/// for the future native terrain renderer. No ticks, session lock, save writer
+/// or gameplay state has been created.
+pub struct PreparedWorld {
+    pub inspection: WorldInspection,
+    pub initial_column: Option<crate::chunk::Chunk>,
+}
+
+impl std::fmt::Debug for PreparedWorld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedWorld")
+            .field("inspection", &self.inspection)
+            .field("has_initial_column", &self.initial_column.is_some())
+            .finish()
+    }
+}
+
+/// Compatibility metadata wrapper: callers not retaining the resident column
+/// receive only the preview metadata and release the decoded chunk.
 pub fn decode_saved_initial_chunk_preview(
     world: &Path,
     chunk: [i32; 2],
@@ -63,6 +78,23 @@ pub fn decode_saved_initial_chunk_preview(
     registry: &horizon_world::registry::BlockRegistry,
     biomes: &crate::biome::Biomes,
 ) -> Result<Option<ResidentChunkPreview>> {
+    Ok(
+        load_saved_initial_chunk_preview(world, chunk, player_position, registry, biomes)?
+            .map(|(preview, _column)| preview),
+    )
+}
+
+/// Construct a resident `Chunk` with the same decoder used for gameplay,
+/// then return only bounded diagnostic metadata. The Anvil path has already
+/// been verified by `inspect_saved_initial_chunk` below, preventing linked
+/// region and external payload files from being silently followed.
+pub fn load_saved_initial_chunk_preview(
+    world: &Path,
+    chunk: [i32; 2],
+    player_position: [f64; 3],
+    registry: &horizon_world::registry::BlockRegistry,
+    biomes: &crate::biome::Biomes,
+) -> Result<Option<(ResidentChunkPreview, crate::chunk::Chunk)>> {
     use horizon_core::position::ChunkPos;
     use horizon_world::{nbt::Limits, region::RegionFile};
 
@@ -102,13 +134,16 @@ pub fn decode_saved_initial_chunk_preview(
     }
     let x = x.floor() as i32;
     let z = z.floor() as i32;
-    Ok(Some(ResidentChunkPreview {
-        chunk,
-        resident_sections: column.sections.len(),
-        block_state_id: column.block(x, feet_y, z).0,
-        biome_id: column.biome(x, feet_y, z),
-        heap_bytes: column.heap_bytes(),
-    }))
+    Ok(Some((
+        ResidentChunkPreview {
+            chunk,
+            resident_sections: column.sections.len(),
+            block_state_id: column.block(x, feet_y, z).0,
+            biome_id: column.biome(x, feet_y, z),
+            heap_bytes: column.heap_bytes(),
+        },
+        column,
+    )))
 }
 
 /// Read the first existing chunk using the game's read-only Anvil decoder.
@@ -288,32 +323,48 @@ pub fn inspect_existing_world(saves: &Path, folder: &str) -> Result<WorldInspect
     })
 }
 
-/// Extend a verified read-only world preflight with the gameplay decoder's
-/// native internal block/biome IDs. This reads only the initial saved column;
-/// other dimensions and missing chunks are intentionally left uninitialized.
+/// Extend a verified preflight with one resident column for a future terrain
+/// pipeline. Existing save/region compatibility checks run before decoding.
+pub fn prepare_existing_world_with_registry(
+    saves: &Path,
+    folder: &str,
+    registry: &horizon_world::registry::BlockRegistry,
+    biomes: &crate::biome::Biomes,
+) -> Result<PreparedWorld> {
+    let mut inspection = inspect_existing_world(saves, folder)?;
+    let mut initial_column = None;
+    if inspection.dimension == "minecraft:overworld"
+        && matches!(
+            inspection.initial_chunk_disk,
+            Some(InitialChunkDiskState::Saved { .. })
+        )
+        && let (Some(chunk), Some(position)) = (inspection.initial_chunk, inspection.saved_position)
+        && let Some((summary, column)) = load_saved_initial_chunk_preview(
+            &saves.join(folder),
+            chunk,
+            position,
+            registry,
+            biomes,
+        )?
+    {
+        inspection.resident_chunk_preview = Some(summary);
+        initial_column = Some(column);
+    }
+    Ok(PreparedWorld {
+        inspection,
+        initial_column,
+    })
+}
+
+/// Read-only metadata compatibility API: decode and immediately release the
+/// in-memory column (the iOS shell uses `prepare_existing_world_with_registry`).
 pub fn inspect_existing_world_with_registry(
     saves: &Path,
     folder: &str,
     registry: &horizon_world::registry::BlockRegistry,
     biomes: &crate::biome::Biomes,
 ) -> Result<WorldInspection> {
-    let mut world = inspect_existing_world(saves, folder)?;
-    if world.dimension == "minecraft:overworld"
-        && matches!(
-            world.initial_chunk_disk,
-            Some(InitialChunkDiskState::Saved { .. })
-        )
-        && let (Some(chunk), Some(position)) = (world.initial_chunk, world.saved_position)
-    {
-        world.resident_chunk_preview = decode_saved_initial_chunk_preview(
-            &saves.join(folder),
-            chunk,
-            position,
-            registry,
-            biomes,
-        )?;
-    }
-    Ok(world)
+    Ok(prepare_existing_world_with_registry(saves, folder, registry, biomes)?.inspection)
 }
 
 /// Load the pinned block registry, block facts and vanilla block tags.
@@ -698,6 +749,21 @@ mod tests {
             preview.resident_chunk_preview.as_ref().map(|c| c.biome_id),
             Some(1)
         );
+        let prepared =
+            prepare_existing_world_with_registry(&saves, "Test", &registry, &biomes).unwrap();
+        assert_eq!(
+            prepared.inspection.resident_chunk_preview,
+            preview.resident_chunk_preview
+        );
+        // The filesystem worker transports this to the Winit/UIKit thread.
+        fn assert_worker_send<T: Send>() {}
+        assert_worker_send::<PreparedWorld>();
+        let column = prepared
+            .initial_column
+            .expect("retains decoded native column");
+        assert_eq!([column.x, column.z], [8, -5]);
+        assert_eq!(column.block(128, 71, -65).0, 1);
+        assert_eq!(column.biome(128, 71, -65), 1);
         assert_eq!(original, fs::read(&source).unwrap());
         assert_eq!(original_region, fs::read(&region_path).unwrap());
         assert!(!world.join("session.lock").exists());
@@ -773,6 +839,17 @@ mod tests {
         assert!(result.heap_bytes < 2 * 1024 * 1024);
         assert_eq!(fs::read(&region).unwrap(), original);
         assert!(!root.join("session.lock").exists());
+        assert!(
+            load_saved_initial_chunk_preview(
+                &root,
+                [9, -5],
+                [144.0, 72.0, -64.25],
+                &registry,
+                &biomes,
+            )
+            .unwrap()
+            .is_none()
+        );
         assert!(
             decode_saved_initial_chunk_preview(
                 &root,

@@ -15,6 +15,7 @@ on:
           - simulator
           - both
           - game
+          - game-simulator
         required: true
         default: device
       simulator_smoke:
@@ -225,4 +226,66 @@ jobs:
           name: horizon-ios-native-game-ipa
           path: ${{ runner.temp }}/horizon-ios-artifacts/Horizon-game-unsigned.ipa
           if-no-files-found: error
+          retention-days: 7
+
+
+  # Distinct x86_64 Simulator app for runtime inspection of the actual Rust
+  # gameplay executable. Does not imply a working game without player assets.
+  game-simulator-build:
+    if: ${{ inputs.build_target == 'game-simulator' }}
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+      HORIZON_TELEMETRY_URL: "off"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust target for Intel iOS Simulator
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+          targets: x86_64-apple-ios
+      - name: Cache native game Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: horizon-ios-game-simulator
+          cache-on-failure: true
+      - name: Build real Horizon game for iPhone Simulator (x86_64)
+        run: |
+          cargo build --release --locked --target x86_64-apple-ios -p horizon-client --no-default-features --features audio --bin horizon-client
+      - name: Package native game Simulator .app without Minecraft resources
+        run: |
+          set -euo pipefail
+          target="target/x86_64-apple-ios/release/horizon-client"
+          xcrun lipo -archs "$target" | grep -qw x86_64
+          python3 packaging/ios/package_native_game_simulator.py \
+            --binary "$target" \
+            --output-app "$RUNNER_TEMP/horizon-ios-game-artifacts/HorizonGame.app"
+          ditto -c -k --keepParent \
+            "$RUNNER_TEMP/horizon-ios-game-artifacts/HorizonGame.app" \
+            "$RUNNER_TEMP/horizon-ios-game-artifacts/HorizonGame-simulator-unsigned.zip"
+      - name: Upload the real game Simulator bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-ios-game-simulator-app
+          path: ${{ runner.temp }}/horizon-ios-game-artifacts/HorizonGame-simulator-unsigned.zip
+          if-no-files-found: error
+          retention-days: 7
+      - name: Launch actual game executable and capture iOS runtime diagnostics
+        timeout-minutes: 8
+        env:
+          HORIZON_NATIVE_SIMULATOR_APP: ${{ runner.temp }}/horizon-ios-game-artifacts/HorizonGame.app
+        run: bash packaging/ios/tests/native_game_simulator_smoke.sh
+      - name: Upload game Simulator screenshot and native logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-ios-game-simulator-diagnostics
+          path: |
+            ${{ runner.temp }}/horizon-ios-game-simulator-screen.png
+            ${{ runner.temp }}/horizon-ios-game-simulator-console.log
+          if-no-files-found: ignore
           retention-days: 7

@@ -13,6 +13,7 @@ Keep the existing SwiftUI/Winit shell and its device workflow unchanged. Add a *
 3. Add a **manual-only** GitHub Actions build target for the actual game, using the macOS Apple SDK and uploading a distinguishable unsigned game IPA. Keep the existing shell IPA pathway intact.
 4. Validate unit tests and Rust portability locally; push the feature branch; dispatch the macOS build and inspect any failures. Address compiler/toolchain issues from real logs.
 5. Continue mobile input, resource import, lifecycle, rendering and game-loop integration only when evidence proves earlier milestones. Real-device gameplay and signed installation remain separate acceptance gates.
+6. Add an explicit, separate x86_64 Simulator game app target and an opt-in runtime diagnostic job, rather than assuming an unsigned device IPA proves a runnable app.
 
 ## Acceptance
 

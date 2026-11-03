@@ -11,6 +11,17 @@ diagnostic shell `horizon-ios-unsigned.ipa`. The `both` option retains its
 existing meaning (device shell + Simulator shell). None of the expensive macOS
 workflows run automatically after each push.
 
+The same manual workflow also offers `build_target=game-simulator`.
+This separately compiles **the real game executable** for Intel iPhone
+Simulator (`x86_64-apple-ios`), uploads
+`horizon-ios-game-simulator-app`, then attempts a boot/install/launch with
+no prepared Minecraft resources. It uploads an image and native logs in
+`horizon-ios-game-simulator-diagnostics` for inspection. A successful launch
+only demonstrates a Simulator app startup, **not** playable worlds or a
+correct Metal frame; examine the screenshot and logs before claiming more.
+This intentionally costs another manual macOS build and is not part of
+`build_target=both`.
+
 The native game uses Horizon's existing `loading_app` and gameplay code
 rather than a second, rewritten SwiftUI simulation. It enters its **own**
 writable app sandbox `Documents/` before loading resources, settings or saves.

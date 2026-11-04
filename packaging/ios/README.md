@@ -54,6 +54,38 @@ Metal or loading Minecraft resources. After pressing Download, the launcher:
    the end user in a publisher-configured build. This runtime handoff still
    needs iPhone and Simulator validation.
 
+### User-hosted HTTPS ZIP fallback and interrupted-download recovery
+
+As in the heyskylo/horizon-ios reference launcher, the native SwiftUI game
+launcher now also exposes an **optional personal HTTPS ZIP link** with an
+optional SHA-256 field. When a publisher has not set a default manifest URL,
+this link form opens automatically instead of leaving a broken Download
+button. A player can retrieve an archive they legally prepared and host
+privately, without importing or moving files in iOS Files.app.
+
+Both configured one-tap downloads and private-link downloads use the same
+URLSessionDownloadTask, the 2 GiB limit, and Rust's checked installer.
+A publisher-configured manifest requires an exact SHA-256 and byte count;
+a personal link may omit the checksum but then HTTPS and the Rust ZIP
+structure/version/symlink/path checks are the only integrity safeguards.
+Do not install ZIPs from sources you do not trust.
+
+When a server supports HTTP byte ranges and ETag/Last-Modified, iOS can
+return download resume data on an interrupted or canceled transfer. The
+launcher saves this in its private cache, keyed to the exact URL,
+checksum and expected length, and uses it on the next attempt.
+A file that has been validated and installed clears that cache.
+The transfer requests bounded iOS background execution time and saves
+resume information if the background time expires. This is **not** a claim
+that a transfer will continue indefinitely while the app is suspended,
+and servers without Range support may require a fresh download.
+
+The third-party URL found in the reference implementation is intentionally
+**not embedded or trusted as a default Minecraft asset provider**. Public
+redistribution of proprietary game files requires appropriate rights.
+A publisher-configured build still offers the cleanest one-button
+experience without any user link input.
+
 **Publisher setup is still required:** Set the Actions repository variable
 `HORIZON_IOS_RESOURCES_MANIFEST_URL` to an HTTPS JSON file you are authorized
 to distribute. The release workflow writes it into the generated game's

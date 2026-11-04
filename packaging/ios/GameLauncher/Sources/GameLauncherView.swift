@@ -4,7 +4,8 @@ import SwiftUI
 import UIKit
 
 /// The publisher supplies a JSON manifest URL once when making the app.
-/// Players never have to navigate Files or paste an archive URL.
+/// A configured publisher build needs no folder navigation or URL entry.
+/// Players may also supply their own private HTTPS link if unconfigured.
 private struct GameFilesManifest: Decodable {
     let minecraft: String
     let url: URL
@@ -31,8 +32,15 @@ private struct DownloadProblem: LocalizedError {
     init(_ value: String) { errorDescription = value }
 }
 
-/// A single active download; the Rust importer owns ZIP extraction and all
-/// resource path/version checks. No game data is shipped inside this framework.
+/// One active transfer, either from a publisher-provided, integrity-pinned
+/// manifest or from the player's own HTTPS ZIP link. Both use the same checked
+/// Rust installer and the same Documents sandbox as the real game.
+private struct GameDownloadSource {
+    let url: URL
+    let sha256: String?
+    let size: Int64?
+}
+
 @MainActor
 final class NativeGameDownload: NSObject, ObservableObject {
     @Published private(set) var message = ""
@@ -43,19 +51,67 @@ final class NativeGameDownload: NSObject, ObservableObject {
     @Published private(set) var installed = false
 
     private var session: URLSession?
-    private var manifest: GameFilesManifest?
+    private var activeTask: URLSessionDownloadTask?
+    private var source: GameDownloadSource?
     private var generation = UUID()
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private nonisolated static let limit: Int64 = 2 * 1024 * 1024 * 1024
+
+    private struct PausedDownload: Codable {
+        let key: String
+        let data: Data
+    }
+
+    private static var resumeFile: URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("horizon-game-download-resume.plist")
+    }
+
+    private static func resumeKey(for source: GameDownloadSource) -> String {
+        let identity = "\(source.url.absoluteString)\n\(source.sha256 ?? "")\n\(source.size.map { String($0) } ?? "")"
+        return SHA256.hash(data: Data(identity.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func saveResume(_ data: Data, key: String) {
+        guard !data.isEmpty, data.count <= 4 * 1024 * 1024,
+              let url = Self.resumeFile,
+              let encoded = try? PropertyListEncoder().encode(PausedDownload(key: key, data: data))
+        else { return }
+        try? encoded.write(to: url, options: .atomic)
+    }
+
+    private func loadResume(for source: GameDownloadSource) -> Data? {
+        guard let url = Self.resumeFile,
+              let saved = try? PropertyListDecoder().decode(PausedDownload.self, from: Data(contentsOf: url)),
+              saved.key == Self.resumeKey(for: source), saved.data.count <= 4 * 1024 * 1024
+        else { return nil }
+        return saved.data
+    }
+
+    private func clearResume() {
+        if let url = Self.resumeFile { try? FileManager.default.removeItem(at: url) }
+    }
+
+    private static func trustedHTTPS(_ text: String) -> URL? {
+        guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.scheme?.lowercased() == "https", url.host != nil,
+              url.user == nil, url.password == nil, url.fragment == nil
+        else { return nil }
+        return url
+    }
 
     var progress: Double? {
         totalBytes > 0 ? min(1, Double(downloadedBytes) / Double(totalBytes)) : nil
     }
 
+    /// Prefer the publisher's pinned manifest. No third-party game-file mirror
+    /// is silently trusted or bundled with the application.
     func begin(version: String) async {
         guard !busy else { return }
-        guard let source = Bundle.main.object(forInfoDictionaryKey: "HorizonResourcesManifestURL") as? String,
-              let url = URL(string: source), url.scheme == "https", url.host != nil else {
-            message = "ゲームファイルの配信元が設定されていません。配布元の設定が必要です。"
+        guard let address = Bundle.main.object(forInfoDictionaryKey: "HorizonResourcesManifestURL") as? String,
+              let manifestURL = Self.trustedHTTPS(address) else {
+            message = "ゲームファイルの配信元が設定されていません。配布元の設定が必要です。下のHTTPSリンクから自分のZIPを取得することもできます。"
             return
         }
         let id = UUID()
@@ -65,50 +121,131 @@ final class NativeGameDownload: NSObject, ObservableObject {
         downloadedBytes = 0
         totalBytes = 0
         message = "配信情報を確認中…"
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
-        self.session = session
+        let current = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        session = current
         do {
-            let (data, response) = try await session.data(for: URLRequest(url: url))
-            guard generation == id, self.session === session else { return }
+            var request = URLRequest(url: manifestURL)
+            request.timeoutInterval = 30
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            let (data, response) = try await current.data(for: request)
+            guard generation == id, session === current else { return }
             guard (response as? HTTPURLResponse)?.statusCode == 200, data.count <= 32 * 1024 else {
                 throw DownloadProblem("配信情報を取得できませんでした。")
             }
             let manifest = try JSONDecoder().decode(GameFilesManifest.self, from: data)
             try manifest.validate(expectedVersion: version)
-            self.manifest = manifest
-            totalBytes = manifest.size
-            message = "ゲームファイルをダウンロード中…"
-            session.downloadTask(with: URLRequest(url: manifest.url)).resume()
+            startDownload(GameDownloadSource(url: manifest.url, sha256: manifest.sha256.lowercased(),
+                                             size: manifest.size), on: current)
         } catch {
-            fail(error.localizedDescription, from: session)
+            fail(error.localizedDescription, from: current)
         }
+    }
+
+    /// The fallback from the reference launcher: the player can host their own
+    /// legally prepared ZIP without selecting folders or editing Info.plist.
+    /// A checksum is optional for personal links, but strongly recommended.
+    func beginFromLink(_ text: String, checksum: String) {
+        guard !busy else { return }
+        guard let url = Self.trustedHTTPS(text) else {
+            message = "自分で用意したZIPのHTTPSリンクを入力してください。"
+            return
+        }
+        let normalized = checksum.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalized.isEmpty || (normalized.count == 64 && normalized.utf8.allSatisfy({
+            ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102)
+        })) else {
+            message = "SHA-256は64桁の16進数で入力してください。"
+            return
+        }
+        generation = UUID()
+        busy = true
+        installing = false
+        downloadedBytes = 0
+        totalBytes = 0
+        let current = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        session = current
+        startDownload(GameDownloadSource(url: url, sha256: normalized.isEmpty ? nil : normalized,
+                                         size: nil), on: current)
+    }
+
+    private func startDownload(_ source: GameDownloadSource, on current: URLSession) {
+        self.source = source
+        totalBytes = source.size ?? 0
+        let paused = loadResume(for: source)
+        if paused == nil { clearResume() }
+        if paused != nil {
+            message = "中断したダウンロードを再開中…"
+        } else if source.sha256 == nil {
+            message = "ZIPをダウンロード中…（SHA-256未指定。インストール時にファイル構造を検証します）"
+        } else {
+            message = "ゲームファイルをダウンロード中…"
+        }
+        if backgroundTask == .invalid {
+            backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Horizon game download") { [weak self] in
+                // iOS grants finite background time. Persist resume data rather
+                // than losing the partial transfer when the app is suspended.
+                Task { @MainActor in self?.cancel() }
+            }
+        }
+        let task = paused.map { current.downloadTask(withResumeData: $0) }
+            ?? current.downloadTask(with: URLRequest(url: source.url))
+        activeTask = task
+        task.resume()
     }
 
     func cancel() {
         guard busy && !installing else { return }
         generation = UUID()
         let current = session
+        let task = activeTask
+        let currentSource = source
         session = nil
-        current?.invalidateAndCancel()
+        activeTask = nil
+        source = nil
         busy = false
-        message = "ダウンロードをキャンセルしました。"
+        message = "ダウンロードを中断しました。もう一度押すと再開できます。"
+        endBackground()
+        if let task, let currentSource {
+            let key = Self.resumeKey(for: currentSource)
+            task.cancel(byProducingResumeData: { [weak self] data in
+                Task { @MainActor in
+                    if let data, let self, !self.busy {
+                        self.saveResume(data, key: key)
+                    }
+                    current?.finishTasksAndInvalidate()
+                }
+            })
+        } else {
+            current?.invalidateAndCancel()
+        }
+    }
+
+    private func endBackground() {
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
+        }
     }
 
     private func fail(_ reason: String, from current: URLSession) {
         guard session === current else { return }
         generation = UUID()
         session = nil
+        activeTask = nil
+        source = nil
         current.invalidateAndCancel()
         busy = false
         installing = false
         message = reason
+        endBackground()
     }
 
     fileprivate func finishDownload(_ archive: URL, from current: URLSession) {
-        guard session === current, let manifest else {
+        guard session === current, let source else {
             try? FileManager.default.removeItem(at: archive)
             return
         }
+        activeTask = nil
         installing = true
         message = "ダウンロードを検証中…"
         let id = generation
@@ -125,8 +262,11 @@ final class NativeGameDownload: NSObject, ObservableObject {
                     if length > Self.limit { throw DownloadProblem("ZIPが2GiBを超えています。") }
                 }
                 let actual = digest.finalize().map { String(format: "%02x", $0) }.joined()
-                guard length == manifest.size && actual == manifest.sha256.lowercased() else {
-                    throw DownloadProblem("ダウンロードしたデータが一致しません。再試行してください。")
+                if let expected = source.size, length != expected {
+                    throw DownloadProblem("ダウンロードサイズが一致しません。再試行してください。")
+                }
+                if let expected = source.sha256, actual != expected {
+                    throw DownloadProblem("ダウンロードしたデータのSHA-256が一致しません。")
                 }
                 result = .success(())
             } catch {
@@ -139,9 +279,11 @@ final class NativeGameDownload: NSObject, ObservableObject {
                 }
                 switch result {
                 case .failure(let error):
+                    self.clearResume()
                     try? FileManager.default.removeItem(at: archive)
                     self.fail(error.localizedDescription, from: current)
                 case .success:
+                    self.clearResume()
                     self.message = "ファイルをインストール中…"
                     let answer = await Bridge.send("launcher-import \(archive.lastPathComponent)")
                     try? FileManager.default.removeItem(at: archive)
@@ -150,9 +292,11 @@ final class NativeGameDownload: NSObject, ObservableObject {
                         self.fail(issue, from: current)
                     } else {
                         self.session = nil
+                        self.source = nil
                         current.finishTasksAndInvalidate()
                         self.busy = false
                         self.installing = false
+                        self.endBackground()
                         self.message = "インストールが完了しました。ゲームを起動します…"
                         self.installed = true
                     }
@@ -171,13 +315,21 @@ extension NativeGameDownload: URLSessionDownloadDelegate {
         Task { @MainActor in
             guard self.session === session else { return }
             if overflow {
+                self.clearResume()
                 self.fail("ダウンロードが上限の2GiBを超えました。", from: session)
             } else {
                 self.downloadedBytes = totalBytesWritten
-                if let expected = self.manifest?.size {
-                    self.totalBytes = expected
-                }
+                self.totalBytes = self.source?.size ?? max(totalBytesExpectedToWrite, 0)
             }
+        }
+    }
+
+    nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                                didResumeAtOffset fileOffset: Int64, expectedTotalBytes: Int64) {
+        Task { @MainActor in
+            guard self.session === session else { return }
+            self.downloadedBytes = fileOffset
+            self.totalBytes = self.source?.size ?? max(expectedTotalBytes, 0)
         }
     }
 
@@ -185,10 +337,13 @@ extension NativeGameDownload: URLSessionDownloadDelegate {
                                 didFinishDownloadingTo location: URL) {
         let code = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(code), downloadTask.countOfBytesReceived <= Self.limit else {
-            Task { @MainActor in self.fail("ダウンロードに失敗しました (HTTP \(code))。", from: session) }
+            Task { @MainActor in
+                self.clearResume()
+                self.fail("ダウンロードに失敗しました (HTTP \(code))。", from: session)
+            }
             return
         }
-        // Move inside the delegate: iOS deletes the original temporary file at return.
+        // Move inside the delegate: iOS deletes the temporary file on return.
         guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
             Task { @MainActor in self.fail("アプリの保存先を取得できません。", from: session) }
             return
@@ -205,7 +360,16 @@ extension NativeGameDownload: URLSessionDownloadDelegate {
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask,
                                 didCompleteWithError error: Error?) {
         guard let error else { return }
-        Task { @MainActor in self.fail(error.localizedDescription, from: session) }
+        let data = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data
+        Task { @MainActor in
+            guard self.session === session else { return }
+            if let data, let source = self.source {
+                self.saveResume(data, key: Self.resumeKey(for: source))
+                self.fail("通信が切れました。もう一度押すと途中から再開します。", from: session)
+            } else {
+                self.fail(error.localizedDescription, from: session)
+            }
+        }
     }
 
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask,
@@ -213,7 +377,7 @@ extension NativeGameDownload: URLSessionDownloadDelegate {
                                 newRequest request: URLRequest,
                                 completionHandler: @escaping (URLRequest?) -> Void) {
         guard let url = request.url, url.scheme?.lowercased() == "https", url.host != nil,
-              url.user == nil, url.password == nil else {
+              url.user == nil, url.password == nil, url.fragment == nil else {
             completionHandler(nil)
             return
         }
@@ -229,6 +393,16 @@ struct GameLauncherView: View {
     @State private var notice = ""
     @State private var showSettings = false
     @State private var starting = false
+    @State private var customLink = ""
+    @State private var customSHA256 = ""
+    @State private var showPersonalLink = false
+
+    private var hasConfiguredPublisher: Bool {
+        guard let text = Bundle.main.object(forInfoDictionaryKey: "HorizonResourcesManifestURL") as? String,
+              let url = URL(string: text), url.scheme?.lowercased() == "https", url.host != nil,
+              url.user == nil, url.password == nil else { return false }
+        return true
+    }
 
     var body: some View {
         ZStack {
@@ -268,13 +442,33 @@ struct GameLauncherView: View {
                             ProgressView()
                         }
                         if !download.busy {
-                            Button { Task { await download.begin(version: version) } } label: {
-                                Label("ゲームファイルをダウンロード", systemImage: "arrow.down.circle")
-                                    .frame(maxWidth: .infinity, minHeight: 40)
-                            }.buttonStyle(.borderedProminent)
+                            if hasConfiguredPublisher {
+                                Button { Task { await download.begin(version: version) } } label: {
+                                    Label("ゲームファイルをダウンロード", systemImage: "arrow.down.circle")
+                                        .frame(maxWidth: .infinity, minHeight: 40)
+                                }.buttonStyle(.borderedProminent)
+                            } else {
+                                Text("このビルドには自動配信先が設定されていません。自分で準備したZIPのリンクを下に入力できます。")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
                         } else if !download.installing {
                             Button("キャンセル", role: .cancel) { download.cancel() }
                                 .buttonStyle(.bordered)
+                        }
+                        DisclosureGroup("自分で用意したZIPからインストール", isExpanded: $showPersonalLink) {
+                            Text("自分のMinecraft Java Editionから正規に準備したZIPを、HTTPSで公開された個人用リンクから取得できます。フォルダ操作は不要です。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            TextField("https://example.com/horizon-26.3.zip", text: $customLink)
+                                .keyboardType(.URL)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                            TextField("SHA-256（任意・推奨）", text: $customSHA256)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                            Button("このリンクからダウンロード") {
+                                download.beginFromLink(customLink, checksum: customSHA256)
+                            }
+                            .disabled(download.busy || customLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                     }
                     if !download.message.isEmpty {
@@ -295,7 +489,10 @@ struct GameLauncherView: View {
             }
         }
         .sheet(isPresented: $showSettings) { NativeSettingsView() }
-        .task { await refresh() }
+        .task {
+            await refresh()
+            if !hasConfiguredPublisher { showPersonalLink = true }
+        }
         .onChange(of: download.installed) { installed in
             if installed { Task { await startGame() } }
         }

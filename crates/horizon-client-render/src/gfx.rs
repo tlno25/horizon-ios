@@ -82,6 +82,70 @@ fn gpu_culling_requested(info: &wgpu::AdapterInfo, env: Option<&str>) -> bool {
     env != Some("0") && (env.is_some() || info.device_type != wgpu::DeviceType::Cpu)
 }
 
+/// The chunk radius past which every section is wholly inside distance fog.
+///
+/// Fragments at or beyond the environmental fog's end are blended to the fog
+/// colour completely, which is also what the frame was cleared to where there
+/// is no skybox (the Nether). Drawing those sections only shades pixels the fog
+/// then replaces. A shader pack applies its own fog (or none), and far terrain
+/// tiles draw past the render distance, so both keep the full radius.
+fn fog_culled_radius(
+    detail_distance: f32,
+    fog: Option<&crate::fog::FogData>,
+    own_fog: bool,
+) -> i32 {
+    let radius = (detail_distance / 16.0) as i32;
+    match fog {
+        Some(f) if !own_fog && f.color[3] >= 1.0 && f.environmental_end > 0.0 => {
+            // One chunk more: the camera is anywhere inside its own chunk, and a
+            // section's nearest point is up to a chunk closer than its centre.
+            radius.min((f.environmental_end / 16.0).ceil() as i32 + 1)
+        }
+        _ => radius,
+    }
+}
+
+/// Whether distance fog alone covers what lies past `fog_culled_radius` with
+/// the same colour the frame clears to.
+///
+/// Gated to the Nether with ordinary atmospheric fog and a fog-colour
+/// background (no sky pass, shader pack, Distant terrain, or title screen).
+#[derive(Clone, Copy, Debug)]
+struct FogCullCover {
+    /// The Nether (`Frame::nether_lighting` and `Frame::environment_fog`).
+    nether: bool,
+    /// Ordinary atmospheric fog: not in water, lava, or powder snow, and no
+    /// blindness or darkness (`!Frame::underwater && !Frame::sky_blocked`).
+    atmospheric: bool,
+    /// No sky pass draws over the fog-colour clear (`!Frame::skybox && !Frame::end_sky`).
+    fog_background: bool,
+    distant_terrain: bool,
+    tiles_live: bool,
+    packs: bool,
+    title: bool,
+}
+
+impl FogCullCover {
+    fn from_frame(frame: &Frame, tiles_live: bool, packs: bool) -> Self {
+        Self {
+            nether: frame.nether_lighting && frame.environment_fog.is_some(),
+            atmospheric: !frame.underwater && !frame.sky_blocked,
+            fog_background: !frame.skybox && !frame.end_sky,
+            distant_terrain: frame.distant_terrain,
+            tiles_live,
+            packs,
+            title: frame.title,
+        }
+    }
+}
+
+fn fog_is_only_cover(cover: FogCullCover) -> bool {
+    cover.nether
+        && cover.atmospheric
+        && cover.fog_background
+        && !(cover.distant_terrain || cover.tiles_live || cover.packs || cover.title)
+}
+
 mod animate;
 mod arena;
 pub mod compositor;
@@ -353,6 +417,8 @@ pub struct Frame<'a> {
     pub distance: f32,
     /// Full-detail terrain distance in blocks; distant LODs bypass the cave graph.
     pub detail_distance: f32,
+    /// Horizon's Distant terrain option is on: far tiles draw past the render distance.
+    pub distant_terrain: bool,
     /// `Camera.depthFar`: the far plane (`crate::camera::depth_far`).
     pub depth_far: f32,
     pub underwater: bool,
@@ -514,6 +580,13 @@ pub struct ScreenshotRequest {
     /// `Renderer::screenshot_quality`, not the window's.
     pub scaled: bool,
 }
+/// Vanilla sky at the far depth plane, drawn after solid terrain in the same pass.
+struct LateSky {
+    sky: wgpu::RenderPipeline,
+    dark_disc: wgpu::RenderPipeline,
+    celestial: wgpu::RenderPipeline,
+}
+
 pub struct Renderer {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
@@ -562,6 +635,13 @@ pub struct Renderer {
     /// No-discard opaque and alpha-cutout pipelines for Android Vulkan.
     opaque_terrain: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
     opaque_terrain_on: bool,
+    static_cutout: Option<wgpu::RenderPipeline>,
+    static_cutout_on: bool,
+    settled_terrain: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
+    settled_terrain_on: bool,
+    /// Android Vulkan only; packs keep their original sky/material ordering.
+    late_sky: Option<LateSky>,
+    late_sky_on: bool,
     /// Last frame's opaque/cutout/order-sensitive draw counts; None uses the ordinary path.
     pub terrain_pass_draws: Option<[u32; 3]>,
     translucent: wgpu::RenderPipeline,
@@ -1908,23 +1988,31 @@ impl Renderer {
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &debug_line_attributes,
         })];
-        let pipeline_in = |layout: &wgpu::PipelineLayout,
-                           label: &str,
-                           vertex: &str,
-                           fragment: &str,
-                           buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
-                           topology: wgpu::PrimitiveTopology,
-                           cull: Option<wgpu::Face>,
-                           depth_write: bool,
-                           depth_test: bool,
-                           blend: Option<wgpu::BlendState>| {
+        let specialized_pipeline = |layout: &wgpu::PipelineLayout,
+                                    label: &str,
+                                    vertex: &str,
+                                    fragment: &str,
+                                    buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                                    topology: wgpu::PrimitiveTopology,
+                                    cull: Option<wgpu::Face>,
+                                    depth_write: bool,
+                                    depth_test: bool,
+                                    blend: Option<wgpu::BlendState>,
+                                    settled: bool| {
+            let mut constants = sprite_constants.to_vec();
+            if settled {
+                constants.extend([("TERRAIN_FILTERING", 0.0), ("TERRAIN_FULLY_VISIBLE", 1.0)]);
+            }
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some(vertex),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &constants,
+                        ..Default::default()
+                    },
                     buffers,
                 },
                 primitive: wgpu::PrimitiveState {
@@ -1948,7 +2036,7 @@ impl Renderer {
                     module: &shader,
                     entry_point: Some(fragment),
                     compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &sprite_constants,
+                        constants: &constants,
                         ..Default::default()
                     },
                     targets: &[Some(wgpu::ColorTargetState {
@@ -1960,6 +2048,30 @@ impl Renderer {
                 multiview_mask: None,
                 cache: None,
             })
+        };
+        let pipeline_in = |layout: &wgpu::PipelineLayout,
+                           label: &str,
+                           vertex: &str,
+                           fragment: &str,
+                           buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                           topology: wgpu::PrimitiveTopology,
+                           cull: Option<wgpu::Face>,
+                           depth_write: bool,
+                           depth_test: bool,
+                           blend: Option<wgpu::BlendState>| {
+            specialized_pipeline(
+                layout,
+                label,
+                vertex,
+                fragment,
+                buffers,
+                topology,
+                cull,
+                depth_write,
+                depth_test,
+                blend,
+                false,
+            )
         };
         let pipeline = |label: &str,
                         vertex: &str,
@@ -2041,6 +2153,60 @@ impl Renderer {
                 }
             })
             .flatten();
+        let static_cutout = opaque_terrain.as_ref().and_then(|_| {
+            let checks = GpuChecks::push(&device);
+            let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+            let candidate = pipeline(
+                "Terrain cutout without LOD fade",
+                "vs_terrain_cutout",
+                "fs_cutout_static",
+                &terrain_buffers,
+                tri,
+                Some(wgpu::Face::Back),
+                true,
+                true,
+                None,
+            );
+            if let Some(error) = pollster::block_on(internal.pop()).or(checks.pop()) {
+                log::warn!("Static cutout pipeline unavailable; retaining fade shader: {error}");
+                None
+            } else {
+                Some(candidate)
+            }
+        });
+        let settled_terrain = opaque_terrain.as_ref().and_then(|_| {
+            let checks = GpuChecks::push(&device);
+            let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+            let make = |label, vertex, fragment| {
+                specialized_pipeline(
+                    &layout,
+                    label,
+                    vertex,
+                    fragment,
+                    &terrain_buffers,
+                    tri,
+                    Some(wgpu::Face::Back),
+                    true,
+                    true,
+                    None,
+                    true,
+                )
+            };
+            let pair = (
+                make("Settled opaque terrain", "vs_terrain_opaque", "fs_opaque"),
+                make(
+                    "Settled cutout terrain",
+                    "vs_terrain_cutout",
+                    "fs_cutout_static",
+                ),
+            );
+            if let Some(error) = pollster::block_on(internal.pop()).or(checks.pop()) {
+                log::warn!("Settled terrain unavailable; retaining ordinary shader: {error}");
+                None
+            } else {
+                Some(pair)
+            }
+        });
         crate::mesher::group_parts(opaque_terrain.is_some());
         // The water mirror's camera sees the world from the other side of the plane, which
         // flips the winding: its solid terrain culls the front.
@@ -2958,7 +3124,7 @@ impl Renderer {
             },
             ..additive_descriptor
         });
-        let celestial_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let celestial_descriptor = wgpu::RenderPipelineDescriptor {
             label: Some("Celestial bodies"),
             layout: Some(&entity_layout),
             vertex: wgpu::VertexState {
@@ -3006,6 +3172,56 @@ impl Renderer {
             }),
             multiview_mask: None,
             cache: None,
+        };
+        let celestial_pipeline = device.create_render_pipeline(&celestial_descriptor);
+        let mut late_sky = opaque_terrain.as_ref().and_then(|_| {
+            let checks = GpuChecks::push(&device);
+            let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+            let sky = pipeline(
+                "Late sky",
+                "vs_sky",
+                "fs_sky",
+                &[],
+                tri,
+                None,
+                false,
+                true,
+                None,
+            );
+            let dark = pipeline(
+                "Late dark disc",
+                "vs_sky",
+                "fs_dark_disc",
+                &[],
+                tri,
+                None,
+                false,
+                true,
+                Some(alpha_blend),
+            );
+            let celestial = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Late celestial bodies"),
+                vertex: wgpu::VertexState {
+                    entry_point: Some("vs_entity_sky"),
+                    ..celestial_descriptor.vertex.clone()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                    ..celestial_descriptor.depth_stencil.clone().unwrap()
+                }),
+                ..celestial_descriptor.clone()
+            });
+            let error = pollster::block_on(internal.pop()).or(checks.pop());
+            if let Some(error) = error {
+                log::warn!("Late sky unavailable; retaining original order: {error}");
+                None
+            } else {
+                Some(LateSky {
+                    sky,
+                    dark_disc: dark,
+                    celestial,
+                })
+            }
         });
         // WorldBorderRenderer: misc/forcefield.png as a MipmappedTexture
         // (repeat, linear minification with mipmaps, nearest magnification).
@@ -3363,7 +3579,14 @@ impl Renderer {
         let world_post = world_post::Post::new(&device, config.format.remove_srgb_suffix());
         let uploads = upload::Uploads::new(&device);
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
-        let stars = stars::Stars::new(&device, config.format.remove_srgb_suffix());
+        let stars = stars::Stars::new(
+            &device,
+            config.format.remove_srgb_suffix(),
+            late_sky.is_some(),
+        );
+        if !stars.has_late_pipeline() {
+            late_sky = None;
+        }
         let entity_outline = entity_outline::EntityOutline::new(
             &device,
             (&entity_shader, &entity_layout, &entity_vertex),
@@ -3413,6 +3636,12 @@ impl Renderer {
             solid,
             opaque_terrain,
             opaque_terrain_on: true,
+            static_cutout,
+            static_cutout_on: true,
+            settled_terrain,
+            settled_terrain_on: true,
+            late_sky,
+            late_sky_on: true,
             terrain_pass_draws: None,
             translucent,
             flat_on: flat.is_some(),
@@ -3872,15 +4101,60 @@ impl Renderer {
         if on && self.flat.is_none() {
             return Err("flat section draws are off on this device".into());
         }
+        if on && let Some(flat) = &mut self.flat {
+            // Explicit developer comparisons must exercise the flat path even
+            // on backends whose automatic vanilla threshold disables it.
+            flat.min_sections = 0;
+        }
         self.flat_on = on;
         Ok(())
     }
+    /// Developer A/B control: direct and indirect draws use the same section geometry.
+    pub fn set_indirect_draws(&mut self, on: bool) -> Result<()> {
+        if on
+            && !(self
+                .device
+                .features()
+                .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
+                && self
+                    .adapter
+                    .get_downlevel_capabilities()
+                    .flags
+                    .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION))
+        {
+            return Err("indirect section draws are unavailable on this device".into());
+        }
+        self.multi_draw = on;
+        Ok(())
+    }
     /// Developer A/B control; unavailable backends retain their ordinary pipeline.
+    pub fn set_static_cutout(&mut self, on: bool) -> Result<()> {
+        if on && self.static_cutout.is_none() {
+            return Err("static cutout unavailable".into());
+        }
+        self.static_cutout_on = on;
+        Ok(())
+    }
+    pub fn set_settled_terrain(&mut self, on: bool) -> Result<()> {
+        if on && self.settled_terrain.is_none() {
+            return Err("settled terrain unavailable".into());
+        }
+        self.settled_terrain_on = on;
+        Ok(())
+    }
     pub fn set_opaque_terrain(&mut self, on: bool) -> Result<()> {
         if on && self.opaque_terrain.is_none() {
             return Err("split opaque terrain is unavailable on this backend".into());
         }
         self.opaque_terrain_on = on;
+        Ok(())
+    }
+    /// Developer-only comparison, with the ordinary path retained for packs and mirrors.
+    pub fn set_late_sky(&mut self, on: bool) -> Result<()> {
+        if on && self.late_sky.is_none() {
+            return Err("late sky unavailable".into());
+        }
+        self.late_sky_on = on;
         Ok(())
     }
     /// Whether one of Horizon's own packs reads the water mirror, which needs the frame's
@@ -5425,6 +5699,16 @@ impl Renderer {
             .zip(eye)
             .map(|(plane, eye)| 2.0 * (plane - frame.camera.y as f32) - eye.y);
         let culling = !frame.title && frame.cave_culling;
+        // Sections wholly inside distance fog are not drawn (`fog_culled_radius`).
+        let own_fog = !fog_is_only_cover(FogCullCover::from_frame(
+            frame,
+            !self.lods.is_empty() || !self.lod_cutout.is_empty() || !self.lod_leaving.is_empty(),
+            self.native.is_some() || self.pack_post.is_some(),
+        ));
+        let visible_radius = fog_culled_radius(frame.detail_distance, frame.fog.as_ref(), own_fog);
+        // The occlusion search keeps the full radius: its graph answers `false` beyond the
+        // radius it searched, so a radius that follows the fog would hide sections for the
+        // frames a new search takes whenever the fog widens.
         if culling {
             crate::spans::time("occlusion", || {
                 self.start_occlusion(camera, frame.detail_distance)
@@ -5444,7 +5728,7 @@ impl Renderer {
         crate::spans::time("visibility", || {
             self.sections.visible(
                 camera,
-                (frame.detail_distance / 16.0) as i32,
+                visible_radius,
                 &Frusta(view, mirror),
                 |k| !culling || reachable.contains(k),
                 |x, z| {
@@ -5645,6 +5929,16 @@ impl Renderer {
             && visible_lods.is_empty()
             && self.native.is_none()
             && self.pack_post.is_none();
+        // Negative origins encode LOD crossfades; preserve their original shader.
+        let static_cutout = self.static_cutout_on
+            && split_terrain
+            && self.origins.iter().all(|origin| origin[3] >= 0.0);
+        let settled_terrain = self.settled_terrain_on
+            && static_cutout
+            && self.texture_filtering != 1
+            // The bare section UV step encodes fully visible, ordinary terrain.
+            // Upload fades, LOD instances and other encodings keep the general path.
+            && self.origins.iter().all(|origin| origin[3] == 1.0 / crate::mesher::UV_STEPS);
         let mut opaque_draws = 0u32;
         let mut cutout_end = 0u32;
         if split_terrain {
@@ -6268,6 +6562,13 @@ impl Renderer {
             Some(flat)
                 if self.flat_on
                     && !self.draws.is_empty()
+                    // Preserve Android packs' existing terrain/material path.
+                    // Classic terrain/shadow programs explicitly require flat inputs.
+                    && (!cfg!(target_os = "android")
+                        || (self.native.is_none()
+                            && (self.pack_post.is_none()
+                                || pack_terrain
+                                || shadow_view.is_some())))
                     && (self.drawn_sections >= flat.min_sections
                         || pack_terrain
                         || shadow_view.is_some()) =>
@@ -6790,7 +7091,16 @@ impl Renderer {
             });
             pass.set_bind_group(0, &self.group, &[]);
             pack_frame(&mut pass);
-            if frame.title || (sky_visible && (frame.skybox || frame.end_sky)) {
+            let late_sky = self.late_sky_on
+                && self.late_sky.is_some()
+                && !frame.title
+                && frame.skybox
+                && !frame.end_sky
+                && self.native.is_none()
+                && self.pack_post.is_none()
+                && mirror.is_none()
+                && cull.is_none();
+            if !late_sky && (frame.title || (sky_visible && (frame.skybox || frame.end_sky))) {
                 if !frame.title && frame.skybox && !pack_draws_sky && !native_sky_pass {
                     match self
                         .native
@@ -6833,7 +7143,7 @@ impl Renderer {
                     .as_ref()
                     .is_some_and(|n| n.sky.is_some() && !n.vanilla_stars);
                 if !frame.title && frame.stars.is_some() && !pack_draws_sky && !own_stars {
-                    self.stars.draw(&mut pass);
+                    self.stars.draw(&mut pass, false);
                     pass.set_bind_group(0, &self.group, &[]);
                 }
                 if !frame.title && frame.dark_disc && !pack_draws_sky {
@@ -6918,13 +7228,29 @@ impl Renderer {
                                 && material.is_none()
                                 && let Some((opaque, cutout)) = &self.opaque_terrain
                             {
+                                let (opaque, settled_cutout) = if settled_terrain {
+                                    self.settled_terrain
+                                        .as_ref()
+                                        .map(|(a, b)| (a, Some(b)))
+                                        .unwrap_or((opaque, None))
+                                } else {
+                                    (opaque, None)
+                                };
                                 pass.set_pipeline(opaque);
                                 self.draw_sections(&mut pass, &self.indirect, 0, 0, opaque_draws);
-                                pass.set_pipeline(cutout);
+                                pass.set_pipeline(if let Some(cutout) = settled_cutout {
+                                    cutout
+                                } else if static_cutout {
+                                    self.static_cutout.as_ref().unwrap_or(cutout)
+                                } else {
+                                    cutout
+                                });
+                                // All three material ranges share the complete
+                                // indirect buffer; its draw zero stays draw zero.
                                 self.draw_sections(
                                     &mut pass,
                                     &self.indirect,
-                                    opaque_draws,
+                                    0,
                                     opaque_draws,
                                     cutout_end - opaque_draws,
                                 );
@@ -6932,7 +7258,7 @@ impl Renderer {
                                 self.draw_sections(
                                     &mut pass,
                                     &self.indirect,
-                                    cutout_end,
+                                    0,
                                     cutout_end,
                                     solid_draws - cutout_end,
                                 );
@@ -6941,6 +7267,28 @@ impl Renderer {
                             }
                         }
                     }
+                }
+            }
+            // Read the depth left by solids, without writing depth or adding a render pass.
+            // At reverse-Z's far plane, the unchanged sky shaders run only in uncovered pixels.
+            if let Some(sky) = self.late_sky.as_ref().filter(|_| late_sky && sky_visible) {
+                pass.set_pipeline(&sky.sky);
+                pass.draw(0..3, 0..1);
+                if celestial_vertices > 0 {
+                    pass.set_pipeline(&sky.celestial);
+                    pass.set_bind_group(0, &self.entity_group, &[]);
+                    pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
+                    pass.draw_indexed(0..(celestial_vertices as u32 / 4) * 6, 0, 0..1);
+                    pass.set_bind_group(0, &self.group, &[]);
+                }
+                if frame.stars.is_some() {
+                    self.stars.draw(&mut pass, true);
+                    pass.set_bind_group(0, &self.group, &[]);
+                }
+                if frame.dark_disc {
+                    pass.set_pipeline(&sky.dark_disc);
+                    pass.draw(0..3, 0..1);
                 }
             }
             if entity_quads > 0 {
@@ -8253,6 +8601,196 @@ fn frustum(m: Mat4) -> [Vec4; 6] {
 
 #[cfg(test)]
 mod tests {
+    fn nether_fog(end: f32) -> crate::fog::FogData {
+        crate::fog::FogData {
+            color: [0.2, 0.03, 0.03, 1.0],
+            environmental_start: 10.0,
+            environmental_end: end,
+            render_distance_start: 180.0,
+            render_distance_end: 192.0,
+            sky_end: 192.0,
+            cloud_end: 192.0,
+        }
+    }
+    fn nether_cover() -> super::FogCullCover {
+        super::FogCullCover {
+            nether: true,
+            atmospheric: true,
+            fog_background: true,
+            distant_terrain: false,
+            tiles_live: false,
+            packs: false,
+            title: false,
+        }
+    }
+    #[test]
+    fn fog_bounds_the_drawn_radius_to_where_it_turns_opaque() {
+        // 96 blocks of Nether fog: 6 chunks, plus the camera's own chunk.
+        let fog = nether_fog(96.0);
+        assert_eq!(super::fog_culled_radius(192.0, Some(&fog), false), 7);
+        // A shorter render distance is never extended.
+        assert_eq!(super::fog_culled_radius(64.0, Some(&fog), false), 4);
+        // Fog the player turned off (ends at 2e9) leaves the radius alone.
+        assert_eq!(
+            super::fog_culled_radius(192.0, Some(&nether_fog(2e9)), false),
+            12
+        );
+    }
+    #[test]
+    fn distant_terrain_keeps_the_full_radius_before_its_tiles_exist() {
+        let base = nether_cover();
+        assert!(super::fog_is_only_cover(base));
+        let with_lod = super::FogCullCover {
+            distant_terrain: true,
+            ..base
+        };
+        assert!(!super::fog_is_only_cover(with_lod));
+        let fog = nether_fog(96.0);
+        let own_fog = !super::fog_is_only_cover(with_lod);
+        assert_eq!(super::fog_culled_radius(192.0, Some(&fog), own_fog), 12);
+    }
+    #[test]
+    fn end_sky_passes_and_non_atmospheric_fog_keep_the_full_radius() {
+        let base = nether_cover();
+        let fog = nether_fog(96.0);
+        // The End (clears to black and draws end_sky, or even with sky off) keeps its draw radius.
+        for end_sky_on in [true, false] {
+            let end = super::FogCullCover {
+                nether: false,
+                fog_background: !end_sky_on,
+                ..base
+            };
+            assert!(!super::fog_is_only_cover(end));
+            assert_eq!(
+                super::fog_culled_radius(192.0, Some(&fog), !super::fog_is_only_cover(end)),
+                12
+            );
+            assert_eq!(
+                super::fog_culled_radius(256.0, Some(&fog), !super::fog_is_only_cover(end)),
+                16
+            );
+        }
+        // Overworld skybox, non-atmospheric fog (lava/powder snow/blindness/darkness/water),
+        // shader packs, live LOD tiles, and title screen all keep the full radius.
+        for case in [
+            super::FogCullCover {
+                nether: false,
+                fog_background: false,
+                ..base
+            },
+            super::FogCullCover {
+                atmospheric: false,
+                ..base
+            },
+            super::FogCullCover {
+                fog_background: false,
+                ..base
+            },
+            super::FogCullCover {
+                tiles_live: true,
+                ..base
+            },
+            super::FogCullCover {
+                packs: true,
+                ..base
+            },
+            super::FogCullCover {
+                title: true,
+                ..base
+            },
+        ] {
+            assert!(!super::fog_is_only_cover(case), "{case:?}");
+            assert_eq!(
+                super::fog_culled_radius(192.0, Some(&fog), !super::fog_is_only_cover(case)),
+                12
+            );
+        }
+    }
+    #[test]
+    fn fixed_camera_nether_at_12_chunks_culls_sections_while_end_keeps_full_radius() {
+        use glam::{DVec3, Vec3};
+        let mut sections = super::resident::Resident::default();
+        for x in -12..=12 {
+            for z in -12..=12 {
+                for y in 0..8 {
+                    sections.insert((x, y, z), ());
+                }
+            }
+        }
+        let camera = DVec3::new(8.0, 64.0, 8.0);
+        let proj = super::world_projection(70.0, 16.0 / 9.0, 512.0);
+        let view = crate::camera::view_matrix(0.0, 0.0);
+        let frustum = super::Frustum {
+            planes: super::frustum(proj * view),
+        };
+        let fog = nether_fog(96.0);
+        let detail_distance = 192.0; // 12 chunks
+        let end_cover = super::FogCullCover {
+            nether: false,
+            fog_background: false,
+            ..nether_cover()
+        };
+        let end_radius = super::fog_culled_radius(
+            detail_distance,
+            Some(&fog),
+            !super::fog_is_only_cover(end_cover),
+        );
+        let nether_radius = super::fog_culled_radius(
+            detail_distance,
+            Some(&fog),
+            !super::fog_is_only_cover(nether_cover()),
+        );
+        assert_eq!(end_radius, 12);
+        assert_eq!(nether_radius, 7);
+
+        let mut before_or_end = Vec::new();
+        sections.visible(
+            camera,
+            end_radius,
+            &frustum,
+            |_| true,
+            |_, _| false,
+            &mut before_or_end,
+        );
+        let mut after_nether = Vec::new();
+        sections.visible(
+            camera,
+            nether_radius,
+            &frustum,
+            |_| true,
+            |_, _| false,
+            &mut after_nether,
+        );
+        assert!(
+            after_nether.len() < before_or_end.len(),
+            "expected fewer visible sections in Nether ({}) than full 12-chunk radius ({})",
+            after_nether.len(),
+            before_or_end.len()
+        );
+        let kept: std::collections::HashSet<_> = after_nether.iter().map(|v| v.key).collect();
+        for v in &before_or_end {
+            if !kept.contains(&v.key) {
+                // Every culled section's nearest point to the camera is past 96-block fog end.
+                let min = Vec3::from(v.origin);
+                let max = min + Vec3::splat(16.0);
+                let nearest = Vec3::ZERO.clamp(min, max).length();
+                assert!(nearest >= 96.0, "culled section {:?} at {nearest}m", v.key);
+            }
+        }
+    }
+    #[test]
+    fn own_fog_and_translucent_fog_keep_the_full_radius() {
+        let fog = nether_fog(96.0);
+        // A shader pack or far terrain tiles: the fog here does not hide them.
+        assert_eq!(super::fog_culled_radius(192.0, Some(&fog), true), 12);
+        assert_eq!(super::fog_culled_radius(192.0, None, false), 12);
+        let mut see_through = nether_fog(96.0);
+        see_through.color[3] = 0.5;
+        assert_eq!(
+            super::fog_culled_radius(192.0, Some(&see_through), false),
+            12
+        );
+    }
     fn adapter(device_type: wgpu::DeviceType) -> wgpu::AdapterInfo {
         wgpu::AdapterInfo {
             name: "test adapter".into(),

@@ -79,3 +79,74 @@ The terrain shader regression tests compare the output of both paths over alpha
 thresholds, fog, section fading and emission tiers. Geometry tests preserve the
 ordering of overlapping cutout/opaque faces. This does not replace testing on
 other GPUs, shader packs and resource packs.
+
+## Vulkan sky ordering
+
+Without a shader pack, Android Vulkan can draw the vanilla Overworld sky after
+solid terrain, before entities and translucent surfaces, within the same render
+pass. The sky reads depth at the far plane without writing it. This avoids shading
+pixels hidden by terrain; see the [skybox ordering discussion from NVIDIA](https://developer.nvidia.com/gpugems/gpugems/part-v-performance-and-practicalities/chapter-28-graphics-pipeline-performance).
+The sky fragment shaders, time, colours, fog and celestial rotation are unchanged.
+
+Native and classic shader packs retain their existing ordering. The title screen,
+End sky, water mirror and GPU occlusion path also retain their original path.
+OpenGL ES is unchanged. Failure to create any of the additional pipelines retains
+the original sky order. The authenticated developer command `sky-order early|late`
+allows comparison without changing the world's settings or network protocol.
+
+On the same Adreno 710 tablet at 2560×1600 and 16 chunks, with split terrain active:
+
+| Test | Early sky | Late sky |
+| --- | ---: | ---: |
+| Stationary GPU time, mean of three runs | 14.73 ms | 13.59 ms |
+| GPU time while turning, two runs | 16.47–16.58 ms | 13.43–13.49 ms |
+| Frame p99 while turning | 21.17–21.40 ms | 18.45–18.91 ms |
+
+The turning test used running world time near sunrise and the same eight-second
+touch swipe from the same initial camera direction. It is a separate workload
+from the stationary comparison; its percentages must not be multiplied with the
+earlier terrain results to claim a combined speedup.
+
+Paired daytime, sunset, night and sunrise captures had identical RGB pixels outside
+the changing diagnostic counters. Golden Hour was enabled and disabled, and its
+captures also matched between the two sky-order requests. This verifies that pack
+on this device, not every shader pack or GPU. Capture tools and captures are not
+included in the APK or repository.
+
+## Vulkan Batching: indirect ranges and the vanilla threshold
+
+The opaque/cutout split initially passed each material group's first draw as the
+base of its indirect buffer. Those groups actually share the complete frame
+buffer. Direct draws ignored that parameter, hiding the bug in Compatibility;
+indirect draws could replay the wrong commands and omit visible surfaces when
+culling changed paths. Both material subranges now retain buffer base zero.
+
+Android's selected Batching mode also now uses the existing flat-index path for
+ordinary terrain above its 512-section threshold. Previously the Android
+threshold was defined but the vanilla backend policy still disabled it, leaving
+the slower per-section indirect calls. Native shader materials retain their
+previous path; classic terrain/shadow programs retain their explicit flat inputs.
+Neither this selection nor the offset fix changes the default Compatibility mode.
+
+On the Adreno 710 tablet at 2560×1600, 16 chunks, seed
+`-4240118709374351666`, position `-24.5 102 -47.5`, with world time frozen and
+resident geometry, a same-build developer A/B comparison with culling active gave:
+
+| Terrain commands | GPU mean | Mean FPS |
+| --- | ---: | ---: |
+| Per-section indirect | 46.05 ms | 20.09 |
+| Flattened index batches | 22.30 ms | 38.37 |
+
+Four camera directions were compared with direct draws after the offset fix;
+the large missing regions were gone. This is a device/scene-specific comparison,
+not a performance guarantee or proof that every reported Batching glitch has the
+same cause. Final automatic-path validation is recorded separately from forced
+developer A/B runs.
+
+The resulting optimized test APK's automatic Batching path measured 38.58 FPS
+and 22.29 ms mean GPU time at that same spawn, without forcing the flat-index
+switch. A ten-second camera flight through the area measured 31.90 FPS and
+27.00 ms mean GPU time; movement and newly exposed geometry remain more costly.
+ARM64 Clippy, ARMv7 compile checks and four flat-index planning/GPU tests passed.
+Golden Hour was enabled in-world and disabled again on this APK; this is not a
+validation of every native or classic shader pack.

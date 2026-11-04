@@ -1651,19 +1651,24 @@ impl Loading {
                     self.save_menu_settings();
                 } else if self.menu.options_open {
                     let shortcut = self.menu.shortcut(&event);
-                    let atlas = &self.gui.as_ref().unwrap().atlas;
                     let handled = shortcut.is_some_and(|s| {
+                        let atlas = &self.gui.as_ref().unwrap().atlas;
                         self.menu
                             .options
                             .shortcut(atlas, s, &mut self.menu.clipboard)
                     });
                     if !handled && let PhysicalKey::Code(key) = event.physical_key {
-                        let events = self.menu.options.key(
-                            &mut self.settings,
-                            atlas,
-                            key,
-                            event.text.as_deref(),
-                        );
+                        // Drop the shared atlas borrow before dispatching
+                        // events that can mutate the entire loading menu.
+                        let events = {
+                            let atlas = &self.gui.as_ref().unwrap().atlas;
+                            self.menu.options.key(
+                                &mut self.settings,
+                                atlas,
+                                key,
+                                event.text.as_deref(),
+                            )
+                        };
                         self.menu_option_events(events);
                     }
                     // UIKit's native WinitView emits ordinary KeyboardInput
@@ -1677,6 +1682,7 @@ impl Loading {
                     {
                         let text = horizon_client::ios_touch::committed_ime_text(text);
                         if !text.is_empty() {
+                            let atlas = &self.gui.as_ref().unwrap().atlas;
                             self.menu.options.type_text(atlas, &text);
                         }
                     }

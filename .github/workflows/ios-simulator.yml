@@ -287,5 +287,6 @@ jobs:
           path: |
             ${{ runner.temp }}/horizon-ios-game-simulator-screen.png
             ${{ runner.temp }}/horizon-ios-game-simulator-console.log
+            ${{ runner.temp }}/horizon-ios-game-simulator-game.log
           if-no-files-found: ignore
           retention-days: 7

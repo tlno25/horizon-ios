@@ -27,6 +27,13 @@ capture() {
     xcrun simctl spawn "$udid" log show --style compact --last 8m \
         --predicate 'process == "HorizonGame" AND (eventMessage CONTAINS[c] "Horizon" OR eventMessage CONTAINS[c] "error" OR eventMessage CONTAINS[c] "panic" OR eventMessage CONTAINS[c] "wgpu")' \
         > "$output_dir/horizon-ios-game-simulator-console.log" 2>&1 || true
+    # Simulator log show captures UIKit, not Rust's file logger. Fetch the
+    # actual game's Documents/logs/latest.log before destroying the simulator.
+    # Absence is not a test failure: the process may have crashed before logging.
+    container="$(xcrun simctl get_app_container "$udid" com.example.horizonios.game data 2>/dev/null || true)"
+    if [[ -n "$container" && -f "$container/Documents/logs/latest.log" ]]; then
+        cp "$container/Documents/logs/latest.log" "$output_dir/horizon-ios-game-simulator-game.log" || true
+    fi
     xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true
 }
 trap capture EXIT
@@ -37,5 +44,7 @@ xcrun simctl install "$udid" "$app"
 # Disable telemetry for a CI run, and never synthesize proprietary game files.
 SIMCTL_CHILD_HORIZON_TELEMETRY_URL=off \
     xcrun simctl launch "$udid" com.example.horizonios.game
-sleep 7
+# Allow first-run Metal and font initialization time to paint the screen.
+# Tests can set zero seconds; the real simulator defaults to twenty.
+sleep "${HORIZON_IOS_GAME_SIMULATOR_WAIT_SECONDS:-20}"
 echo "Native Horizon game process launched in Simulator; screenshot is for visual review."

@@ -49,7 +49,14 @@ pub fn open_folder(dir: &Path) {
             }
         }
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "ios")]
+    {
+        log::info!(
+            "Horizon iOS: open the Files app and find Horizon Game / {}",
+            dir.display()
+        );
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         let program = if cfg!(target_os = "windows") {
             "explorer"
@@ -71,7 +78,11 @@ pub fn open_uri(uri: &str) {
     if let Err(error) = open::that_detached(uri) {
         log::warn!("Horizon: could not open URI {uri}: {error}");
     }
-    #[cfg(not(any(windows, target_os = "android")))]
+    #[cfg(target_os = "ios")]
+    if !horizon_apple_open::open_web_url(uri) {
+        log::warn!("Horizon iOS: invalid URL or unavailable browser: {uri}");
+    }
+    #[cfg(not(any(windows, target_os = "android", target_os = "ios")))]
     open_folder(Path::new(uri));
 }
 /// The resource root to load from, given the vanilla root, the selection and

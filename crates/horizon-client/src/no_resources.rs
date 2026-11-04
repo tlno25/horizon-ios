@@ -15,6 +15,21 @@ const PARAGRAPHS: [&str; 3] = [
      prepares the game files from it.",
     "Download the launcher at playhorizon.dev, then press Play there.",
 ];
+const IOS_TITLE: &str = "Horizon on iPhone needs game files";
+const IOS_PARAGRAPHS: [&str; 3] = [
+    "Prepare resources from a Minecraft: Java Edition copy you own.",
+    "Use Files or Finder to put the prepared data in Documents/resources, including horizon-resources.json.",
+    "Close Horizon completely and reopen it after copying the files.",
+];
+
+/// Platform-specific first-run guidance; the iPhone has no desktop launcher.
+fn copy_for_platform(ios: bool) -> (&'static str, &'static [&'static str], &'static str) {
+    if ios {
+        (IOS_TITLE, &IOS_PARAGRAPHS, "Horizon website")
+    } else {
+        (TITLE, &PARAGRAPHS, "Download the launcher")
+    }
+}
 const COLUMN: f32 = 560.0;
 const BUTTON_GAP: f32 = 12.0;
 
@@ -35,16 +50,32 @@ impl NoResources {
     pub fn new(looked_in: &std::path::Path) -> Self {
         let shown = std::path::absolute(looked_in).unwrap_or_else(|_| looked_in.to_path_buf());
         Self {
-            looked_in: format!("No prepared game files in {}", shown.display()),
+            looked_in: if cfg!(target_os = "ios") {
+                "Missing: Documents/resources/horizon-resources.json".to_owned()
+            } else {
+                format!("No prepared game files in {}", shown.display())
+            },
         }
+    }
+
+    /// Present a short import error on the same safe first-run screen, so a
+    /// half-copied or incompatible bundle doesn't terminate at the loader.
+    pub fn with_import_issue(mut self, issue: &str) -> Self {
+        self.looked_in = format!("Resource import problem: {issue}");
+        self
     }
 
     /// The buttons' labels, actions and rectangles in dp, and the paragraphs' wrapped
     /// lines: one layout for drawing and clicks.
     fn layout(&self, ui: &Ui) -> Layout {
+        self.layout_for_platform(ui, cfg!(target_os = "ios"))
+    }
+
+    fn layout_for_platform(&self, ui: &Ui, ios: bool) -> Layout {
         let width = COLUMN.min(ui.w - 64.0).max(160.0);
         let x = ((ui.w - width) / 2.0).round();
-        let lines: Vec<Vec<String>> = PARAGRAPHS
+        let (_, paragraphs, download_label) = copy_for_platform(ios);
+        let lines: Vec<Vec<String>> = paragraphs
             .iter()
             .map(|p| wrap(ui, Face::Regular, BODY, p, width))
             .collect();
@@ -55,10 +86,7 @@ impl NoResources {
         let buttons_y = y + TITLE_LINE + 16.0 + text_h + 28.0;
         let mut buttons = Vec::new();
         let mut bx = x;
-        for (label, action) in [
-            ("Download the launcher", Action::Download),
-            ("Quit", Action::Quit),
-        ] {
+        for (label, action) in [(download_label, Action::Download), ("Quit", Action::Quit)] {
             let w = (ui.measure(Face::Medium, BUTTON_TEXT, label) + 40.0).round();
             buttons.push(Button {
                 label,
@@ -89,7 +117,7 @@ impl NoResources {
             layout.x,
             y,
             color::TEXT,
-            TITLE,
+            copy_for_platform(cfg!(target_os = "ios")).0,
         );
         y += TITLE_LINE + 16.0;
         for paragraph in &layout.lines {
@@ -224,6 +252,52 @@ mod tests {
         let cursor = (cursor.0 / batch.scale, cursor.1 / batch.scale);
         let mut ui = Ui::new(&atlas, &mut batch, cursor);
         f(&mut ui)
+    }
+
+    #[test]
+    fn mobile_first_run_buttons_fit_a_landscape_iphone_screen() {
+        let screen = NoResources::new(std::path::Path::new("resources"));
+        for size in [[844, 390], [932, 430]] {
+            with_ui(size, (0.0, 0.0), |ui| {
+                let layout = screen.layout_for_platform(ui, true);
+                assert!(layout.buttons.iter().all(|button| button.y >= 0.0));
+                assert!(
+                    layout
+                        .buttons
+                        .iter()
+                        .all(|button| button.y + CONTROL < ui.h)
+                );
+                assert!(
+                    layout
+                        .buttons
+                        .iter()
+                        .all(|button| button.x + button.w < ui.w)
+                );
+                assert!(layout.buttons[0].y + CONTROL + 20.0 + SMALL_LINE <= ui.h);
+            });
+        }
+    }
+
+    #[test]
+    fn ios_first_run_instructions_point_to_visible_documents_resources() {
+        let (title, messages, button) = copy_for_platform(true);
+        assert!(title.contains("iPhone"));
+        assert!(messages.join(" ").contains("Documents/resources"));
+        assert!(messages.join(" ").contains("horizon-resources.json"));
+        assert!(messages.join(" ").contains("Java Edition"));
+        assert!(!button.contains("launcher"));
+        let (desktop_title, desktop_messages, desktop_button) = copy_for_platform(false);
+        assert_eq!(desktop_title, TITLE);
+        assert_eq!(desktop_messages, &PARAGRAPHS);
+        assert_eq!(desktop_button, "Download the launcher");
+    }
+
+    #[test]
+    fn ios_incomplete_import_shows_the_specific_problem_not_only_missing_manifest() {
+        let screen = NoResources::new(std::path::Path::new("resources"))
+            .with_import_issue("Prepared resources are missing facts.json");
+        assert!(screen.looked_in.contains("facts.json"));
+        assert!(!screen.looked_in.contains(".local/horizon-client"));
     }
 
     #[test]

@@ -27,6 +27,7 @@ private weak var diagnosticsOverlayView: UIView?
 private weak var diagnosticsRestoreButton: UIButton?
 private weak var physicsJumpButton: UIButton?
 private weak var physicsSprintButton: UIButton?
+private weak var physicsCrouchButton: UIButton?
 private weak var physicsMovePad: UIView?
 
 private func setDiagnosticsVisible(_ visible: Bool) {
@@ -35,6 +36,7 @@ private func setDiagnosticsVisible(_ visible: Bool) {
     diagnosticsRestoreButton?.isHidden = visible
     physicsJumpButton?.isHidden = visible || horizon_ios_preview_physics_enabled() == 0
     physicsSprintButton?.isHidden = visible || horizon_ios_preview_physics_enabled() == 0
+    physicsCrouchButton?.isHidden = visible || horizon_ios_preview_physics_enabled() == 0
     if visible, let pad = physicsMovePad as? PhysicsMovePad {
         pad.cancelMovement()
     }
@@ -93,6 +95,7 @@ private func saveGraphicsStatus() {
         "terrain_preview": Int(horizon_ios_terrain_preview_state()),
         "preview_physics": Int(horizon_ios_preview_physics_enabled()),
         "preview_sprint": Int(horizon_ios_preview_sprinting()),
+        "preview_crouch": Int(horizon_ios_preview_crouching()),
         "renderer_stage": mostRecentRendererStage,
         "smoke_mode": Int(horizon_ios_renderer_smoke_enabled()),
         "player": horizon_ios_player_name().map { String(cString: $0) } ?? ""
@@ -176,6 +179,7 @@ private struct HomeView: View {
     @State private var terrainPreviewState = horizon_ios_terrain_preview_state()
     @State private var previewPhysicsEnabled = horizon_ios_preview_physics_enabled() != 0
     @State private var previewSprintEnabled = horizon_ios_preview_sprinting() != 0
+    @State private var previewCrouchEnabled = horizon_ios_preview_crouching() != 0
     @State private var rendererStage = mostRecentRendererStage
     @State private var coreLoadMessage = mostRecentCoreLoadMessage
     @State private var worldInspectionMessage = mostRecentWorldInspectionMessage
@@ -189,6 +193,7 @@ private struct HomeView: View {
     @State private var activeTouchCount = horizon_ios_touch_count()
     @State private var touchEventCount = horizon_ios_touch_events()
     @State private var diagnosticFingerDown = false
+    @State private var showDeveloperDiagnostics = false
 
     private var stateLabel: String {
         switch bridgeState {
@@ -303,6 +308,14 @@ private struct HomeView: View {
         refreshStatus()
     }
 
+    private func togglePreviewCrouch() {
+        let code = horizon_ios_toggle_preview_crouch()
+        if code != 0 {
+            graphicsError = "Cannot toggle read-only crouch (code \(code))"
+        }
+        refreshStatus()
+    }
+
     private func jumpInPreview() {
         let code = horizon_ios_preview_physics_jump()
         if code != 0 {
@@ -327,6 +340,7 @@ private struct HomeView: View {
         terrainPreviewState = horizon_ios_terrain_preview_state()
         previewPhysicsEnabled = horizon_ios_preview_physics_enabled() != 0
         previewSprintEnabled = horizon_ios_preview_sprinting() != 0
+        previewCrouchEnabled = horizon_ios_preview_crouching() != 0
         rendererStage = mostRecentRendererStage
         worldInspectionMessage = mostRecentWorldInspectionMessage
         worldInspectionState = mostRecentWorldInspectionState
@@ -402,12 +416,14 @@ private struct HomeView: View {
             Color.clear.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Horizon")
-                        .font(.largeTitle.bold())
-                    Text("iOS integration preview")
-                        .foregroundStyle(.secondary)
-
+                    LauncherView(
+                        version: String(cString: horizon_ios_game_version()),
+                        installed: engineState == 2,
+                        importFromFiles: { showResourceImporter = true }
+                    )
                     Divider()
+                    DisclosureGroup("開発者向け診断", isExpanded: $showDeveloperDiagnostics) {
+                    VStack(alignment: .leading, spacing: 12) {
                     LabeledContent("Game version", value: String(cString: horizon_ios_game_version()))
                     LabeledContent("Rust ABI", value: String(horizon_ios_abi_version()))
                     LabeledContent("App shell", value: stateLabel)
@@ -474,12 +490,14 @@ private struct HomeView: View {
                             if previewPhysicsEnabled {
                                 Button(previewSprintEnabled ? "Stop sprint" : "Sprint", action: togglePreviewSprint)
                                     .buttonStyle(.bordered)
+                                Button(previewCrouchEnabled ? "Stand" : "Crouch", action: togglePreviewCrouch)
+                                    .buttonStyle(.bordered)
                                 Button("Jump", action: jumpInPreview)
                                     .buttonStyle(.borderedProminent)
                             }
                         }
                         Text(previewPhysicsEnabled
-                            ? "Read-only 20 TPS movement: left thumbstick to walk, right-side Sprint (forward input only) and Jump controls. Block speed and jump multipliers apply. No world ticks or saving."
+                            ? "Read-only 20 TPS movement: thumbstick to walk, Sprint, Crouch and Jump on the right. Crouch slows walking, lowers the eye, and checks overhead blocks before standing. No world ticks or saving."
                             : "One finger: look around. Two fingers: pan or pinch through collision-tested saved terrain. Enable physics explicitly to test falling and jumping. Reset restores the saved camera; gameplay and saves are unchanged.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
@@ -556,6 +574,8 @@ private struct HomeView: View {
                     Text("Load game data, open the native title, then select a saved world. Up to 3×3 existing chunks render read-only. The opt-in 20 TPS movement preview has a left thumbstick, sprint, gravity and jumping, with native block speed/jump factors and no world ticks or saving.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                    }
+                    }
                 }
                 .padding(20)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -654,6 +674,8 @@ public func horizon_ios_preview_physics_changed() {
     physicsJumpButton?.isHidden = diagnosticsVisible || horizon_ios_preview_physics_enabled() == 0
     physicsSprintButton?.isHidden = diagnosticsVisible || horizon_ios_preview_physics_enabled() == 0
     physicsSprintButton?.setTitle(horizon_ios_preview_sprinting() == 0 ? "Sprint" : "Sprinting", for: .normal)
+    physicsCrouchButton?.isHidden = diagnosticsVisible || horizon_ios_preview_physics_enabled() == 0
+    physicsCrouchButton?.setTitle(horizon_ios_preview_crouching() == 0 ? "Crouch" : "Stand", for: .normal)
     if diagnosticsVisible || horizon_ios_preview_physics_enabled() == 0 {
         (physicsMovePad as? PhysicsMovePad)?.cancelMovement()
     }
@@ -752,6 +774,9 @@ public func horizon_ios_mount_home(_ parentPointer: UnsafeMutableRawPointer?) {
         if let sprint = physicsSprintButton {
             parent.view.bringSubviewToFront(sprint)
         }
+        if let crouch = physicsCrouchButton {
+            parent.view.bringSubviewToFront(crouch)
+        }
         if let pad = physicsMovePad {
             parent.view.bringSubviewToFront(pad)
         }
@@ -815,6 +840,22 @@ public func horizon_ios_mount_home(_ parentPointer: UnsafeMutableRawPointer?) {
     ])
     physicsSprintButton = sprint
     sprint.isHidden = true
+
+    let crouch = UIButton(type: .system)
+    crouch.setTitle("Crouch", for: .normal)
+    crouch.accessibilityLabel = "Toggle crouch in read-only physics preview"
+    crouch.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.88)
+    crouch.layer.cornerRadius = 12
+    crouch.contentEdgeInsets = UIEdgeInsets(top: 13, left: 16, bottom: 13, right: 16)
+    crouch.translatesAutoresizingMaskIntoConstraints = false
+    crouch.addAction(UIAction { _ in _ = horizon_ios_toggle_preview_crouch() }, for: .touchUpInside)
+    parent.view.addSubview(crouch)
+    NSLayoutConstraint.activate([
+        crouch.trailingAnchor.constraint(equalTo: parent.view.safeAreaLayoutGuide.trailingAnchor, constant: -20),
+        crouch.bottomAnchor.constraint(equalTo: sprint.topAnchor, constant: -12)
+    ])
+    physicsCrouchButton = crouch
+    crouch.isHidden = true
 
     let pad = PhysicsMovePad(frame: .zero)
     pad.translatesAutoresizingMaskIntoConstraints = false

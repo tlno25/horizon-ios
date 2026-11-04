@@ -378,11 +378,25 @@ impl ReadOnlyWorldStage {
         max_step: f32,
         on_ground: bool,
     ) -> Result<[f64; 3]> {
+        self.resolve_preview_movement_with_pose(binding, from, target, max_step, on_ground, false)
+    }
+
+    /// Same native collision resolver with the temporary crouched player body.
+    /// The World and saved player state remain untouched.
+    pub fn resolve_preview_movement_with_pose(
+        &self,
+        binding: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
+        from: [f64; 3],
+        target: [f64; 3],
+        max_step: f32,
+        on_ground: bool,
+        crouching: bool,
+    ) -> Result<[f64; 3]> {
         use horizon_core::geometry::Vec3;
         if !max_step.is_finite() || !(0.0..=0.6).contains(&max_step) {
             return Err("Preview step height outside safe bounds".into());
         }
-        let body = preview_player_bounds(from)?;
+        let body = preview_player_bounds_with_pose(from, crouching)?;
         if !target.iter().all(|v| v.is_finite()) {
             return Err("Preview movement target is not finite".into());
         }
@@ -406,19 +420,44 @@ impl ReadOnlyWorldStage {
             from[2] + resolved.z,
         ])
     }
+
+    /// Do not allow uncrouching under a ceiling. Query the shared native
+    /// collision engine with the full standing body before changing pose.
+    pub fn can_stand(
+        &self,
+        binding: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
+        position: [f64; 3],
+    ) -> Result<bool> {
+        let mut collisions = crate::collisions::SceneCollisions {
+            world: &self.world,
+            binding,
+            subject: None,
+        };
+        collisions.unobstructed(preview_player_bounds(position)?)
+    }
 }
 
 /// Standard standing-player 0.6×1.8 block volume at the saved feet pose.
 /// This is a passive collision probe, not a living simulated entity.
 pub fn preview_player_bounds(position: [f64; 3]) -> Result<horizon_core::geometry::Aabb> {
+    preview_player_bounds_with_pose(position, false)
+}
+
+/// Vanilla-sized preview body: standing 0.6×1.8 or crouching 0.6×1.5.
+/// Used only for read-only collision queries; no persistent player pose.
+pub fn preview_player_bounds_with_pose(
+    position: [f64; 3],
+    crouching: bool,
+) -> Result<horizon_core::geometry::Aabb> {
     use horizon_core::geometry::{Aabb, Vec3};
     if !position.iter().all(|v| v.is_finite()) {
         return Err("Preview camera has nonfinite coordinates".into());
     }
     let [x, y, z] = position;
+    let height = if crouching { 1.5 } else { 1.8 };
     Ok(Aabb::new(
         Vec3::new(x - 0.3, y, z - 0.3),
-        Vec3::new(x + 0.3, y + 1.8, z + 0.3),
+        Vec3::new(x + 0.3, y + height, z + 0.3),
     ))
 }
 
@@ -1126,11 +1165,21 @@ pub fn terrain_preview_frame(
     saved_position: [f64; 3],
     rotation: [f32; 2],
 ) -> Frame<'_> {
+    terrain_preview_frame_with_pose(hud, saved_position, rotation, false)
+}
+
+/// Keep the first-person eye aligned with the temporary native preview pose.
+pub fn terrain_preview_frame_with_pose(
+    hud: &HudBatch,
+    saved_position: [f64; 3],
+    rotation: [f32; 2],
+    crouching: bool,
+) -> Frame<'_> {
     let mut frame = loading_frame(hud);
-    // The saved position is the player's feet. First-person view is 1.62 m up.
+    // The saved position is the player's feet. Native eye heights: 1.62/1.27.
     let camera = glam::DVec3::new(
         saved_position[0],
-        saved_position[1] + 1.62,
+        saved_position[1] + if crouching { 1.27 } else { 1.62 },
         saved_position[2],
     );
     let rotation = safe_preview_rotation(rotation);
@@ -1710,6 +1759,30 @@ mod tests {
         chunk.set(136, 80, -74, 3); // full ice block, high friction coefficient
         chunk.set(136, 80, -75, 4); // soul sand, slow movement factor
         chunk.set(137, 80, -75, 5); // honey, reduced jump factor
+        chunk.set(134, 82, -73, 1); // synthetic low ceiling above a crouched viewer
+        let under_ceiling = [134.5, 80.3, -72.5];
+        assert!(!steps.can_stand(&collisions, under_ceiling).unwrap());
+        let mut crouched = crate::preview_physics::PreviewPhysics::new(under_ceiling);
+        assert!(crouched.set_crouching(true, &steps, &collisions).unwrap());
+        assert!(crouched.crouching());
+        assert!(!crouched.set_crouching(false, &steps, &collisions).unwrap());
+        assert!(crouched.crouching(), "ceiling cannot force a standing pose");
+        let approaching = [133.5, 80.3, -72.5];
+        let through = [134.5, 80.3, -72.5];
+        let blocked_standing = steps
+            .resolve_preview_movement(&collisions, approaching, through)
+            .unwrap();
+        let allowed_crouched = steps
+            .resolve_preview_movement_with_pose(&collisions, approaching, through, 0.0, false, true)
+            .unwrap();
+        assert!(blocked_standing[0] < 134.0, "standing head hits ceiling");
+        assert!(
+            allowed_crouched[0] > 134.4,
+            "crouched body fits below ceiling"
+        );
+        crouched.sync_camera([132.5, 80.3, -72.5]);
+        assert!(crouched.set_crouching(false, &steps, &collisions).unwrap());
+        assert!(!crouched.crouching());
         let before = [137.5, 80.0, -65.5];
         let target = [138.5, 80.0, -65.5];
         let blocked = steps
@@ -2005,6 +2078,9 @@ mod tests {
         );
         assert!(preview_player_bounds([0.0, f64::INFINITY, 0.0]).is_err());
         assert!(preview_player_bounds([f64::NAN, 64.0, 0.0]).is_err());
+        let crouched = preview_player_bounds_with_pose([128.5, 72.0, -64.25], true).unwrap();
+        assert_eq!(crouched.max_position().y, 73.5);
+        assert_eq!(crouched.min_position(), bounds.min_position());
     }
 
     #[test]
@@ -2086,6 +2162,9 @@ mod tests {
         assert!(frame.skybox);
         assert_eq!(frame.camera, glam::DVec3::new(128.5, 73.62, -64.25));
         assert_eq!(frame.eye, frame.camera);
+        let crouched =
+            terrain_preview_frame_with_pose(&hud, [128.5, 72.0, -64.25], [45.0, -15.0], true);
+        assert_eq!(crouched.camera, glam::DVec3::new(128.5, 73.27, -64.25));
         assert_eq!(frame.eye_rotation, [45.0, -15.0]);
         assert_eq!(frame.yaw, 45.0);
         assert_eq!(frame.pitch, -15.0);

@@ -14,11 +14,18 @@ struct Missing {
     /// The pointer in physical pixels.
     pointer: (f64, f64),
     api: horizon_client::graphics::GraphicsApi,
+    #[cfg(target_os = "ios")]
+    touch: horizon_client::touch_ui::TouchUi,
     error: Option<Box<dyn std::error::Error>>,
 }
 
 /// Shows the screen until the player closes it.
-pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<()> {
+pub(super) fn show(looked_in: &std::path::Path, settings: &Settings, issue: &str) -> Result<()> {
+    let screen = NoResources::new(looked_in);
+    #[cfg(target_os = "ios")]
+    let screen = screen.with_import_issue(issue);
+    #[cfg(not(target_os = "ios"))]
+    let _ = issue;
     let mut app = Missing {
         window: None,
         renderer: None,
@@ -29,9 +36,11 @@ pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<(
                 pixels: [0u8; 4].repeat(6),
             }),
         },
-        screen: NoResources::new(looked_in),
+        screen,
         pointer: (0.0, 0.0),
         api: settings.horizon.api,
+        #[cfg(target_os = "ios")]
+        touch: Default::default(),
         error: None,
     };
     horizon_client::hud::GUI_SCALE.store(settings.gui_scale, Ordering::Relaxed);
@@ -92,14 +101,40 @@ impl Missing {
 }
 
 impl ApplicationHandler for Missing {
+    #[cfg(target_os = "ios")]
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        self.touch.cancel();
+        if let Some(renderer) = &mut self.renderer {
+            renderer.suspend_surface();
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "ios")]
+        if let Some(renderer) = &mut self.renderer {
+            if let Err(error) = renderer.recreate_surface() {
+                self.error = Some(error);
+                event_loop.exit();
+            } else if let Some(window) = &self.window {
+                let size = window.inner_size();
+                renderer.resize(size.width, size.height);
+                window.request_redraw();
+            }
+            return;
+        }
         if self.window.is_some() {
             return;
         }
         let attributes = Window::default_attributes()
             .with_title("Horizon")
-            .with_window_icon(horizon_client::window::icon())
-            .with_inner_size(winit::dpi::LogicalSize::new(1040.0, 700.0));
+            .with_window_icon(horizon_client::window::icon());
+        #[cfg(target_os = "ios")]
+        let attributes = winit::platform::ios::WindowAttributesExtIOS::with_valid_orientations(
+            attributes,
+            winit::platform::ios::ValidOrientations::Landscape,
+        );
+        #[cfg(not(target_os = "ios"))]
+        let attributes = attributes.with_inner_size(winit::dpi::LogicalSize::new(1040.0, 700.0));
         let made = event_loop
             .create_window(attributes)
             .map_err(Into::into)
@@ -134,6 +169,24 @@ impl ApplicationHandler for Missing {
         };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            #[cfg(target_os = "ios")]
+            WindowEvent::Touch(touch) => {
+                use horizon_client::ios_touch::{MenuTouchAction, menu_action};
+                use winit::event::TouchPhase;
+                let action = menu_action(
+                    &mut self.touch,
+                    touch.id,
+                    [touch.location.x as f32, touch.location.y as f32],
+                    touch.phase,
+                );
+                if touch.phase != TouchPhase::Cancelled {
+                    self.pointer = (touch.location.x, touch.location.y);
+                    window.request_redraw();
+                }
+                if action == MenuTouchAction::Click {
+                    self.click(event_loop);
+                }
+            }
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer {
                     r.resize(size.width, size.height);

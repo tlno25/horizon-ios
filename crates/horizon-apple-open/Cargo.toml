@@ -1,0 +1,14 @@
+[package]
+name = "horizon-apple-open"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+url = "2"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.5.3"
+objc2-foundation = { version = "0.2.2", default-features = false, features = ["std", "NSString", "NSURL", "NSDictionary", "NSObject", "NSThread"] }
+objc2-ui-kit = { version = "0.2.2", default-features = false, features = ["std", "UIApplication", "UIResponder", "block2"] }

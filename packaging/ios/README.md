@@ -1,5 +1,270 @@
 # Horizon iOS development shell (vertical slice in progress)
 
+## SwiftUI launcher (existing development shell)
+
+The `device` build now opens a **SwiftUI launcher** in the original HorizonIOS
+shell. It can import an archive from Files or download a privately prepared
+resource ZIP over HTTPS, with live byte progress, cancellation, a 2 GiB transfer
+limit, mandatory SHA-256 verification, and the existing Rust ZIP extractor's
+path/symlink/unpacked-size checks. The native importer now checks required
+files and Minecraft version **before** installing a downloaded or Files ZIP;
+a partial archive does not block retry. Redirects to insecure HTTP are refused.
+
+The download address is intentionally **not** a public Mojang asset mirror. For
+this milestone the user prepares resources on Windows using their own licensed
+Minecraft Java Edition (see below), creates a ZIP with the manifest at its root,
+keeps it in private HTTPS storage, and provides its exact URL and SHA-256:
+
+```powershell
+Get-FileHash -Algorithm SHA256 .\Horizon-iOS-prepared.zip
+```
+
+The SwiftUI settings sheet writes Horizon's actual `options.txt` format via the
+shared Rust parser, rather than inventing a second options format. It currently
+exposes render and simulation distance, FPS cap, FOV, VSync, auto-jump, master
+volume and offline name. Edits are validated and existing unknown lines are
+preserved. Restart the shell to load changes.
+
+**Important limitation:** the SwiftUI launcher lives in the diagnostic shell's
+app sandbox. The native-game `game` build is currently another app with a
+**different sandbox and executable**. Installing resources or changing settings
+in the shell does **not** make the separate HorizonGame IPA ready to play.
+A single bundled launcher + real-game event loop, Microsoft sign-in / ownership
+verification, automatic private resource provisioning, and device gameplay
+are subsequent integration tasks. The launcher doesn't claim to start Minecraft
+or distribute Mojang files. The game IPA remains unsigned.
+
+## Single-app SwiftUI launcher and one-tap resource install (experimental)
+
+The `build_target=game` **native game IPA** now embeds
+`HorizonLauncherKit.framework` next to the Rust `HorizonGame` executable.
+Unlike the older diagnostic shell, this framework uses the **game's own**
+Documents sandbox, so an installation and game startup share the same files.
+The Rust Winit event loop presents the SwiftUI screen before initializing
+Metal or loading Minecraft resources. After pressing Download, the launcher:
+
+1. Fetches the app publisher's HTTPS manifest, validates the required
+   Minecraft version, ZIP size (up to 2 GiB), and SHA-256 checksum.
+2. Downloads the prepared ZIP with progress and cancellation, checks its
+   complete byte size and SHA-256, then asks the Rust game to import it.
+3. Rust extracts the ZIP into a staging directory, verifies core resources,
+   and atomically installs it before the SwiftUI launcher requests game start.
+4. The launcher asks the native game loader to start in the **same UIWindow
+   and sandbox**. No second install or folder manipulation is required from
+   the end user in a publisher-configured build. This runtime handoff still
+   needs iPhone and Simulator validation.
+
+### User-hosted HTTPS ZIP fallback and interrupted-download recovery
+
+As in the heyskylo/horizon-ios reference launcher, the native SwiftUI game
+launcher now also exposes an **optional personal HTTPS ZIP link** with an
+optional SHA-256 field. When a publisher has not set a default manifest URL,
+this link form opens automatically instead of leaving a broken Download
+button. A player can retrieve an archive they legally prepared and host
+privately, without importing or moving files in iOS Files.app.
+
+Both configured one-tap downloads and private-link downloads use the same
+URLSessionDownloadTask, the 2 GiB limit, and Rust's checked installer.
+A publisher-configured manifest requires an exact SHA-256 and byte count;
+a personal link may omit the checksum but then HTTPS and the Rust ZIP
+structure/version/symlink/path checks are the only integrity safeguards.
+Do not install ZIPs from sources you do not trust.
+
+When a server supports HTTP byte ranges and ETag/Last-Modified, iOS can
+return download resume data on an interrupted or canceled transfer. The
+launcher saves this in its private cache, keyed to the exact URL,
+checksum and expected length, and uses it on the next attempt.
+A file that has been validated and installed clears that cache.
+The transfer requests bounded iOS background execution time and saves
+resume information if the background time expires. This is **not** a claim
+that a transfer will continue indefinitely while the app is suspended,
+and servers without Range support may require a fresh download.
+
+The third-party URL found in the reference implementation is intentionally
+**not embedded or trusted as a default Minecraft asset provider**. Public
+redistribution of proprietary game files requires appropriate rights.
+A publisher-configured build still offers the cleanest one-button
+experience without any user link input.
+
+**Publisher setup is still required:** Set the Actions repository variable
+`HORIZON_IOS_RESOURCES_MANIFEST_URL` to an HTTPS JSON file you are authorized
+to distribute. The release workflow writes it into the generated game's
+`Info.plist` as `HorizonResourcesManifestURL`. It must contain:
+
+```json
+{
+  "minecraft": "26.3",
+  "url": "https://your-authorized-server.example/horizon-26.3.zip",
+  "sha256": "<64-hex-character archive SHA-256>",
+  "size": 123456789
+}
+```
+
+For an **authorized** publisher archive, `packaging/ios/create_resource_download_manifest.py`
+can generate these values automatically, checking the game's preparation
+manifest and the required file structure. Example (URLs and file names are
+illustrative, not an existing public asset server):
+
+```bash
+python3 packaging/ios/create_resource_download_manifest.py \
+  --archive /path/to/authorized-prepared-resources.zip \
+  --minecraft-version 26.3 \
+  --url https://your-authorized-server.example/horizon-26.3.zip \
+  --output game-files.json
+```
+
+The publisher must host that exact archive and `game-files.json` over HTTPS,
+then set `HORIZON_IOS_RESOURCES_MANIFEST_URL` in GitHub Actions repository
+variables to the **public HTTPS address of `game-files.json`**, and build the
+`game` target. No folder selection, URL entry or checksum entry is required of
+the player. This helper never uploads files or supplies a third-party mirror.
+
+Use a **genuine hash and byte size** from the ZIP actually served. The ZIP
+needs the core files that `horizon-prepare` generates (root
+`horizon-resources.json` and the supporting files). Do not upload or publicly
+redistribute Mojang's proprietary assets unless you have authorization.
+There is **no verified publisher manifest configured in this repository**;
+without one, Download reports the missing configuration instead of guessing
+an untrusted mirror. That is a distributor setup issue, **not a step required
+of the player** after a correctly configured app is installed.
+
+For fast compiler feedback on Windows/Linux development, manually select
+`build_target=game-launcher` in the `Horizon iOS Manual Build` workflow. This
+compiles the SwiftUI framework alone on the macOS runner and checks the C ABI
+entrypoint, without rebuilding the expensive Rust client. The `game` and
+`game-simulator` targets remain the actual integrated binary checks.
+
+The native Simulator smoke test verifies more than SwiftUI presentation: in
+`HORIZON_IOS_SIMULATOR_SMOKE=1` mode, it asks Rust for the status, game settings
+and offline player name, confirms it refuses to start with no valid game files,
+then saves and reads back render distance 8. The resulting cache marker is
+CI-only and contains no player information or game assets. This catches broken
+Swift-to-Rust callbacks even if the launcher looks correct in a screenshot.
+The Simulator smoke also generates a tiny **synthetic, non-playable ZIP** in
+the simulator app's `Documents/` directory; SwiftUI calls
+`launcher-import horizon-download-CIRESOURCE.zip` and Rust verifies the
+structure/version and installs it. A second marker is written only if the
+installed resources become `ready`. Neither test ZIP nor marker is embedded
+in IPA artifacts, and the test intentionally does not start gameplay using
+fake Minecraft data. Actual licensed assets and gameplay remain unverified.
+
+The SwiftUI screen now displays in portrait on iPhone (all orientations on
+iPad), then requests landscape when Play begins. The underlying Winit window
+changes its supported orientation mask to match. Settings expose the game's
+options.txt format and the persistent 3–16 character offline player name; this
+name is **not** a Microsoft login and does not prove game ownership.
+
+The SwiftUI screen offers a limited subset of Horizon's game settings. Full
+account sign-in, entitlement verification, legal provisioning of Java Edition
+game data, all gameplay features and on-device performance are **not yet
+verified**. The signed, combined IPA still needs a legitimate Apple signing
+process to install on an actual iPhone. The `device` target continues to
+produce the separate diagnostic shell; use `game` for this integrated app.
+
+## Experimental native game executable (separate IPA)
+
+The manual GitHub Actions **Horizon iOS Manual Build** workflow now also offers
+`build_target=game`. It compiles the **actual Horizon Rust game binary**
+(`horizon-client`) for iPhoneOS arm64 and uploads **horizon-ios-native-game-ipa**
+containing `Horizon-game-unsigned.ipa`. This is separate from the existing
+`device` option, which continues to output the original SwiftUI/Metal
+diagnostic shell `horizon-ios-unsigned.ipa`. The `both` option retains its
+existing meaning (device shell + Simulator shell). None of the expensive macOS
+workflows run automatically after each push.
+
+The same manual workflow also offers `build_target=game-simulator`.
+This separately compiles **the real game executable** for an Apple Silicon
+iPhone Simulator (`aarch64-apple-ios-sim`) on macOS arm64, uploads
+`horizon-ios-game-simulator-app`, then attempts a boot/install/launch with
+no prepared Minecraft resources. It uploads an image and native logs in
+`horizon-ios-game-simulator-diagnostics` for inspection. A successful launch
+only demonstrates a Simulator app startup, **not** playable worlds or a
+correct Metal frame; examine the screenshot and logs before claiming more.
+This intentionally costs another manual macOS build and is not part of
+`build_target=both`.
+
+The native game uses Horizon's existing `loading_app` and gameplay code
+rather than a second, rewritten SwiftUI simulation. It enters its **own**
+writable app sandbox `Documents/` before loading resources, settings or saves.
+Use iOS file sharing to copy the **legally prepared** Horizon resource tree
+into the game's **Documents/resources/** with `horizon-resources.json` directly
+inside that `resources` directory. An older import into
+`Documents/.local/horizon-client/<game-version>/` is accepted as fallback.
+The resources imported into the diagnostic SwiftUI shell's Application Support
+folder are **not shared** with this distinct bundle ID. The build never
+includes Minecraft assets; they must come from the player's own Java Edition.
+Native-game runtime logs and crash reports are written by default under
+`Documents/logs/latest.log` and `Documents/crash-reports/`, accessible from
+Files or Finder/iOS file sharing for troubleshooting; explicitly configured
+`--home` and `HORIZON_HOME` still take precedence. Treat these files as
+private, since crash diagnostics may contain server or local file details.
+
+### Preparing your own resources on Windows and transferring to iPhone
+
+On iPhone, the native game performs a lightweight **preflight before the
+resource loader starts**. It checks that `horizon-resources.json` is readable,
+contains a preparation schema for the expected Minecraft version, and that
+the four core JSON files (`facts.json`, `block-tags.json`, `registries.json`,
+`commands.json`) and nonempty font/texture directories are present. If the
+folder is only partly transferred, the first-run screen names the missing
+file instead of trying to load a broken world. This does **not** check hashes,
+verify every resource, or guarantee playable worlds: run
+`horizon-prepare --check` on Windows before copying the archive.
+
+The native game IPA cannot include the proprietary Minecraft game files.
+From Windows 11, install the official Minecraft: Java Edition **26.3** with
+its launcher and run it once. You also need Rust, JDK **25** and the matching
+26.3 server JAR obtained from your own licensed Minecraft installation.
+In PowerShell, from a local clone of this project:
+
+```powershell
+cargo run --release -p horizon-prepare -- --prepare --server-jar "$env:USERPROFILE\Downloads\server.jar"
+cargo run --release -p horizon-prepare -- --check
+```
+
+Replace the server JAR path with your actual copy. The importer produces
+`.local\horizon-client\26.3\` on your PC. To transfer it as a single file:
+
+```powershell
+tar -a -cf Horizon-iOS-prepared.zip -C ".local\horizon-client\26.3" .
+```
+
+**Keep this ZIP private**; it contains game files prepared from your
+own Minecraft copy, not open-source Horizon code. Transfer it through the
+iPhone Files app, iCloud Drive or iOS file sharing; extract it in Files
+and make the resulting folder **`On My iPhone > Horizon Game (Experimental)
+> resources`**. The `horizon-resources.json` file must be immediately
+inside `resources/`, not inside another nested ZIP folder. Completely quit
+and reopen the iOS app. This transfer path has not yet been validated on a
+physical iPhone. The separate SwiftUI shell has its own ZIP importer.
+
+**Do not mistake this build target for a finished, playable mobile client.**
+An app launched without prepared resources now shows a native, touch-enabled
+first-run screen telling the player to copy the legally prepared assets to
+`Documents/resources/horizon-resources.json`. The first-run screen uses the
+device viewport and survives iOS surface suspension/resume. The loading/title
+stage requests the native UIKit keyboard when a text field receives focus;
+committed Unicode input uses Horizon's existing title edit path. Exact keyboard
+and orientation behavior still need physical iPhone verification.
+
+The native game and the loading window now request the device's own
+landscape viewport instead of a desktop-sized (1280×720 point) UIKit window.
+The **initial loading/title menu** uses Horizon's existing touch gesture
+recognizer for tap-on-release and scroll, preventing drag-to-open errors.
+The game window now also routes native iOS touches through the **existing
+Horizon touch pad** (movement, look, jump, sneak, attack/use, hotbar and
+pause/inventory), drawing its existing HUD and retaining the user's touch
+control layout. App suspension releases held inputs and suspends its GPU
+surface; resume recreates the surface. These iOS paths still require
+on-device verification, especially menu text entry and multiplayer. Account
+sign-in, advanced native text-entry UX, audio output and actual world gameplay
+remain incomplete or unverified. This native game IPA is a feasibility/compile
+milestone, not a claim that worlds can be played on iPhone. The IPA is also
+**unsigned** and must be signed with a valid development/sideloading identity
+before installation. The bundle identifier `com.example.horizonios.game` is
+a development placeholder. The original shell and the native game can be
+installed side by side (distinct bundle IDs).
+
 This app is the iOS port of the **Horizon Rust engine**, not Pomme/Client.
 The SwiftUI home screen is still a shell; it **does not launch playable
 Minecraft**. The iOS static library now links the shared `horizon-client`
@@ -15,7 +280,14 @@ It does **not** build a macOS/iOS app or use a macOS runner.
 
 To produce an iPhone/iPad app, open
 [Horizon iOS Manual Build](https://github.com/tlno25/horizon-ios/actions/workflows/ios-simulator.yml),
-select **Run workflow**, choose branch **ios**, and select `build_target`:
+select **Run workflow**, choose branch **ios** for the existing diagnostic
+targets, and select `build_target`. The experimental native game builds are
+currently on branch **`agent/ios-preview-crouch`**, not yet merged into
+`ios`; dispatch them explicitly with GitHub CLI using
+`gh workflow run ios-simulator.yml --repo tlno25/horizon-ios --ref agent/ios-preview-crouch -f build_target=game`
+(or `game-simulator`). The UI's available choices may reflect the default
+branch until the feature is merged.
+
 
 - **device** (default): build an unsigned arm64 iPhone/iPad IPA with Xcode.
   Download the `horizon-ios-unsigned-ipa` artifact, extract GitHub's outer ZIP,
@@ -141,6 +413,14 @@ resources; fluid travel, status effects, native sprint eligibility/exhaustion,
 complex supporting blocks and full entity step/landing effects still require
 the complete game runtime. Sprint here is an explicit opt-in toggle rather
 than vanilla's full double-tap / hunger-aware input state machine.
+
+A separate opt-in **Crouch** toggle now uses the same native collision
+resolver with a 0.6×1.5 player body, 1.27-block eye height, and the
+standard 30% crouched movement-input scale. Crouching excludes sprint.
+**Stand** checks the real saved block geometry for sufficient headroom
+before restoring the 0.6×1.8 standing body. This does not yet implement
+full gameplay sneak-edge backoff or fluid/ability rules; it only affects
+the temporary read-only viewer and never changes save data.
 
 The transient view camera moves through the read-only native block collision
 world (full voxel shapes, not an invented approximate physics implementation),

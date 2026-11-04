@@ -143,6 +143,12 @@ mod ime;
 mod initial_spawn;
 mod integrated;
 mod interactions;
+#[cfg(target_os = "ios")]
+mod ios_input;
+// Compile the iOS launcher protocol in host-side binary tests too. The UIKit
+// presentation is platform-gated separately in horizon-ios-launcher.
+#[cfg(any(target_os = "ios", test))]
+mod ios_native_launcher;
 mod item_draw;
 mod item_particles;
 mod item_use;
@@ -576,6 +582,13 @@ impl Options {
         let mut o = Self {
             resources: if sibling.join("horizon-resources.json").exists() {
                 sibling
+            } else if cfg!(target_os = "ios") {
+                // A visible Documents/resources directory allows players to
+                // supply legally prepared assets using Finder or Files.app.
+                horizon_client::ios_paths::game_resources_dir(
+                    &std::env::current_dir()?,
+                    horizon_core::VANILLA_VERSION,
+                )
             } else {
                 std::path::Path::new(".local/horizon-client").join(horizon_core::VANILLA_VERSION)
             },
@@ -2274,6 +2287,8 @@ struct Game<'a> {
     last_input: Instant,
     /// Controllers (Horizon's own).
     pad: pad::Pads,
+    #[cfg(target_os = "ios")]
+    ios_menu_touch: horizon_client::touch_ui::TouchUi,
     frames: u64,
     /// The glint clock and options, read once at the start of each frame
     /// (game/item_draw.rs).
@@ -7674,16 +7689,27 @@ impl Game<'_> {
             // so everywhere else warp after grabbing.
             #[cfg(target_os = "macos")]
             warp(window);
-            self.captured = window
-                .set_cursor_grab(CursorGrabMode::Locked)
-                .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
-                .is_ok();
+            // iOS's WinitView is touch-only: CursorGrabMode is unsupported.
+            // Treat the playing surface as logically captured so a tap does
+            // not become an endless attempt to grab a nonexistent mouse.
+            let native_grabbed = if cfg!(target_os = "ios") {
+                false
+            } else {
+                window
+                    .set_cursor_grab(CursorGrabMode::Locked)
+                    .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
+                    .is_ok()
+            };
+            self.captured = horizon_client::ios_touch::touchscreen_capture(
+                native_grabbed,
+                cfg!(target_os = "ios"),
+            );
             #[cfg(target_os = "android")]
             {
                 self.captured =
                     !crate::keyboard_mouse_input() || crate::platform::capture_mouse(true);
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", target_os = "ios")))]
             if self.captured && self.focused {
                 warp(window);
             }
@@ -7947,6 +7973,15 @@ impl Game<'_> {
                 .draw(self.settings.horizon.overlay, b, &self.gui.atlas);
         });
         self.draw_pad_cursor(&mut batch);
+        #[cfg(target_os = "ios")]
+        if !self.pad_in_menu() && self.focused {
+            // Initialize the layout at the real display size before the first
+            // touch; keep the same saved touch-control layout as Android.
+            self.pad.touch.viewport(size[0], size[1]);
+            self.pad.touch.settings = self.settings.touch.clone();
+            self.pad.touch.force_crosshair = true;
+            self.pad.touch.draw(&mut batch, &self.gui.atlas);
+        }
         self.resolve_inline_profiles(&batch.inline_profiles);
         batch
     }
@@ -15920,11 +15955,14 @@ impl Game<'_> {
     }
 }
 impl ApplicationHandler for Game<'_> {
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
-        // Android may recreate the surface while the IME changes window size.
-        // Preserve the text session; Android hides its window on real backgrounding.
+        // Mobile platforms can suspend the surface while retaining the event
+        // loop. Release all live controls before UIKit/Android backgrounds.
+        #[cfg(target_os = "android")]
         self.android_release_touch_keys(true);
+        #[cfg(target_os = "ios")]
+        self.ios_menu_touch.cancel();
         self.capture(false);
         self.keys.clear();
         self.physical_keys.clear();
@@ -15937,8 +15975,9 @@ impl ApplicationHandler for Game<'_> {
         }
     }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         if let Some(renderer) = &mut self.renderer {
+            #[cfg(target_os = "android")]
             if let Some(window) = &self.window {
                 match crate::display::prepare(window) {
                     Ok(Some(size)) => renderer.resize(size[0], size[1]),
@@ -15971,10 +16010,29 @@ impl ApplicationHandler for Game<'_> {
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
             attributes, "horizon", "horizon",
         );
+        // On iOS, the Winit window must be the entire physical screen, not
+        // the desktop default of 1280×720 logical points.
+        #[cfg(target_os = "ios")]
+        let attributes = winit::platform::ios::WindowAttributesExtIOS::with_valid_orientations(
+            attributes,
+            if horizon_ios_launcher::waiting() {
+                // The SwiftUI launcher is portrait on phones. Permit it before
+                // it covers the same Winit window; Play restores landscape.
+                winit::platform::ios::ValidOrientations::LandscapeAndPortrait
+            } else {
+                winit::platform::ios::ValidOrientations::Landscape
+            },
+        );
+        let attributes =
+            match horizon_client::ios_paths::preferred_window_size(size, cfg!(target_os = "ios")) {
+                Some([width, height]) => {
+                    attributes.with_inner_size(winit::dpi::LogicalSize::new(width, height))
+                }
+                None => attributes,
+            };
         // `--offscreen` renders into a texture: its window would only show white.
         let window = match event_loop.create_window(
             attributes
-                .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
                 .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
                 .with_visible(!self.options.offscreen),
         ) {
@@ -16001,6 +16059,14 @@ impl ApplicationHandler for Game<'_> {
         self.ime_allowed = false;
         self.ime_area = None;
         self.apply_settings();
+        #[cfg(target_os = "ios")]
+        if let Some(window) = &self.window {
+            // Initialize the visible touch overlay *before* a first finger
+            // arrives; otherwise the HUD can start with uninitialized layout.
+            let size = window.inner_size();
+            self.pad.touch.viewport(size.width, size.height);
+            self.pad.touch.settings = self.settings.touch.clone();
+        }
         self.previous = Instant::now();
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -16201,6 +16267,13 @@ impl Game<'_> {
             self.pad.touch.cancel_editor();
             self.settings.touch = self.pad.touch.settings.clone();
             self.pause = false;
+            return;
+        }
+        #[cfg(target_os = "ios")]
+        if let WindowEvent::Touch(touch) = &event {
+            if let Err(error) = self.ios_handle_touch(event_loop, id, touch) {
+                log::warn!("iOS touch event failed: {error}");
+            }
             return;
         }
         #[cfg(target_os = "android")]
@@ -18053,6 +18126,8 @@ impl<'a> Game<'a> {
             previous: now,
             last_input: now,
             pad: Default::default(),
+            #[cfg(target_os = "ios")]
+            ios_menu_touch: Default::default(),
             frames: 0,
             glint_frame: Default::default(),
             kept_block_entities: Default::default(),
@@ -19747,6 +19822,10 @@ struct Loading {
     handle: Option<JoinHandle<()>>,
     shown: bool,
     menu: startup_menu::StartupMenu,
+    #[cfg(target_os = "ios")]
+    ime_allowed: bool,
+    #[cfg(any(target_os = "ios", test))]
+    native_imports: Vec<ios_native_launcher::ImportJob>,
     error: Option<Box<dyn std::error::Error>>,
 }
 impl Loading {
@@ -19822,7 +19901,7 @@ impl Loading {
         Ok(())
     }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         if let Some(renderer) = &mut self.renderer {
             if let Err(error) = renderer.recreate_surface() {
                 self.error = Some(error);
@@ -19853,10 +19932,23 @@ impl Loading {
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
             attributes, "horizon", "horizon",
         );
+        // On iOS, the Winit window must be the entire physical screen, not
+        // the desktop default of 1280×720 logical points.
+        #[cfg(target_os = "ios")]
+        let attributes = winit::platform::ios::WindowAttributesExtIOS::with_valid_orientations(
+            attributes,
+            winit::platform::ios::ValidOrientations::Landscape,
+        );
+        let attributes =
+            match horizon_client::ios_paths::preferred_window_size(size, cfg!(target_os = "ios")) {
+                Some([width, height]) => {
+                    attributes.with_inner_size(winit::dpi::LogicalSize::new(width, height))
+                }
+                None => attributes,
+            };
         // `--offscreen` renders into a texture: its window would only show white.
         let window = match event_loop.create_window(
             attributes
-                .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
                 .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
                 .with_visible(!self.options.as_ref().is_some_and(|o| o.offscreen)),
         ) {
@@ -19868,6 +19960,12 @@ impl Loading {
             }
         };
         horizon_client::telemetry::note_display(&window);
+        #[cfg(target_os = "ios")]
+        if horizon_ios_launcher::waiting() {
+            self.window = Some(window);
+            horizon_ios_launcher::present();
+            return;
+        }
         // The renderer takes seconds to build and winit's window sits white
         // until the first frame presents, so paint the boot screen on it and
         // keep repainting it as the console's lines arrive; the wgpu frames
@@ -19982,6 +20080,58 @@ impl Loading {
             // No world is open yet: nothing to save.
             crate::game::exit_app(event_loop);
             return;
+        }
+        #[cfg(target_os = "ios")]
+        {
+            self.poll_native_launcher();
+            if horizon_ios_launcher::waiting() {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    Instant::now() + Duration::from_millis(100),
+                ));
+                return;
+            }
+            // The app's first window existed beneath the SwiftUI launcher, but
+            // no Metal renderer or game loader ran while files were downloaded.
+            if self.handle.is_none() && !self.delivered {
+                if self.renderer.is_none() {
+                    let Some(window) = self.window.clone() else {
+                        return;
+                    };
+                    match loading_renderer(
+                        window.clone(),
+                        false,
+                        Some(&self.boot),
+                        None,
+                        None,
+                        rendering_api(&self.settings),
+                    ) {
+                        Ok(renderer) => self.renderer = Some(renderer),
+                        Err(error) => {
+                            self.error = Some(error);
+                            crate::game::exit_app(event_loop);
+                            return;
+                        }
+                    }
+                }
+                let options = self.options.as_ref().expect("loading options before game");
+                match startup_menu::spawn_loader(
+                    options,
+                    &self.settings,
+                    &self.vanilla_root,
+                    self.started,
+                    &self.progress,
+                ) {
+                    Ok((receiver, handle)) => {
+                        self.receiver = receiver;
+                        self.handle = Some(handle);
+                    }
+                    Err(error) => {
+                        self.error = Some(error);
+                        crate::game::exit_app(event_loop);
+                        return;
+                    }
+                }
+            }
         }
         if let Err(error) = self.poll_menu_resources() {
             self.error = Some(error);
@@ -20158,7 +20308,7 @@ enum App {
     Ready(Box<split::Split<'static>>),
 }
 impl ApplicationHandler for App {
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
         match self {
             App::Ready(game) => game.suspended(event_loop),
@@ -20315,8 +20465,13 @@ fn loading_app(
     started: Instant,
 ) -> Result<App> {
     let progress = Progress::new();
-    let (receiver, loader) =
-        startup_menu::spawn_loader(&options, &settings, &vanilla_root, started, &progress)?;
+    let (receiver, loader) = if cfg!(target_os = "ios") && horizon_ios_launcher::waiting() {
+        (std::sync::mpsc::channel::<LoaderMsg>().1, None)
+    } else {
+        let (receiver, handle) =
+            startup_menu::spawn_loader(&options, &settings, &vanilla_root, started, &progress)?;
+        (receiver, Some(handle))
+    };
     let menu = startup_menu::StartupMenu::new(&options, pack_error.as_deref())?;
     let loading = Loading {
         window: None,
@@ -20337,9 +20492,13 @@ fn loading_app(
         renderer_job: None,
         prepared_renderer: None,
         delivered: false,
-        handle: Some(loader),
+        handle: loader,
         shown: false,
         menu,
+        #[cfg(target_os = "ios")]
+        ime_allowed: false,
+        #[cfg(any(target_os = "ios", test))]
+        native_imports: Vec::new(),
         error: None,
     };
     Ok(App::Loading(Box::new(loading)))
@@ -20437,14 +20596,33 @@ pub fn run() -> Result<()> {
     let started = Instant::now();
     horizon_client::spans::enable(options.spikes.is_some());
     let vanilla_root = options.resources.clone();
-    if let Some(error) = missing_resources(&vanilla_root) {
+    // A manifest may arrive before the rest of the player's files when iOS
+    // Files.app copies a folder. Reject incomplete or wrong-version imports
+    // before starting a world loader; desktop keeps its existing startup gate.
+    #[cfg(target_os = "ios")]
+    let resource_problem = horizon_client::ios_paths::validate_prepared_resources(
+        &vanilla_root,
+        horizon_core::VANILLA_VERSION,
+    )
+    .err();
+    #[cfg(not(target_os = "ios"))]
+    let resource_problem = missing_resources(&vanilla_root);
+    let launcher_supplies_resources = cfg!(target_os = "ios")
+        && !options.offscreen
+        && !synchronous_startup(&options)
+        && horizon_ios_launcher::waiting();
+    if let Some(error) = resource_problem.filter(|_| !launcher_supplies_resources) {
         // The game build started by hand (the release's zip), not by the
         // launcher: a window says where to get it. Scripts and servers get
         // the error.
         if !options.offscreen && !synchronous_startup(&options) {
             log::error!("Horizon: {error}");
             let settings = Settings::load(&std::env::current_dir()?.join("options.txt"));
-            return no_resources::show(&vanilla_root, &settings);
+            #[cfg(target_os = "ios")]
+            let missing_location = std::path::Path::new("resources");
+            #[cfg(not(target_os = "ios"))]
+            let missing_location = vanilla_root.as_path();
+            return no_resources::show(missing_location, &settings, &error);
         }
         return Err(error.into());
     }

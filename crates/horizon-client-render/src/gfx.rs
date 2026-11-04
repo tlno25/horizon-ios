@@ -3727,9 +3727,10 @@ impl Renderer {
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = self.surface.take();
     }
-    /// Android destroys the native window when backgrounded. Its surface may
-    /// be reused for an in-process renderer handoff, but never after suspension.
-    #[cfg(target_os = "android")]
+    /// Mobile app suspension invalidates presentation: Android may destroy
+    /// its native window and iOS may detach its Metal drawable layer. Drop
+    /// the active and spare surfaces, then recreate on the next resume.
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     pub fn suspend_surface(&mut self) {
         self.suspended = true;
         self.surface = None;

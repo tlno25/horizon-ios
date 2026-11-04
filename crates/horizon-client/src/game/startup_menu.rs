@@ -12,7 +12,7 @@ use winit::{event::KeyEvent, keyboard::ModifiersState};
 
 #[derive(Default)]
 pub(super) struct StartupMenu {
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     touch: horizon_client::touch_ui::TouchUi,
     #[cfg(target_os = "android")]
     keyboard_focus: Option<horizon_client::widgets::Target>,
@@ -1195,6 +1195,55 @@ impl Loading {
             }
             return Ok(());
         }
+        #[cfg(target_os = "ios")]
+        if let WindowEvent::Touch(touch) = &event {
+            use horizon_client::ios_touch::{MenuTouchAction, menu_action};
+            use winit::event::TouchPhase;
+            // Winit's raw physical coordinates map to the same native menu
+            // hit-testing as desktop cursor events. Tap only on release;
+            // dragging a list is always scrolling, never joining a world.
+            self.menu.key_focus = None;
+            let point = [touch.location.x as f32, touch.location.y as f32];
+            let action = menu_action(&mut self.menu.touch, touch.id, point, touch.phase);
+            if touch.phase != TouchPhase::Cancelled {
+                self.menu_event(
+                    event_loop,
+                    WindowEvent::CursorMoved {
+                        device_id: touch.device_id,
+                        position: touch.location,
+                    },
+                )?;
+            }
+            match action {
+                MenuTouchAction::Click => {
+                    // The Android-only helper is not compiled into iOS.
+                    // Reuse the same desktop menu click path as keyboard/mouse
+                    // and dispatch a complete press/release pair on touch-up.
+                    for state in [ElementState::Pressed, ElementState::Released] {
+                        self.menu_event(
+                            event_loop,
+                            WindowEvent::MouseInput {
+                                device_id: touch.device_id,
+                                state,
+                                button: MouseButton::Left,
+                            },
+                        )?;
+                    }
+                }
+                MenuTouchAction::Scroll(y) => {
+                    self.menu_event(
+                        event_loop,
+                        WindowEvent::MouseWheel {
+                            device_id: touch.device_id,
+                            delta: MouseScrollDelta::LineDelta(0.0, y),
+                            phase: TouchPhase::Moved,
+                        },
+                    )?;
+                }
+                MenuTouchAction::None => {}
+            }
+            return Ok(());
+        }
         #[cfg(target_os = "android")]
         if let WindowEvent::Touch(touch) = &event {
             self.menu.keyboard_navigation = false;
@@ -1427,6 +1476,39 @@ impl Loading {
                 self.save_menu_settings();
                 crate::game::exit_app(event_loop);
             }
+            #[cfg(target_os = "ios")]
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                use horizon_client::ios_touch::{LoadingTextTarget, loading_text_target};
+                let text = horizon_client::ios_touch::committed_ime_text(&text);
+                if !text.is_empty() {
+                    let title_focused = self
+                        .menu
+                        .title
+                        .as_mut()
+                        .is_some_and(|title| title.focused_field().is_some());
+                    match loading_text_target(
+                        self.menu.options_open,
+                        self.menu.options.typing(),
+                        title_focused,
+                    ) {
+                        LoadingTextTarget::Title => {
+                            if let Some(title) = &mut self.menu.title {
+                                title.type_text(&text);
+                            }
+                        }
+                        LoadingTextTarget::Options => {
+                            if let Some(gui) = &self.gui {
+                                self.menu.options.type_text(&gui.atlas, &text);
+                            }
+                        }
+                        LoadingTextTarget::None => {}
+                    }
+                }
+            }
+            #[cfg(target_os = "ios")]
+            WindowEvent::Ime(winit::event::Ime::Disabled) => {
+                self.ime_allowed = false;
+            }
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer {
                     r.resize(size.width, size.height);
@@ -1569,20 +1651,40 @@ impl Loading {
                     self.save_menu_settings();
                 } else if self.menu.options_open {
                     let shortcut = self.menu.shortcut(&event);
-                    let atlas = &self.gui.as_ref().unwrap().atlas;
                     let handled = shortcut.is_some_and(|s| {
+                        let atlas = &self.gui.as_ref().unwrap().atlas;
                         self.menu
                             .options
                             .shortcut(atlas, s, &mut self.menu.clipboard)
                     });
                     if !handled && let PhysicalKey::Code(key) = event.physical_key {
-                        let events = self.menu.options.key(
-                            &mut self.settings,
-                            atlas,
-                            key,
-                            event.text.as_deref(),
-                        );
+                        // Drop the shared atlas borrow before dispatching
+                        // events that can mutate the entire loading menu.
+                        let events = {
+                            let atlas = &self.gui.as_ref().unwrap().atlas;
+                            self.menu.options.key(
+                                &mut self.settings,
+                                atlas,
+                                key,
+                                event.text.as_deref(),
+                            )
+                        };
                         self.menu_option_events(events);
+                    }
+                    // UIKit's native WinitView emits ordinary KeyboardInput
+                    // with an Unidentified physical key and committed UTF-8
+                    // text, not necessarily Ime::Commit. The title already
+                    // handles this path; Options text fields must as well.
+                    #[cfg(target_os = "ios")]
+                    if !handled
+                        && matches!(event.physical_key, PhysicalKey::Unidentified(_))
+                        && let Some(text) = event.text.as_deref()
+                    {
+                        let text = horizon_client::ios_touch::committed_ime_text(text);
+                        if !text.is_empty() {
+                            let atlas = &self.gui.as_ref().unwrap().atlas;
+                            self.menu.options.type_text(atlas, &text);
+                        }
                     }
                 } else {
                     let batch = HudBatch::new(self.menu_size());
@@ -1596,6 +1698,28 @@ impl Loading {
     }
 
     pub(super) fn draw_menu(&mut self, batch: &mut HudBatch) {
+        #[cfg(target_os = "ios")]
+        {
+            // Winit's iOS view implements UIKeyInput. The main game already
+            // enables IME for focused fields; the loading/title stage must do
+            // the same until the game takes ownership of this window.
+            let title_focused = self
+                .menu
+                .title
+                .as_mut()
+                .is_some_and(|title| title.focused_field().is_some());
+            let wants_keyboard = horizon_client::ios_touch::loading_text_target(
+                self.menu.options_open,
+                self.menu.options.typing(),
+                title_focused,
+            ) != horizon_client::ios_touch::LoadingTextTarget::None;
+            if wants_keyboard != self.ime_allowed {
+                if let Some(window) = &self.window {
+                    window.set_ime_allowed(wants_keyboard);
+                    self.ime_allowed = wants_keyboard;
+                }
+            }
+        }
         let logs = horizon_client::logging::recent_lines();
         let Some(gui) = &self.gui else {
             // The pack's screens do not exist yet: the boot screen holds the
@@ -1820,6 +1944,10 @@ mod tests {
             handle: None,
             shown: false,
             menu: StartupMenu::default(),
+            #[cfg(target_os = "ios")]
+            ime_allowed: false,
+            #[cfg(any(target_os = "ios", test))]
+            native_imports: Vec::new(),
             error: None,
         }
     }

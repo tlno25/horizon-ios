@@ -16,6 +16,7 @@ pub struct PreviewPhysics {
     velocity: Vec3,
     grounded: bool,
     sprinting: bool,
+    crouching: bool,
     yaw: f32,
     jump_factor: f32,
 }
@@ -27,6 +28,7 @@ impl PreviewPhysics {
             velocity: Vec3::ZERO,
             grounded: false,
             sprinting: false,
+            crouching: false,
             yaw: 0.0,
             jump_factor: 1.0,
         }
@@ -45,7 +47,30 @@ impl PreviewPhysics {
     /// Sprint is a temporary preview flag; the user's saved abilities and
     /// movement attributes are never changed.
     pub fn set_sprinting(&mut self, enabled: bool) {
-        self.sprinting = enabled;
+        self.sprinting = enabled && !self.crouching;
+    }
+
+    #[must_use]
+    pub fn crouching(&self) -> bool {
+        self.crouching
+    }
+
+    /// Validate stand-up against the original shared collision world. A low
+    /// ceiling retains the crouched pose rather than clipping through blocks.
+    pub fn set_crouching(
+        &mut self,
+        enabled: bool,
+        stage: &ReadOnlyWorldStage,
+        collisions: &BlockCollisionRegistry<'_>,
+    ) -> crate::Result<bool> {
+        if !enabled && self.crouching && !stage.can_stand(collisions, self.position)? {
+            return Ok(false);
+        }
+        self.crouching = enabled;
+        if enabled {
+            self.sprinting = false;
+        }
+        Ok(true)
     }
 
     #[must_use]
@@ -116,8 +141,14 @@ impl PreviewPhysics {
         } else {
             0.02
         };
+        // Player's native sneaking-speed attribute is 0.3 by default.
+        let input_scale = if self.crouching { 0.3 } else { 1.0 };
         let delta = living_air::input_vector(
-            Vec3::new(f64::from(axes[0]), 0.0, f64::from(axes[1])),
+            Vec3::new(
+                f64::from(axes[0]) * input_scale,
+                0.0,
+                f64::from(axes[1]) * input_scale,
+            ),
             speed,
             yaw,
         );
@@ -192,11 +223,17 @@ impl PreviewPhysics {
         if !axes.iter().all(|v| v.is_finite() && v.abs() <= 1.0) || !yaw.is_finite() {
             return Err("Invalid preview movement input".into());
         }
-        self.set_sprinting(requested_sprint && axes[1] >= 0.8);
+        self.set_sprinting(!self.crouching && requested_sprint && axes[1] >= 0.8);
         self.set_camera_yaw(yaw)?;
         let old = self.position;
-        let below =
-            stage.resolve_preview_movement(collisions, old, [old[0], old[1] - 0.05, old[2]])?;
+        let below = stage.resolve_preview_movement_with_pose(
+            collisions,
+            old,
+            [old[0], old[1] - 0.05, old[2]],
+            0.0,
+            false,
+            self.crouching,
+        )?;
         self.grounded = (below[1] - old[1]).abs() < 1.0e-7;
         if self.grounded {
             self.velocity.y = 0.0;
@@ -222,12 +259,13 @@ impl PreviewPhysics {
             old[1] + self.velocity.y,
             old[2] + self.velocity.z,
         ];
-        let moved = stage.resolve_preview_movement_with_step(
+        let moved = stage.resolve_preview_movement_with_pose(
             collisions,
             old,
             target,
             if self.grounded { 0.6 } else { 0.0 },
             self.grounded,
+            self.crouching,
         )?;
         if !moved.iter().all(|v| v.is_finite()) {
             return Err("Nonfinite native movement result".into());
@@ -418,6 +456,24 @@ mod tests {
         living_motion::jump_from_ground(&mut body).unwrap();
         assert!((body.velocity.y - f64::from(0.42f32 * 0.5)).abs() < 1e-6);
         assert!(body.set_jump_factor(f32::NAN).is_err());
+    }
+
+    #[test]
+    fn crouched_input_is_slower_and_never_sprints() {
+        let mut normal = PreviewPhysics::new([8.0, 64.0, 8.0]);
+        normal.grounded = true;
+        normal.apply_walk_input([0.0, 1.0], 0.0).unwrap();
+
+        let mut crouched = PreviewPhysics::new([8.0, 64.0, 8.0]);
+        crouched.grounded = true;
+        crouched.crouching = true;
+        crouched.set_sprinting(true);
+        assert!(!crouched.sprinting);
+        crouched.apply_walk_input([0.0, 1.0], 0.0).unwrap();
+        assert!((crouched.velocity.z / normal.velocity.z - 0.3).abs() < 1e-6);
+        crouched.crouching = false;
+        crouched.set_sprinting(true);
+        assert!(crouched.sprinting);
     }
 
     #[test]

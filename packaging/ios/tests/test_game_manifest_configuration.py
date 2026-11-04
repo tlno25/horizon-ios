@@ -1,0 +1,38 @@
+"""The publisher can preconfigure one-tap HTTPS provisioning without bundling assets."""
+import plistlib
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+IOS = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(IOS))
+from configure_game_plist import prepare
+
+
+class GameManifestConfigurationTests(unittest.TestCase):
+    def test_managed_https_manifest_is_saved_only_in_generated_game_plist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'Configured.plist'
+            source = IOS / 'GameInfo.plist'
+            original = source.read_bytes()
+            prepare(source, target, 'https://assets.example.org/26.3/game-files.json')
+            info = plistlib.loads(target.read_bytes())
+            self.assertEqual(info['HorizonResourcesManifestURL'], 'https://assets.example.org/26.3/game-files.json')
+            self.assertEqual(source.read_bytes(), original)
+            self.assertFalse(any(name.name.startswith('horizon-resources') for name in target.parent.iterdir()))
+
+    def test_empty_configuration_is_explicitly_allowed_but_unsafe_links_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'Configured.plist'
+            prepare(IOS / 'GameInfo.plist', target, '')
+            self.assertEqual(plistlib.loads(target.read_bytes())['HorizonResourcesManifestURL'], '')
+            for link in ['http://example.org/files.json', 'ftp://example.org/files.json',
+                         'https://name:secret@example.org/manifest.json',
+                         'https://example.org/manifest.json#private']:
+                with self.subTest(link=link), self.assertRaisesRegex(ValueError, 'HTTPS'):
+                    prepare(IOS / 'GameInfo.plist', target, link)
+
+
+if __name__ == '__main__':
+    unittest.main()

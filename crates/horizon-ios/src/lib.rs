@@ -46,6 +46,9 @@ static PREVIEW_PHYSICS_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Native Winit owns this transient sprint flag; Swift only reads it.
 #[cfg(target_os = "ios")]
 static PREVIEW_SPRINT_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Native Winit owns the temporary crouch pose, not the saved player.
+#[cfg(target_os = "ios")]
+static PREVIEW_CROUCH_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Returns the ABI revision supported by this static library.
 #[unsafe(no_mangle)]
@@ -90,6 +93,8 @@ pub extern "C" fn horizon_ios_shutdown() -> i32 {
     PREVIEW_PHYSICS_ENABLED.store(false, Ordering::Release);
     #[cfg(target_os = "ios")]
     PREVIEW_SPRINT_ENABLED.store(false, Ordering::Release);
+    #[cfg(target_os = "ios")]
+    PREVIEW_CROUCH_ENABLED.store(false, Ordering::Release);
     #[cfg(target_os = "ios")]
     clear_touches();
     0
@@ -296,6 +301,39 @@ pub extern "C" fn horizon_ios_toggle_preview_sprint() -> i32 {
         return -1;
     }
     if app::request_preview_sprint_toggle_event() {
+        0
+    } else {
+        -2
+    }
+}
+
+/// Native C ABI status for the read-only crouching pose (0/1).
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_preview_crouching() -> u32 {
+    #[cfg(target_os = "ios")]
+    {
+        return u32::from(PREVIEW_CROUCH_ENABLED.load(Ordering::Acquire));
+    }
+    #[cfg(not(target_os = "ios"))]
+    0
+}
+
+#[cfg(target_os = "ios")]
+fn set_preview_crouching(enabled: bool) {
+    if PREVIEW_CROUCH_ENABLED.swap(enabled, Ordering::AcqRel) != enabled {
+        unsafe { app::preview_physics_changed() };
+    }
+}
+
+/// Ask the Winit thread to crouch or stand. A blocked ceiling rejects
+/// uncrouching without changing the read-only camera or the saved player.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_toggle_preview_crouch() -> i32 {
+    if TERRAIN_PREVIEW.state() != 4 || !PREVIEW_PHYSICS_ENABLED.load(Ordering::Acquire) {
+        return -1;
+    }
+    if app::request_preview_crouch_toggle_event() {
         0
     } else {
         -2
@@ -562,7 +600,7 @@ pub unsafe extern "C" fn horizon_ios_import_resources(path: *const u8, length: u
         }
         let home = ENGINE_HOME.get().ok_or("Engine home was not prepared")?;
         let _guard = RESOURCE_IMPORT.lock().map_err(|e| e.to_string())?;
-        horizon_client::resource_install::import_archive(archive, home)
+        horizon_client::resource_install::import_archive_checked(archive, home)
             .map_err(|e| e.to_string())?;
         if !horizon_client::resource_install::ready(home) {
             return Err("Imported resources manifest was not found".into());
@@ -585,6 +623,85 @@ pub unsafe extern "C" fn horizon_ios_import_resources(path: *const u8, length: u
             -1
         }
     }
+}
+
+/// Copy a JSON dictionary of launcher settings into a Swift-owned buffer.
+/// A nil destination/zero capacity asks for the required byte length.
+/// Returns -1 on failure; no Rust allocation crosses the ABI.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn horizon_ios_launcher_settings_json(
+    destination: *mut u8,
+    capacity: usize,
+) -> isize {
+    let result = std::panic::catch_unwind(|| -> Result<isize, String> {
+        let home = ENGINE_HOME
+            .get()
+            .ok_or("Launcher engine was not prepared")?;
+        let json = horizon_client::ios_launcher_settings::game_settings_json(home)?;
+        let bytes = json.as_bytes();
+        if bytes.len() > 8192 || capacity > 8192 {
+            return Err("Unexpected launcher settings size".into());
+        }
+        if capacity >= bytes.len() && !destination.is_null() {
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()) };
+        }
+        Ok(bytes.len() as isize)
+    });
+    result.ok().and_then(Result::ok).unwrap_or(-1)
+}
+
+/// Change only validated, launcher-exposed settings using the game's own
+/// options.txt encoding. Re-entering the game is needed to apply changes.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn horizon_ios_launcher_set_setting(
+    key: *const u8,
+    key_length: usize,
+    value: *const u8,
+    value_length: usize,
+) -> i32 {
+    let result = std::panic::catch_unwind(|| -> Result<(), String> {
+        if key.is_null()
+            || value.is_null()
+            || key_length == 0
+            || key_length > 64
+            || value_length > 64
+        {
+            return Err("Invalid setting input".into());
+        }
+        let key = std::str::from_utf8(unsafe { std::slice::from_raw_parts(key, key_length) })
+            .map_err(|e| e.to_string())?;
+        let value = std::str::from_utf8(unsafe { std::slice::from_raw_parts(value, value_length) })
+            .map_err(|e| e.to_string())?;
+        let home = ENGINE_HOME
+            .get()
+            .ok_or("Launcher engine was not prepared")?;
+        horizon_client::ios_launcher_settings::set_game_setting(home, key, value)
+    });
+    if matches!(result, Ok(Ok(()))) { 0 } else { -1 }
+}
+
+/// Set an offline identity for the next launch. Does not mutate an already
+/// running Rust profile or an authenticated Microsoft account.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn horizon_ios_launcher_set_player_name(
+    value: *const u8,
+    length: usize,
+) -> i32 {
+    let result = std::panic::catch_unwind(|| -> Result<(), String> {
+        if value.is_null() || length == 0 || length > 16 {
+            return Err("Invalid offline player name length".into());
+        }
+        let name = std::str::from_utf8(unsafe { std::slice::from_raw_parts(value, length) })
+            .map_err(|e| e.to_string())?;
+        let home = ENGINE_HOME
+            .get()
+            .ok_or("Launcher engine was not prepared")?;
+        horizon_client::ios_launcher_settings::set_offline_name(home, name)
+    });
+    if matches!(result, Ok(Ok(()))) { 0 } else { -1 }
 }
 
 // Winit owns UIApplicationMain; Swift does not declare an @main entry point.

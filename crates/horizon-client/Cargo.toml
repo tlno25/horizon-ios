@@ -12,6 +12,7 @@ horizon-assets = { path = "../horizon-assets" }
 horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }
 horizon-client-render = { path = "../horizon-client-render" }
+horizon-ios-launcher = { path = "../horizon-ios-launcher" }
 horizon-command = { path = "../horizon-command" }
 horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
@@ -78,6 +79,10 @@ rustix = { version = "1", default-features = false, features = ["std", "time", "
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# The game is unsafe-code-free; native UIKit URL dispatch lives in an isolated wrapper.
+horizon-apple-open = { path = "../horizon-apple-open" }
 
 [target.'cfg(target_os = "android")'.dependencies]
 rustix = { version = "1", default-features = false, features = ["std", "fs"] }

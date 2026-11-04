@@ -114,8 +114,21 @@ pub fn install(bundle: &Bundle, home: &Path, progress: impl Fn(u64, u64)) -> Res
 /// but never contacts a network endpoint or overwrites an installed version.
 /// The caller owns and retains the original archive.
 pub fn import_archive(archive: &Path, home: &Path) -> Result<()> {
-    let meta = fs::metadata(archive)?;
-    if !meta.is_file() || meta.len() == 0 || meta.len() > 4 * 1024 * 1024 * 1024 {
+    import_archive_impl(archive, home, false)
+}
+
+/// iOS launcher import: reject a partial or wrong-version preparation before
+/// making its destination permanent, so the user can retry with a valid ZIP.
+pub fn import_archive_checked(archive: &Path, home: &Path) -> Result<()> {
+    import_archive_impl(archive, home, true)
+}
+
+fn import_archive_impl(archive: &Path, home: &Path, check_core: bool) -> Result<()> {
+    // The SwiftUI bridge provides a filename in the app sandbox, but a file
+    // with that name could be replaced by a symlink before Rust opens it.
+    // Never follow the link to an arbitrary target.
+    let meta = fs::symlink_metadata(archive)?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 4 * 1024 * 1024 * 1024 {
         return Err("Prepared resources ZIP must be a nonempty file of at most 4 GiB".into());
     }
     let versions = home.join(".local/horizon-client");
@@ -133,6 +146,10 @@ pub fn import_archive(archive: &Path, home: &Path) -> Result<()> {
         extract(archive, &staging)?;
         if !staging.join("horizon-resources.json").is_file() {
             return Err("Prepared resources ZIP has no root horizon-resources.json".into());
+        }
+        if check_core {
+            crate::ios_paths::validate_prepared_resources(&staging, horizon_core::VANILLA_VERSION)
+                .map_err(|message| format!("Incomplete prepared resources ZIP: {message}"))?;
         }
         if fs::symlink_metadata(&target).is_ok() {
             return Err("Prepared resources already exist; refusing to overwrite".into());
@@ -295,6 +312,50 @@ mod tests {
     }
 
     #[test]
+    fn ios_checked_import_rejects_incomplete_archives_without_blocking_retry() {
+        let home = temporary("ios-checked");
+        fs::create_dir_all(&home).unwrap();
+        let archive = home.join("prepared.zip");
+        fs::write(&archive, fixture()).unwrap();
+        assert!(import_archive_checked(&archive, &home).is_err());
+        assert!(!ready(&home), "Invalid bundles must not become installed");
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let mut put = |name: &str, body: &[u8]| {
+            writer
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(body).unwrap();
+        };
+        put(
+            "horizon-resources.json",
+            format!(
+                r#"{{"schema":7,"minecraft":"{}"}}"#,
+                horizon_core::VANILLA_VERSION
+            )
+            .as_bytes(),
+        );
+        for name in [
+            "facts.json",
+            "block-tags.json",
+            "registries.json",
+            "commands.json",
+        ] {
+            put(name, b"{}");
+        }
+        for name in [
+            "assets/minecraft/font/fixture",
+            "assets/minecraft/textures/fixture",
+        ] {
+            put(name, b"private resource");
+        }
+        fs::write(&archive, writer.finish().unwrap().into_inner()).unwrap();
+        import_archive_checked(&archive, &home).unwrap();
+        assert!(ready(&home));
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn rejects_import_without_manifest_without_leaving_partial_resources() {
         let home = temporary("import-invalid");
         fs::create_dir_all(&home).unwrap();
@@ -315,6 +376,23 @@ mod tests {
                 .is_none(),
             "partial directories must be removed"
         );
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_zip_symlink_even_when_it_points_to_an_existing_archive() {
+        let home = temporary("zip-symlink");
+        fs::create_dir_all(&home).unwrap();
+        let original = home.join("prepared.zip");
+        fs::write(&original, fixture()).unwrap();
+        let link = home.join("horizon-download-PRIVATE.zip");
+        std::os::unix::fs::symlink(&original, &link).unwrap();
+        assert!(
+            import_archive(&link, &home).is_err(),
+            "The launcher must never follow a symlink to import a ZIP"
+        );
+        assert!(!ready(&home));
         fs::remove_dir_all(home).unwrap();
     }
 

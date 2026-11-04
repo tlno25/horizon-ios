@@ -8,6 +8,8 @@ on:
     branches: [ios]
     paths:
       - 'crates/horizon-ios/**'
+      - 'crates/horizon-ios-launcher/**'
+      - 'crates/horizon-apple-open/**'
       - 'crates/horizon-core/**'
       - 'crates/horizon-hdr/**'
       - 'crates/horizon-client-input/**'
@@ -23,6 +25,8 @@ on:
     branches: [ios]
     paths:
       - 'crates/horizon-ios/**'
+      - 'crates/horizon-ios-launcher/**'
+      - 'crates/horizon-apple-open/**'
       - 'crates/horizon-core/**'
       - 'crates/horizon-hdr/**'
       - 'crates/horizon-client-input/**'
@@ -49,6 +53,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.95.0'
+          targets: aarch64-apple-ios
       - name: Cache Linux Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
@@ -56,11 +61,18 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
       - name: Run Rust bridge and shared input tests
         run: |
+          # Validates UIKit Objective-C bindings cheaply; the full client
+          # still needs a macOS runner with the Apple SDK for native links.
+          cargo test --locked -p horizon-apple-open
+          cargo check --locked -p horizon-apple-open --target aarch64-apple-ios
           cargo test --locked -p horizon-ios
           cargo test --locked -p horizon-client-input --lib
           cargo test --locked -p horizon-client-render --lib indirect_execution
           cargo test --locked --no-default-features -p horizon-client --lib resource_install::tests::
           cargo test --locked --no-default-features -p horizon-client --lib game_startup::tests::
+          cargo test --locked --no-default-features -p horizon-client --lib ios_paths::tests::
+          cargo test --locked --no-default-features -p horizon-client --lib ios_touch::tests::
+          cargo test --locked --no-default-features -p horizon-client --lib no_resources::tests::
           cargo test --locked --no-default-features -p horizon-client --lib title::tests::ios_preview_
       - name: Test iOS CI validators (graphics + unsigned IPA)
         run: python3 -m unittest discover -s packaging/ios/tests -p 'test_*.py'

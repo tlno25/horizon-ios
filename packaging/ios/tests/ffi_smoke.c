@@ -8,6 +8,7 @@ int main(void) {
     assert(horizon_ios_renderer_preview_state() == 0);
     assert(horizon_ios_terrain_preview_state() == 0);
     assert(horizon_ios_renderer_smoke_enabled() == 0);
+    assert(horizon_ios_preview_crouching() == 0);
     assert(horizon_ios_touch_count() == 0);
     assert(horizon_ios_touch_events() == 0);
     assert(horizon_ios_engine_state() == 0);

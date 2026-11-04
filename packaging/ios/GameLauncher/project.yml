@@ -1,0 +1,30 @@
+name: HorizonGameLauncher
+options:
+  projectFormat: xcode15_3
+  xcodeVersion: '15.4'
+  deploymentTarget:
+    iOS: '16.0'
+settings:
+  base:
+    IPHONEOS_DEPLOYMENT_TARGET: '16.0'
+    SWIFT_VERSION: '5.0'
+    TARGETED_DEVICE_FAMILY: '1,2'
+targets:
+  HorizonLauncherKit:
+    type: framework
+    platform: iOS
+    productName: HorizonLauncherKit
+    sources:
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.horizonios.game.launcher
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES
+        CODE_SIGNING_ALLOWED: NO
+
+schemes:
+  HorizonLauncherKit:
+    build:
+      targets:
+        HorizonLauncherKit: All

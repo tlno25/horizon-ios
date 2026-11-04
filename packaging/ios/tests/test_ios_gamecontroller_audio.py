@@ -26,6 +26,13 @@ class IOSGameControllerAudioTests(unittest.TestCase):
         self.assertIn('Button::DPadUp, pad.dpad_up', source)
         self.assertIn('state.triggers = pad.triggers', source)
 
+    def test_quick_checks_cover_apple_gamecontroller_on_ios_and_host(self):
+        workflow = (ROOT / '.github/workflows/ios-quick-checks.yml').read_text()
+        self.assertEqual(workflow.count("'crates/horizon-gamecontroller/**'"), 2)
+        self.assertIn('cargo test --locked -p horizon-gamecontroller --lib', workflow)
+        self.assertIn('cargo check --locked -p horizon-gamecontroller --target aarch64-apple-ios', workflow)
+        self.assertIn('cargo test --locked --no-default-features -p horizon-client --bin horizon-client ios_controller_tests::', workflow)
+
     def test_audio_session_tracks_play_and_return_to_launcher(self):
         audio = (ROOT / 'packaging/ios/GameLauncher/Sources/GameAudio.swift').read_text()
         present = (ROOT / 'packaging/ios/GameLauncher/Sources/Present.swift').read_text()

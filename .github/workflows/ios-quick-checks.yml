@@ -10,6 +10,7 @@ on:
       - 'crates/horizon-ios/**'
       - 'crates/horizon-ios-launcher/**'
       - 'crates/horizon-apple-open/**'
+      - 'crates/horizon-gamecontroller/**'
       - 'crates/horizon-core/**'
       - 'crates/horizon-hdr/**'
       - 'crates/horizon-client-input/**'
@@ -27,6 +28,7 @@ on:
       - 'crates/horizon-ios/**'
       - 'crates/horizon-ios-launcher/**'
       - 'crates/horizon-apple-open/**'
+      - 'crates/horizon-gamecontroller/**'
       - 'crates/horizon-core/**'
       - 'crates/horizon-hdr/**'
       - 'crates/horizon-client-input/**'
@@ -65,6 +67,11 @@ jobs:
           # still needs a macOS runner with the Apple SDK for native links.
           cargo test --locked -p horizon-apple-open
           cargo check --locked -p horizon-apple-open --target aarch64-apple-ios
+          # GameController's Objective-C bindings compile for iPhoneOS without
+          # Xcode; the full Rust game and SwiftUI framework still need macOS.
+          cargo test --locked -p horizon-gamecontroller --lib
+          cargo check --locked -p horizon-gamecontroller --target aarch64-apple-ios
+          cargo test --locked --no-default-features -p horizon-client --bin horizon-client ios_controller_tests::
           cargo test --locked -p horizon-ios
           cargo test --locked -p horizon-client-input --lib
           cargo test --locked -p horizon-client-render --lib indirect_execution

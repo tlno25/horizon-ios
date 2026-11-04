@@ -38,18 +38,19 @@ The local `android` branch tracks `origin/android` (the owner's fork);
 
 ## Branch cleanup and publication
 
-Removed remote feature branches only when confirmed merged or covered by an
-upstream history, with no active PR: `fix/ios-indirect-execution-fallback`
-(merged PR #1) and `perf/sunrise-sector-selection`. The
-`agent/ios-preview-crouch` branch still has open PR #2 and was retained until
-its integration into the **published** `origin/ios` can be confirmed.
+Removed integrated remote feature branches:
+`fix/ios-indirect-execution-fallback` (merged PR #1),
+`perf/sunrise-sector-selection` (the work exists in Android upstream history),
+and `agent/ios-preview-crouch` (merged PR #2). PR #2 was merged as an
+**experimental** native iOS foundation, not a validated stable release.
 `ios`, `android` and `main` are retained.
 
-**Local sync is not publication:** `origin/ios` and `origin/android` still
-pointed to their earlier commits when this work was recorded. Do not delete
-open-PR branches or claim that remote branches are up to date until the owner
-chooses to publish and the new remote SHAs are verified. GitHub Actions and
-physical iOS runtime validation are still required for the merged changes.
+**Published 2026-11-05:** `origin/ios` was updated with both the PR #2 merge
+commit `427e4c17` and the subsequent local upstream/authentication work via
+`e0d87eb04`. `origin/android` was fast-forwarded to Vasysik's
+`150a414b0`. GitHub Actions and physical iOS runtime validation remain
+necessary for the merged changes. No real-device gameplay or Microsoft
+sign-in verification is claimed.
 
 ## Verification completed
 

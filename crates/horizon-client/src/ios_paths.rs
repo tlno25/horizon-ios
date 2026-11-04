@@ -36,6 +36,59 @@ pub fn game_resources_dir(documents: &Path, version: &str) -> PathBuf {
     }
 }
 
+/// Check that Files.app received the prepared core, not just its manifest.
+/// iOS file copying is not atomic: a partially copied folder can already
+/// contain horizon-resources.json. Avoid starting the expensive world loader
+/// with missing data, and instead show the user an actionable import error.
+/// This is a cheap structural preflight, NOT the preparer's checksum check.
+pub fn validate_prepared_resources(root: &Path, version: &str) -> Result<(), String> {
+    let manifest_path = root.join("horizon-resources.json");
+    let metadata = std::fs::metadata(&manifest_path)
+        .map_err(|_| "horizon-resources.json is missing from Documents/resources".to_owned())?;
+    if !metadata.is_file() || metadata.len() > 1024 * 1024 {
+        return Err("horizon-resources.json is not a valid manifest file".into());
+    }
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|_| "Cannot read horizon-resources.json".to_owned())?;
+    let manifest: serde_json::Value = serde_json::from_str(&text).map_err(|_| {
+        "Invalid horizon-resources.json (copy the entire prepared folder)".to_owned()
+    })?;
+    if !manifest
+        .get("schema")
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|schema| schema > 0)
+    {
+        return Err("Invalid horizon-resources.json: missing preparation schema".into());
+    }
+    if manifest
+        .get("minecraft")
+        .and_then(serde_json::Value::as_str)
+        != Some(version)
+    {
+        return Err(format!(
+            "Prepared resources must be for Minecraft {version}"
+        ));
+    }
+    // Keep this aligned with the game's server-side core preflight. Extra
+    // packs, languages, sounds and panorama are optional at this stage.
+    for name in [
+        "facts.json",
+        "block-tags.json",
+        "registries.json",
+        "commands.json",
+    ] {
+        if !root.join(name).is_file() {
+            return Err(format!("Prepared resources are missing {name}"));
+        }
+    }
+    for name in ["assets/minecraft/font", "assets/minecraft/textures"] {
+        if std::fs::read_dir(root.join(name)).map_or(true, |mut entries| entries.next().is_none()) {
+            return Err(format!("Prepared resources are missing {name}"));
+        }
+    }
+    Ok(())
+}
+
 /// iOS's UIKit window must use its native screen dimensions. The desktop
 /// defaults (1280×720 in points) would crop the phone's Winit surface.
 pub fn preferred_window_size(size: [f64; 2], is_ios: bool) -> Option<[f64; 2]> {
@@ -83,6 +136,90 @@ mod tests {
         std::fs::write(dir.join("resources/horizon-resources.json"), "{}").unwrap();
         assert_eq!(game_resources_dir(&dir, "26.3"), dir.join("resources"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A mobile copy may finish writing the manifest before its large assets.
+    /// iOS must not start the game loader until the core prepared files exist.
+    #[test]
+    fn resource_preflight_rejects_partial_or_wrong_version_imports() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-ios-incomplete-preflight-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(
+            validate_prepared_resources(&dir, "26.3")
+                .unwrap_err()
+                .contains("horizon-resources.json")
+        );
+        std::fs::write(dir.join("horizon-resources.json"), "{").unwrap();
+        assert!(
+            validate_prepared_resources(&dir, "26.3")
+                .unwrap_err()
+                .contains("Invalid")
+        );
+        std::fs::write(
+            dir.join("horizon-resources.json"),
+            r#"{"schema": 4, "minecraft": "1.20.4"}"#,
+        )
+        .unwrap();
+        assert!(
+            validate_prepared_resources(&dir, "26.3")
+                .unwrap_err()
+                .contains("26.3")
+        );
+        std::fs::write(
+            dir.join("horizon-resources.json"),
+            r#"{"schema": 4, "minecraft": "26.3"}"#,
+        )
+        .unwrap();
+        assert!(
+            validate_prepared_resources(&dir, "26.3")
+                .unwrap_err()
+                .contains("facts.json")
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resource_preflight_accepts_a_complete_minimal_core_without_optional_assets() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-ios-complete-preflight-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("horizon-resources.json"),
+            r#"{"schema": 4, "minecraft": "26.3"}"#,
+        )
+        .unwrap();
+        for name in [
+            "facts.json",
+            "block-tags.json",
+            "registries.json",
+            "commands.json",
+        ] {
+            std::fs::write(dir.join(name), "{}").unwrap();
+        }
+        for folder in ["assets/minecraft/font", "assets/minecraft/textures"] {
+            let root = dir.join(folder);
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(
+                root.join("fixture"),
+                "private files not needed in a unit test",
+            )
+            .unwrap();
+        }
+        assert_eq!(validate_prepared_resources(&dir, "26.3"), Ok(()));
+        std::fs::remove_file(dir.join("assets/minecraft/textures/fixture")).unwrap();
+        assert!(
+            validate_prepared_resources(&dir, "26.3")
+                .unwrap_err()
+                .contains("textures")
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

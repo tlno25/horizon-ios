@@ -40,6 +40,16 @@ private, since crash diagnostics may contain server or local file details.
 
 ### Preparing your own resources on Windows and transferring to iPhone
 
+On iPhone, the native game performs a lightweight **preflight before the
+resource loader starts**. It checks that `horizon-resources.json` is readable,
+contains a preparation schema for the expected Minecraft version, and that
+the four core JSON files (`facts.json`, `block-tags.json`, `registries.json`,
+`commands.json`) and nonempty font/texture directories are present. If the
+folder is only partly transferred, the first-run screen names the missing
+file instead of trying to load a broken world. This does **not** check hashes,
+verify every resource, or guarantee playable worlds: run
+`horizon-prepare --check` on Windows before copying the archive.
+
 The native game IPA cannot include the proprietary Minecraft game files.
 From Windows 11, install the official Minecraft: Java Edition **26.3** with
 its launcher and run it once. You also need Rust, JDK **25** and the matching

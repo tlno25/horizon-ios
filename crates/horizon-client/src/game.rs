@@ -20519,7 +20519,18 @@ pub fn run() -> Result<()> {
     let started = Instant::now();
     horizon_client::spans::enable(options.spikes.is_some());
     let vanilla_root = options.resources.clone();
-    if let Some(error) = missing_resources(&vanilla_root) {
+    // A manifest may arrive before the rest of the player's files when iOS
+    // Files.app copies a folder. Reject incomplete or wrong-version imports
+    // before starting a world loader; desktop keeps its existing startup gate.
+    #[cfg(target_os = "ios")]
+    let resource_problem = horizon_client::ios_paths::validate_prepared_resources(
+        &vanilla_root,
+        horizon_core::VANILLA_VERSION,
+    )
+    .err();
+    #[cfg(not(target_os = "ios"))]
+    let resource_problem = missing_resources(&vanilla_root);
+    if let Some(error) = resource_problem {
         // The game build started by hand (the release's zip), not by the
         // launcher: a window says where to get it. Scripts and servers get
         // the error.
@@ -20530,7 +20541,7 @@ pub fn run() -> Result<()> {
             let missing_location = std::path::Path::new("resources");
             #[cfg(not(target_os = "ios"))]
             let missing_location = vanilla_root.as_path();
-            return no_resources::show(missing_location, &settings);
+            return no_resources::show(missing_location, &settings, &error);
         }
         return Err(error.into());
     }

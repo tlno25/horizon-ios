@@ -20,7 +20,12 @@ struct Missing {
 }
 
 /// Shows the screen until the player closes it.
-pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<()> {
+pub(super) fn show(looked_in: &std::path::Path, settings: &Settings, issue: &str) -> Result<()> {
+    let screen = NoResources::new(looked_in);
+    #[cfg(target_os = "ios")]
+    let screen = screen.with_import_issue(issue);
+    #[cfg(not(target_os = "ios"))]
+    let _ = issue;
     let mut app = Missing {
         window: None,
         renderer: None,
@@ -31,7 +36,7 @@ pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<(
                 pixels: [0u8; 4].repeat(6),
             }),
         },
-        screen: NoResources::new(looked_in),
+        screen,
         pointer: (0.0, 0.0),
         api: settings.horizon.api,
         #[cfg(target_os = "ios")]

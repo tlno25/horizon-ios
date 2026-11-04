@@ -58,6 +58,13 @@ impl NoResources {
         }
     }
 
+    /// Present a short import error on the same safe first-run screen, so a
+    /// half-copied or incompatible bundle doesn't terminate at the loader.
+    pub fn with_import_issue(mut self, issue: &str) -> Self {
+        self.looked_in = format!("Resource import problem: {issue}");
+        self
+    }
+
     /// The buttons' labels, actions and rectangles in dp, and the paragraphs' wrapped
     /// lines: one layout for drawing and clicks.
     fn layout(&self, ui: &Ui) -> Layout {
@@ -283,6 +290,14 @@ mod tests {
         assert_eq!(desktop_title, TITLE);
         assert_eq!(desktop_messages, &PARAGRAPHS);
         assert_eq!(desktop_button, "Download the launcher");
+    }
+
+    #[test]
+    fn ios_incomplete_import_shows_the_specific_problem_not_only_missing_manifest() {
+        let screen = NoResources::new(std::path::Path::new("resources"))
+            .with_import_issue("Prepared resources are missing facts.json");
+        assert!(screen.looked_in.contains("facts.json"));
+        assert!(!screen.looked_in.contains(".local/horizon-client"));
     }
 
     #[test]

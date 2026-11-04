@@ -92,6 +92,20 @@ private func verifyNativeLauncherBridge(in caches: URL) async {
         do {
             try "ready".write(to: marker, atomically: true, encoding: .utf8)
             NSLog("Horizon native launcher Rust bridge round-trip verified")
+            // The CI runner created a tiny synthetic prepared ZIP in the app's
+            // Documents container. Exercise the SAME checked import command
+            // as the real download button, but never start the renderer using
+            // these placeholders: this is not playable Minecraft content.
+            let imported = await Bridge.send("launcher-import horizon-download-CIRESOURCE.zip")
+            let afterImport = await Bridge.send("launcher-state")
+            if imported.error == nil && afterImport["ready"] as? Bool == true {
+                let importedMarker = caches.appendingPathComponent("horizon-ios-launcher-import-ready")
+                try "ready".write(to: importedMarker, atomically: true, encoding: .utf8)
+                NSLog("Horizon native launcher checked ZIP importer verified")
+            } else {
+                NSLog("Horizon native launcher checked ZIP importer failed: %@",
+                      imported.error ?? afterImport.error ?? "resources did not become ready")
+            }
         } catch {
             NSLog("Horizon native launcher smoke marker could not be saved: %@", error.localizedDescription)
         }

@@ -61,6 +61,15 @@ class SingleAppLauncherTests(unittest.TestCase):
         smoke = (ROOT / 'packaging/ios/tests/native_game_simulator_smoke.sh').read_text()
         self.assertIn('horizon-ios-launcher-bridge-ready', smoke)
 
+    def test_simulator_smoke_imports_a_synthetic_zip_through_rust_before_claiming_ready(self):
+        presenter = (ROOT / 'packaging/ios/GameLauncher/Sources/Present.swift').read_text()
+        self.assertIn('Bridge.send("launcher-import horizon-download-CIRESOURCE.zip")', presenter)
+        self.assertIn('horizon-ios-launcher-import-ready', presenter)
+        self.assertIn('afterImport["ready"] as? Bool == true', presenter)
+        self.assertIn('launcher-start', presenter)
+        self.assertLess(presenter.index('Bridge.send("launcher-start")'),
+                        presenter.index('Bridge.send("launcher-import horizon-download-CIRESOURCE.zip")'))
+
     def test_game_action_bundles_swiftui_framework(self):
         workflow = WORKFLOW.read_text()
         self.assertIn('HorizonLauncherKit.framework', workflow)

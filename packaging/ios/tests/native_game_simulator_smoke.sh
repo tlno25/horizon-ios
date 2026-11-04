@@ -47,10 +47,18 @@ xcrun simctl install "$udid" "$app"
 launcher_bundle="$app/Frameworks/HorizonLauncherKit.framework"
 launcher_marker="Library/Caches/horizon-ios-launcher-presented"
 bridge_marker="Library/Caches/horizon-ios-launcher-bridge-ready"
+import_marker="Library/Caches/horizon-ios-launcher-import-ready"
 if [[ -d "$launcher_bundle" ]]; then
     container="$(xcrun simctl get_app_container "$udid" com.example.horizonios.game data 2>/dev/null || true)"
     if [[ -n "$container" ]]; then
-        rm -f "$container/$launcher_marker" "$container/$bridge_marker"
+        rm -f "$container/$launcher_marker" "$container/$bridge_marker" "$container/$import_marker"
+        # A synthetic resource tree exercises SwiftUI -> Rust's checked ZIP
+        # importer. It contains no copyrighted Minecraft resources and will
+        # never be packaged into an iOS app.
+        fixture="$container/Documents/horizon-download-CIRESOURCE.zip"
+        rm -f "$fixture"
+        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        python3 "$script_dir/create_simulator_test_zip.py" "$fixture"
     fi
 fi
 # Disable telemetry for a CI run, and never synthesize proprietary game files.
@@ -74,11 +82,17 @@ while true; do
             && grep -Fxq 'presented' "$container/$launcher_marker"; then
             if [[ -f "$container/$bridge_marker" ]] \
                 && grep -Fxq 'ready' "$container/$bridge_marker"; then
-                sleep "${HORIZON_IOS_GAME_SIMULATOR_SETTLE_SECONDS:-2}"
-                echo "Native Horizon SwiftUI launcher presented and Rust bridge verified; capturing screenshot for review."
-                break
-            fi
-            if (( SECONDS >= deadline )); then
+                if [[ -f "$container/$import_marker" ]] \
+                    && grep -Fxq 'ready' "$container/$import_marker"; then
+                    sleep "${HORIZON_IOS_GAME_SIMULATOR_SETTLE_SECONDS:-2}"
+                    echo "Native Horizon SwiftUI launcher, Rust bridge and checked ZIP importer verified; capturing screenshot for review."
+                    break
+                fi
+                if (( SECONDS >= deadline )); then
+                    echo "Native Horizon SwiftUI bridge responded, but the synthetic ZIP import did not succeed within ${ready_timeout}s; capturing diagnostics." >&2
+                    exit 1
+                fi
+            elif (( SECONDS >= deadline )); then
                 echo "Native Horizon SwiftUI launcher appeared, but its Rust bridge did not respond within ${ready_timeout}s; capturing diagnostics." >&2
                 exit 1
             fi

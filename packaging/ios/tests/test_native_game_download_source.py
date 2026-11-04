@@ -47,7 +47,7 @@ class NativeGameDownloadContractTests(unittest.TestCase):
     def test_invalid_resume_data_can_recover_with_a_new_download(self):
         swift = VIEW.read_text()
         self.assertIn('activeWasResumed', swift)
-        self.assertIn('URLError.Code.cannotResume.rawValue', swift)
+        self.assertNotIn('URLError.Code.cannotResume', swift)
         self.assertIn('self.clearResume()', swift)
         self.assertIn('self.endBackground()', swift)
 

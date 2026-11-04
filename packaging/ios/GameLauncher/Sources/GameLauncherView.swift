@@ -377,16 +377,15 @@ extension NativeGameDownload: URLSessionDownloadDelegate {
         let data = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data
         Task { @MainActor in
             guard self.session === session else { return }
-            let nsError = error as NSError
-            if nsError.domain == NSURLErrorDomain &&
-                nsError.code == URLError.Code.cannotResume.rawValue {
-                self.clearResume()
-                self.fail("再開データが使えませんでした。次回は最初からダウンロードします。", from: session)
-            } else if let data, let source = self.source {
+            if let data, let source = self.source {
                 self.saveResume(data, key: Self.resumeKey(for: source))
                 self.fail("通信が切れました。もう一度押すと途中から再開します。", from: session)
+            } else if self.activeWasResumed {
+                // A resumed task that cannot continue returns no replacement
+                // resume data. Purge the stale token so retry downloads anew.
+                self.clearResume()
+                self.fail("再開データを使えませんでした。もう一度押すと最初からダウンロードします。", from: session)
             } else {
-                if self.activeWasResumed { self.clearResume() }
                 self.fail(error.localizedDescription, from: session)
             }
         }

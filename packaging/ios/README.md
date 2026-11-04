@@ -140,6 +140,13 @@ and offline player name, confirms it refuses to start with no valid game files,
 then saves and reads back render distance 8. The resulting cache marker is
 CI-only and contains no player information or game assets. This catches broken
 Swift-to-Rust callbacks even if the launcher looks correct in a screenshot.
+The Simulator smoke also generates a tiny **synthetic, non-playable ZIP** in
+the simulator app's `Documents/` directory; SwiftUI calls
+`launcher-import horizon-download-CIRESOURCE.zip` and Rust verifies the
+structure/version and installs it. A second marker is written only if the
+installed resources become `ready`. Neither test ZIP nor marker is embedded
+in IPA artifacts, and the test intentionally does not start gameplay using
+fake Minecraft data. Actual licensed assets and gameplay remain unverified.
 
 The SwiftUI screen now displays in portrait on iPhone (all orientations on
 iPad), then requests landscape when Play begins. The underlying Winit window

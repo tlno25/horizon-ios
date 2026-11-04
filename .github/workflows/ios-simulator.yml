@@ -225,11 +225,13 @@ jobs:
       - name: Prepare native game resource manifest config
         env:
           HORIZON_IOS_RESOURCES_MANIFEST_URL: ${{ vars.HORIZON_IOS_RESOURCES_MANIFEST_URL }}
+          HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
         run: |
           python3 packaging/ios/configure_game_plist.py \
             --source packaging/ios/GameInfo.plist \
             --output "$RUNNER_TEMP/HorizonGameInfo.plist" \
-            --manifest-url "$HORIZON_IOS_RESOURCES_MANIFEST_URL"
+            --manifest-url "$HORIZON_IOS_RESOURCES_MANIFEST_URL" \
+            --microsoft-client-id "$HORIZON_MSA_CLIENT_ID"
       - name: Verify arm64 executable and package native game IPA
         run: |
           set -euo pipefail
@@ -301,11 +303,13 @@ jobs:
       - name: Prepare native Simulator game resource manifest config
         env:
           HORIZON_IOS_RESOURCES_MANIFEST_URL: ${{ vars.HORIZON_IOS_RESOURCES_MANIFEST_URL }}
+          HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
         run: |
           python3 packaging/ios/configure_game_plist.py \
             --source packaging/ios/GameInfo.plist \
             --output "$RUNNER_TEMP/HorizonGameInfo.plist" \
-            --manifest-url "$HORIZON_IOS_RESOURCES_MANIFEST_URL"
+            --manifest-url "$HORIZON_IOS_RESOURCES_MANIFEST_URL" \
+            --microsoft-client-id "$HORIZON_MSA_CLIENT_ID"
       - name: Package native game Simulator .app without Minecraft resources
         run: |
           set -euo pipefail

@@ -162,6 +162,18 @@ impl Loading {
                         }
                     }
                 }
+                "launcher-session" => {
+                    // The token is delivered over the in-process Swift bridge.
+                    // Never log the command, token or JSON on errors.
+                    let raw = line.strip_prefix("launcher-session ").unwrap_or_default();
+                    match horizon_client::auth::AuthSession::parse(raw) {
+                        Ok(session) if horizon_ios_launcher::waiting() => {
+                            self.native_session = Some(session);
+                            request.answer(r#"{"ok":true}"#);
+                        }
+                        _ => request.answer(r#"{"error":"Invalid or late Minecraft session"}"#),
+                    }
+                }
                 "launcher-failed" => {
                     self.error = Some("The iOS SwiftUI launcher could not be presented".into());
                     request.answer(r#"{"error":"Cannot display the iOS launcher"}"#);
@@ -176,9 +188,16 @@ impl Loading {
                         &root,
                         horizon_core::VANILLA_VERSION,
                     ) {
-                        Ok(()) => {
+                        Ok(()) if self.native_session.is_some() => {
+                            // Loading starts only after an ownership-checked
+                            // session arrives from the iOS Keychain-backed UI.
+                            let session = self.native_session.take().expect("checked above");
+                            let online_name = session.name.clone();
+                            horizon_client::auth::set_current(session);
+                            horizon_client::auth::prepare_chat_keys(true);
                             self.vanilla_root = root.clone();
                             if let Some(options) = self.options.as_mut() {
+                                options.player_name = Some(online_name);
                                 options.resources = root;
                             }
                             self.settings = Settings::load(&home.join("options.txt"));
@@ -190,6 +209,9 @@ impl Loading {
                             horizon_ios_launcher::start();
                             request.answer(r#"{"ok":true}"#);
                         }
+                        Ok(()) => request.answer(
+                            r#"{"error":"Sign in with an owning Minecraft account first"}"#,
+                        ),
                         Err(error) => request.answer(&json!({"error":error}).to_string()),
                     }
                 }

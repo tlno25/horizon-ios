@@ -1948,6 +1948,8 @@ mod tests {
             ime_allowed: false,
             #[cfg(any(target_os = "ios", test))]
             native_imports: Vec::new(),
+            #[cfg(any(target_os = "ios", test))]
+            native_session: None,
             error: None,
         }
     }

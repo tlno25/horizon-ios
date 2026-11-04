@@ -16,9 +16,10 @@ class GameManifestConfigurationTests(unittest.TestCase):
             target = Path(directory) / 'Configured.plist'
             source = IOS / 'GameInfo.plist'
             original = source.read_bytes()
-            prepare(source, target, 'https://assets.example.org/26.3/game-files.json')
+            prepare(source, target, 'https://assets.example.org/26.3/game-files.json', '11111111-2222-4333-8444-555555555555')
             info = plistlib.loads(target.read_bytes())
             self.assertEqual(info['HorizonResourcesManifestURL'], 'https://assets.example.org/26.3/game-files.json')
+            self.assertEqual(info['HorizonMicrosoftClientID'], '11111111-2222-4333-8444-555555555555')
             self.assertEqual(source.read_bytes(), original)
             self.assertFalse(any(name.name.startswith('horizon-resources') for name in target.parent.iterdir()))
 
@@ -27,11 +28,19 @@ class GameManifestConfigurationTests(unittest.TestCase):
             target = Path(directory) / 'Configured.plist'
             prepare(IOS / 'GameInfo.plist', target, '')
             self.assertEqual(plistlib.loads(target.read_bytes())['HorizonResourcesManifestURL'], '')
+            self.assertEqual(plistlib.loads(target.read_bytes())['HorizonMicrosoftClientID'], '')
             for link in ['http://example.org/files.json', 'ftp://example.org/files.json',
                          'https://name:secret@example.org/manifest.json',
                          'https://example.org/manifest.json#private']:
                 with self.subTest(link=link), self.assertRaisesRegex(ValueError, 'HTTPS'):
                     prepare(IOS / 'GameInfo.plist', target, link)
+
+    def test_public_client_id_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'Info.plist'
+            for value in ('not-a-guid', '00000000441cc96b', 'client:secret'):
+                with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'GUID'):
+                    prepare(IOS / 'GameInfo.plist', output, '', value)
 
 
 if __name__ == '__main__':

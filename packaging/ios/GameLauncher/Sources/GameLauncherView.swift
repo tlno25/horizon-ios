@@ -407,6 +407,8 @@ extension NativeGameDownload: URLSessionDownloadDelegate {
 struct GameLauncherView: View {
     let onPlay: () -> Void
     @StateObject private var download = NativeGameDownload()
+    @StateObject private var account = MinecraftAccount()
+    @StateObject private var official = OfficialMinecraftDownload()
     @State private var hasResources = false
     @State private var version = "26.3"
     @State private var notice = ""
@@ -440,6 +442,33 @@ struct GameLauncherView: View {
                         }.buttonStyle(.bordered)
                     }
                     Divider()
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Microsoftアカウント").font(.title3.bold())
+                        if let name = account.name {
+                            Label("ログイン済み: \(name)", systemImage: "person.crop.circle.badge.checkmark")
+                            Button("ログアウト") { account.signOut() }.buttonStyle(.bordered)
+                        } else if account.busy {
+                            ProgressView("Microsoftアカウントを認証中…")
+                        }
+                        if !account.hasAccount && !account.busy {
+                            Button("Microsoftアカウントでログイン") { account.beginSignIn() }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(!account.configured)
+                            if !account.configured {
+                                Text("このビルドにはMicrosoftのクライアントIDが未設定です。")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                        if let code = account.userCode {
+                            Text("認証コード: \(code)").font(.headline.monospaced())
+                            Button("Microsoft認証ページを開く（コードをコピー）") { account.openVerification() }
+                            Button("認証を中止") { account.cancelSignIn() }
+                        }
+                        if !account.status.isEmpty {
+                            Text(account.status).font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
+                    Divider()
                     if hasResources {
                         Label("ゲームファイルを準備できました", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(.green)
@@ -448,7 +477,7 @@ struct GameLauncherView: View {
                                 .frame(maxWidth: .infinity, minHeight: 40)
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(starting)
+                        .disabled(starting || !account.hasAccount)
                     } else {
                         Text("ゲームファイルのセットアップ").font(.title3.bold())
                         Text("このアプリから必要なデータをダウンロードしてインストールします。フォルダ操作は不要です。")
@@ -466,6 +495,7 @@ struct GameLauncherView: View {
                                     Label("ゲームファイルをダウンロード", systemImage: "arrow.down.circle")
                                         .frame(maxWidth: .infinity, minHeight: 40)
                                 }.buttonStyle(.borderedProminent)
+                                    .disabled(!account.hasAccount)
                             } else {
                                 Text("このビルドには自動配信先が設定されていません。自分で準備したZIPのリンクを下に入力できます。")
                                     .font(.footnote).foregroundStyle(.secondary)
@@ -475,6 +505,23 @@ struct GameLauncherView: View {
                         } else if !download.installing {
                             Button("キャンセル", role: .cancel) { download.cancel() }
                                 .buttonStyle(.bordered)
+                        }
+                        Divider()
+                        Text("Mojang公式から元のゲームデータを取得").font(.subheadline.bold())
+                        Text("公式クライアント・サーバーJAR・ライブラリ・アセットを自分のiPhoneの書類に保存します。Horizonが動かすためのデータ生成にはJDK 25のPCでhorizon-prepareが必要です。取得しただけではゲームを起動できません。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        if official.busy {
+                            ProgressView()
+                            Text(official.progress).font(.caption.monospacedDigit())
+                            Button("公式データ取得を中止") { official.cancel() }
+                        } else {
+                            Button("Mojang公式ゲームデータを取得") {
+                                official.start(version: version, account: account)
+                            }
+                            .disabled(!account.hasAccount)
+                        }
+                        if !official.message.isEmpty {
+                            Text(official.message).font(.footnote).foregroundStyle(.secondary)
                         }
                         DisclosureGroup("自分で用意したZIPからインストール", isExpanded: $showPersonalLink) {
                             Text("自分のMinecraft Java Editionから正規に準備したZIPを、HTTPSで公開された個人用リンクから取得できます。フォルダ操作は不要です。")
@@ -489,7 +536,7 @@ struct GameLauncherView: View {
                             Button("このリンクからダウンロード") {
                                 download.beginFromLink(customLink, checksum: customSHA256)
                             }
-                            .disabled(download.busy || customLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .disabled(download.busy || !account.hasAccount || customLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                     }
                     if !download.message.isEmpty {
@@ -515,7 +562,7 @@ struct GameLauncherView: View {
             if !hasConfiguredPublisher { showPersonalLink = true }
         }
         .onChange(of: download.installed) { installed in
-            if installed { Task { await startGame() } }
+            if installed { Task { await refresh() } }
         }
     }
 
@@ -529,6 +576,16 @@ struct GameLauncherView: View {
     private func startGame() async {
         guard !starting else { return }
         starting = true
+        do {
+            let session = try await account.sessionForLaunch()
+            let delivered = await Bridge.send("launcher-session \(session)")
+            if let error = delivered.error { throw NSError(domain: "Horizon", code: 1,
+                                                           userInfo: [NSLocalizedDescriptionKey: error]) }
+        } catch {
+            notice = error.localizedDescription
+            starting = false
+            return
+        }
         let reply = await Bridge.send("launcher-start")
         if let error = reply.error {
             notice = error

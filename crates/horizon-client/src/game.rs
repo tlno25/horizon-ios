@@ -19826,6 +19826,8 @@ struct Loading {
     ime_allowed: bool,
     #[cfg(any(target_os = "ios", test))]
     native_imports: Vec<ios_native_launcher::ImportJob>,
+    #[cfg(any(target_os = "ios", test))]
+    native_session: Option<horizon_client::auth::AuthSession>,
     error: Option<Box<dyn std::error::Error>>,
 }
 impl Loading {
@@ -20499,6 +20501,8 @@ fn loading_app(
         ime_allowed: false,
         #[cfg(any(target_os = "ios", test))]
         native_imports: Vec::new(),
+        #[cfg(any(target_os = "ios", test))]
+        native_session: None,
         error: None,
     };
     Ok(App::Loading(Box::new(loading)))

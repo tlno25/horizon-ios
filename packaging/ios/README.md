@@ -68,6 +68,25 @@ to distribute. The release workflow writes it into the generated game's
 }
 ```
 
+For an **authorized** publisher archive, `packaging/ios/create_resource_download_manifest.py`
+can generate these values automatically, checking the game's preparation
+manifest and the required file structure. Example (URLs and file names are
+illustrative, not an existing public asset server):
+
+```bash
+python3 packaging/ios/create_resource_download_manifest.py \
+  --archive /path/to/authorized-prepared-resources.zip \
+  --minecraft-version 26.3 \
+  --url https://your-authorized-server.example/horizon-26.3.zip \
+  --output game-files.json
+```
+
+The publisher must host that exact archive and `game-files.json` over HTTPS,
+then set `HORIZON_IOS_RESOURCES_MANIFEST_URL` in GitHub Actions repository
+variables to the **public HTTPS address of `game-files.json`**, and build the
+`game` target. No folder selection, URL entry or checksum entry is required of
+the player. This helper never uploads files or supplies a third-party mirror.
+
 Use a **genuine hash and byte size** from the ZIP actually served. The ZIP
 needs the core files that `horizon-prepare` generates (root
 `horizon-resources.json` and the supporting files). Do not upload or publicly

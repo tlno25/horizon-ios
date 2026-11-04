@@ -13,9 +13,12 @@ FIRST_FRAME = "[12:01:01] [Render thread/INFO]: Horizon renderer: presenting the
 
 
 class NativeGameSimulatorSmokeTests(unittest.TestCase):
-    def run_smoke(self, root: Path, *, log: str, delay_marker: bool = False, timeout: int = 2):
+    def run_smoke(self, root: Path, *, log: str, delay_marker: bool = False,
+                  launcher: bool = False, launcher_ready: bool = False, timeout: int = 2):
         app = root / "HorizonGame.app"
         app.mkdir()
+        if launcher:
+            (app / "Frameworks/HorizonLauncherKit.framework").mkdir(parents=True)
         container = root / "simulator-container"
         logs = container / "Documents/logs"
         logs.mkdir(parents=True)
@@ -35,6 +38,10 @@ class NativeGameSimulatorSmokeTests(unittest.TestCase):
             '  fi\n'
             '  exit 0;\n'
             'fi\n'
+            'if [[ "$1 $2" == "simctl launch" && "$FAKE_SWIFTUI_PRESENT" == "1" ]]; then\n'
+            '  mkdir -p "$FAKE_SIM_CONTAINER/Library/Caches"\n'
+            '  printf "presented" > "$FAKE_SIM_CONTAINER/Library/Caches/horizon-ios-launcher-presented"\n'
+            'fi\n'
             'if [[ "$1 $2" == "simctl spawn" ]]; then printf "HorizonGame started\\n"; exit 0; fi\n'
             'exit 0\n',
             encoding="utf-8",
@@ -49,6 +56,7 @@ class NativeGameSimulatorSmokeTests(unittest.TestCase):
             "HORIZON_IOS_GAME_SIMULATOR_READY_TIMEOUT_SECONDS": str(timeout),
             "HORIZON_IOS_GAME_SIMULATOR_SETTLE_SECONDS": "0",
             "FAKE_SIM_CONTAINER": str(container),
+            "FAKE_SWIFTUI_PRESENT": "1" if launcher_ready else "0",
         }
         timer = None
         if delay_marker:
@@ -89,6 +97,23 @@ class NativeGameSimulatorSmokeTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((root / "horizon-ios-game-simulator-screen.png").read_bytes(), b"FRAME_READY")
             self.assertEqual((root / "horizon-ios-game-simulator-game.log").read_text(), FIRST_FRAME)
+
+    def test_swiftui_launcher_is_success_without_first_metal_frame(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = self.run_smoke(root, log="Horizon iOS launcher startup\n",
+                                    launcher=True, launcher_ready=True, timeout=2)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("SwiftUI launcher", result.stdout)
+            self.assertTrue((root / "horizon-ios-game-simulator-screen.png").exists())
+
+    def test_unpresented_swiftui_launcher_fails_instead_of_claiming_success(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = self.run_smoke(root, log="Horizon game starting\n", launcher=True, timeout=0)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("SwiftUI", result.stderr)
+            self.assertTrue((root / "horizon-ios-game-simulator-screen.png").exists())
 
     def test_workflow_uploads_game_log_for_black_screen_triage(self):
         self.assertIn("horizon-ios-game-simulator-game.log", WORKFLOW.read_text())

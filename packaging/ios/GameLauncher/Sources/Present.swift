@@ -51,6 +51,16 @@ private func presentLauncher(tries: Int) {
     root.present(host, animated: false) {
         updateOrientation(in: host.view.window?.windowScene,
                           to: UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait)
+        // Only Simulator smoke jobs request a small readiness marker. This
+        // proves UIKit actually presented SwiftUI, not merely that Rust
+        // loaded the framework; no game data or account info is written.
+        if ProcessInfo.processInfo.environment["HORIZON_IOS_SIMULATOR_SMOKE"] == "1",
+           let caches = FileManager.default.urls(for: .cachesDirectory,
+                                                  in: .userDomainMask).first {
+            let marker = caches.appendingPathComponent("horizon-ios-launcher-presented")
+            try? "presented".write(to: marker, atomically: true, encoding: .utf8)
+        }
+        NSLog("Horizon iOS SwiftUI launcher presented")
     }
 }
 

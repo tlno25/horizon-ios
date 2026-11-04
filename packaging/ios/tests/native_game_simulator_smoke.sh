@@ -41,8 +41,20 @@ trap capture EXIT
 xcrun simctl boot "$udid" || true
 xcrun simctl bootstatus "$udid" -b
 xcrun simctl install "$udid" "$app"
+# The combined native app intentionally waits at the SwiftUI launcher. No
+# Metal frame is presented before the player downloads game files and taps
+# Play. Check UIKit presentation instead of timing out on the old frame signal.
+launcher_bundle="$app/Frameworks/HorizonLauncherKit.framework"
+launcher_marker="Library/Caches/horizon-ios-launcher-presented"
+if [[ -d "$launcher_bundle" ]]; then
+    container="$(xcrun simctl get_app_container "$udid" com.example.horizonios.game data 2>/dev/null || true)"
+    if [[ -n "$container" ]]; then
+        rm -f "$container/$launcher_marker"
+    fi
+fi
 # Disable telemetry for a CI run, and never synthesize proprietary game files.
 SIMCTL_CHILD_HORIZON_TELEMETRY_URL=off \
+SIMCTL_CHILD_HORIZON_IOS_SIMULATOR_SMOKE=1 \
     xcrun simctl launch "$udid" com.example.horizonios.game
 # Shader compilation took 43 seconds in a real Simulator run, so a fixed
 # 7/20-second delay captured a black screen before the first present. Poll the
@@ -56,6 +68,20 @@ fi
 deadline=$((SECONDS + ready_timeout))
 while true; do
     container="$(xcrun simctl get_app_container "$udid" com.example.horizonios.game data 2>/dev/null || true)"
+    if [[ -d "$launcher_bundle" ]]; then
+        if [[ -n "$container" && -f "$container/$launcher_marker" ]] \
+            && grep -Fxq 'presented' "$container/$launcher_marker"; then
+            sleep "${HORIZON_IOS_GAME_SIMULATOR_SETTLE_SECONDS:-2}"
+            echo "Native Horizon SwiftUI launcher presented; capturing screenshot for review."
+            break
+        fi
+        if (( SECONDS >= deadline )); then
+            echo "Native Horizon SwiftUI launcher did not appear within ${ready_timeout}s; capturing diagnostics." >&2
+            exit 1
+        fi
+        sleep 1
+        continue
+    fi
     if [[ -n "$container" && -f "$container/Documents/logs/latest.log" ]] \
         && grep -Fq 'Horizon renderer: presenting the first frame' "$container/Documents/logs/latest.log"; then
         # The renderer writes this marker immediately before queue.present().

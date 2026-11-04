@@ -30,11 +30,11 @@ class NativeGameWorkflowTests(unittest.TestCase):
         workflow = WORKFLOW.read_text()
         self.assertIn("- game-launcher", workflow)
         self.assertIn("launcher-only-build:", workflow)
-        self.assertIn('build_game_launcher.sh iphonesimulator arm64', workflow)
+        self.assertIn('build_game_launcher.sh iphonesimulator x86_64', workflow)
         self.assertIn('_horizon_launcher_present', workflow)
         import yaml
         launcher = yaml.safe_load(workflow)['jobs']['launcher-only-build']
-        self.assertEqual(launcher['runs-on'], 'macos-15')
+        self.assertEqual(launcher['runs-on'], 'macos-26-intel')
 
     def test_native_game_simulator_uses_available_apple_silicon_runner(self):
         import yaml

@@ -36,6 +36,14 @@ class NativeGameDownloadContractTests(unittest.TestCase):
         self.assertIn('func clearResume(', swift)
         self.assertIn('didResumeAtOffset', swift)
 
+    def test_cancellation_waits_for_resume_data_before_reenabling_download(self):
+        swift = VIEW.read_text()
+        self.assertIn('@Published private(set) var pausing = false', swift)
+        self.assertIn('self.pausing = false', swift)
+        self.assertIn('guard busy && !installing && !pausing', swift)
+        self.assertIn('Button("中断中…")', swift)
+        self.assertIn('self.busy = false', swift)
+
     def test_invalid_resume_data_can_recover_with_a_new_download(self):
         swift = VIEW.read_text()
         self.assertIn('activeWasResumed', swift)

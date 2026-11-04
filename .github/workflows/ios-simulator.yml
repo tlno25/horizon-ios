@@ -47,19 +47,19 @@ jobs:
   # before requesting a full native game IPA.
   launcher-only-build:
     if: ${{ inputs.build_target == 'game-launcher' }}
-    runs-on: macos-15
+    runs-on: macos-26-intel
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - name: Compile native SwiftUI game launcher (iOS Simulator)
         run: |
-          bash packaging/ios/build_game_launcher.sh iphonesimulator arm64 "$RUNNER_TEMP/HorizonGameLauncherOnly"
+          bash packaging/ios/build_game_launcher.sh iphonesimulator x86_64 "$RUNNER_TEMP/HorizonGameLauncherOnly"
       - name: Verify SwiftUI launcher C ABI symbol and architecture
         run: |
           set -euo pipefail
           framework="$RUNNER_TEMP/HorizonGameLauncherOnly/Build/Products/Release-iphonesimulator/HorizonLauncherKit.framework"
           test -f "$framework/Info.plist"
-          xcrun lipo -archs "$framework/HorizonLauncherKit" | grep -qw arm64
+          xcrun lipo -archs "$framework/HorizonLauncherKit" | grep -qw x86_64
           xcrun nm -g "$framework/HorizonLauncherKit" | grep -Fq _horizon_launcher_present
           echo 'iOS SwiftUI launcher framework and Rust bridge entrypoint validated.'
 

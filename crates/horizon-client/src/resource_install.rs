@@ -124,8 +124,11 @@ pub fn import_archive_checked(archive: &Path, home: &Path) -> Result<()> {
 }
 
 fn import_archive_impl(archive: &Path, home: &Path, check_core: bool) -> Result<()> {
-    let meta = fs::metadata(archive)?;
-    if !meta.is_file() || meta.len() == 0 || meta.len() > 4 * 1024 * 1024 * 1024 {
+    // The SwiftUI bridge provides a filename in the app sandbox, but a file
+    // with that name could be replaced by a symlink before Rust opens it.
+    // Never follow the link to an arbitrary target.
+    let meta = fs::symlink_metadata(archive)?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 4 * 1024 * 1024 * 1024 {
         return Err("Prepared resources ZIP must be a nonempty file of at most 4 GiB".into());
     }
     let versions = home.join(".local/horizon-client");
@@ -373,6 +376,23 @@ mod tests {
                 .is_none(),
             "partial directories must be removed"
         );
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_zip_symlink_even_when_it_points_to_an_existing_archive() {
+        let home = temporary("zip-symlink");
+        fs::create_dir_all(&home).unwrap();
+        let original = home.join("prepared.zip");
+        fs::write(&original, fixture()).unwrap();
+        let link = home.join("horizon-download-PRIVATE.zip");
+        std::os::unix::fs::symlink(&original, &link).unwrap();
+        assert!(
+            import_archive(&link, &home).is_err(),
+            "The launcher must never follow a symlink to import a ZIP"
+        );
+        assert!(!ready(&home));
         fs::remove_dir_all(home).unwrap();
     }
 

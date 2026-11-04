@@ -45,6 +45,7 @@ private struct GameDownloadSource {
 final class NativeGameDownload: NSObject, ObservableObject {
     @Published private(set) var message = ""
     @Published private(set) var busy = false
+    @Published private(set) var pausing = false
     @Published private(set) var installing = false
     @Published private(set) var downloadedBytes: Int64 = 0
     @Published private(set) var totalBytes: Int64 = 0
@@ -196,7 +197,7 @@ final class NativeGameDownload: NSObject, ObservableObject {
     }
 
     func cancel() {
-        guard busy && !installing else { return }
+        guard busy && !installing && !pausing else { return }
         generation = UUID()
         let current = session
         let task = activeTask
@@ -204,20 +205,30 @@ final class NativeGameDownload: NSObject, ObservableObject {
         session = nil
         activeTask = nil
         source = nil
-        busy = false
-        message = "ダウンロードを中断しました。再開可能なら次回は途中から取得します。"
+        message = "ダウンロードを中断中…"
         if let task, let currentSource {
+            // The resume-data callback is asynchronous. Do not enable a new
+            // download until the old partial state is saved to disk.
+            pausing = true
             let key = Self.resumeKey(for: currentSource)
             task.cancel(byProducingResumeData: { [weak self] data in
                 Task { @MainActor in
-                    if let data, let self, !self.busy {
-                        self.saveResume(data, key: key)
+                    if let self {
+                        if let data {
+                            self.saveResume(data, key: key)
+                        } else {
+                            self.clearResume()
+                        }
+                        self.pausing = false
+                        self.busy = false
+                        self.message = "ダウンロードを中断しました。再開できる場合は次回続きから取得します。"
+                        self.endBackground()
                     }
-                    self?.endBackground()
                     current?.finishTasksAndInvalidate()
                 }
             })
         } else {
+            busy = false
             current?.invalidateAndCancel()
             endBackground()
         }
@@ -460,6 +471,8 @@ struct GameLauncherView: View {
                                 Text("このビルドには自動配信先が設定されていません。自分で準備したZIPのリンクを下に入力できます。")
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
+                        } else if download.pausing {
+                            Button("中断中…") {}.disabled(true)
                         } else if !download.installing {
                             Button("キャンセル", role: .cancel) { download.cancel() }
                                 .buttonStyle(.bordered)

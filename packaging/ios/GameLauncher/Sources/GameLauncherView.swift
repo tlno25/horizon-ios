@@ -52,6 +52,7 @@ final class NativeGameDownload: NSObject, ObservableObject {
 
     private var session: URLSession?
     private var activeTask: URLSessionDownloadTask?
+    private var activeWasResumed = false
     private var source: GameDownloadSource?
     private var generation = UUID()
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
@@ -189,6 +190,7 @@ final class NativeGameDownload: NSObject, ObservableObject {
         }
         let task = paused.map { current.downloadTask(withResumeData: $0) }
             ?? current.downloadTask(with: URLRequest(url: source.url))
+        activeWasResumed = paused != nil
         activeTask = task
         task.resume()
     }
@@ -203,8 +205,7 @@ final class NativeGameDownload: NSObject, ObservableObject {
         activeTask = nil
         source = nil
         busy = false
-        message = "ダウンロードを中断しました。もう一度押すと再開できます。"
-        endBackground()
+        message = "ダウンロードを中断しました。再開可能なら次回は途中から取得します。"
         if let task, let currentSource {
             let key = Self.resumeKey(for: currentSource)
             task.cancel(byProducingResumeData: { [weak self] data in
@@ -212,11 +213,13 @@ final class NativeGameDownload: NSObject, ObservableObject {
                     if let data, let self, !self.busy {
                         self.saveResume(data, key: key)
                     }
+                    self?.endBackground()
                     current?.finishTasksAndInvalidate()
                 }
             })
         } else {
             current?.invalidateAndCancel()
+            endBackground()
         }
     }
 
@@ -363,10 +366,16 @@ extension NativeGameDownload: URLSessionDownloadDelegate {
         let data = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data
         Task { @MainActor in
             guard self.session === session else { return }
-            if let data, let source = self.source {
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain &&
+                nsError.code == URLError.Code.cannotResume.rawValue {
+                self.clearResume()
+                self.fail("再開データが使えませんでした。次回は最初からダウンロードします。", from: session)
+            } else if let data, let source = self.source {
                 self.saveResume(data, key: Self.resumeKey(for: source))
                 self.fail("通信が切れました。もう一度押すと途中から再開します。", from: session)
             } else {
+                if self.activeWasResumed { self.clearResume() }
                 self.fail(error.localizedDescription, from: session)
             }
         }

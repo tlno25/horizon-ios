@@ -36,6 +36,13 @@ class NativeGameDownloadContractTests(unittest.TestCase):
         self.assertIn('func clearResume(', swift)
         self.assertIn('didResumeAtOffset', swift)
 
+    def test_invalid_resume_data_can_recover_with_a_new_download(self):
+        swift = VIEW.read_text()
+        self.assertIn('activeWasResumed', swift)
+        self.assertIn('URLError.Code.cannotResume.rawValue', swift)
+        self.assertIn('self.clearResume()', swift)
+        self.assertIn('self.endBackground()', swift)
+
     def test_download_work_keeps_ios_app_alive_long_enough_to_pause_safely(self):
         swift = VIEW.read_text()
         self.assertIn('beginBackgroundTask(', swift)

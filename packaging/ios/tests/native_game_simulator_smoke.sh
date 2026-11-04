@@ -44,7 +44,29 @@ xcrun simctl install "$udid" "$app"
 # Disable telemetry for a CI run, and never synthesize proprietary game files.
 SIMCTL_CHILD_HORIZON_TELEMETRY_URL=off \
     xcrun simctl launch "$udid" com.example.horizonios.game
-# Allow first-run Metal and font initialization time to paint the screen.
-# Tests can set zero seconds; the real simulator defaults to twenty.
-sleep "${HORIZON_IOS_GAME_SIMULATOR_WAIT_SECONDS:-20}"
-echo "Native Horizon game process launched in Simulator; screenshot is for visual review."
+# Shader compilation took 43 seconds in a real Simulator run, so a fixed
+# 7/20-second delay captured a black screen before the first present. Poll the
+# native game log instead of assuming startup has finished. Keep collecting
+# diagnostics (via EXIT trap) even when the renderer never reaches a frame.
+ready_timeout="${HORIZON_IOS_GAME_SIMULATOR_READY_TIMEOUT_SECONDS:-120}"
+if ! [[ "$ready_timeout" =~ ^[0-9]+$ ]]; then
+    echo "Invalid first-frame timeout: $ready_timeout" >&2
+    exit 2
+fi
+deadline=$((SECONDS + ready_timeout))
+while true; do
+    container="$(xcrun simctl get_app_container "$udid" com.example.horizonios.game data 2>/dev/null || true)"
+    if [[ -n "$container" && -f "$container/Documents/logs/latest.log" ]] \
+        && grep -Fq 'Horizon renderer: presenting the first frame' "$container/Documents/logs/latest.log"; then
+        # The renderer writes this marker immediately before queue.present().
+        # Let the Simulator compositor display the completed frame as well.
+        sleep "${HORIZON_IOS_GAME_SIMULATOR_SETTLE_SECONDS:-2}"
+        echo "Native Horizon game renderer reached its first frame; capturing screenshot for review."
+        break
+    fi
+    if (( SECONDS >= deadline )); then
+        echo "Native Horizon game did not present its first frame within ${ready_timeout}s; capturing diagnostics." >&2
+        exit 1
+    fi
+    sleep 1
+done

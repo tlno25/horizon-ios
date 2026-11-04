@@ -77,6 +77,12 @@ without one, Download reports the missing configuration instead of guessing
 an untrusted mirror. That is a distributor setup issue, **not a step required
 of the player** after a correctly configured app is installed.
 
+The SwiftUI screen now displays in portrait on iPhone (all orientations on
+iPad), then requests landscape when Play begins. The underlying Winit window
+changes its supported orientation mask to match. Settings expose the game's
+options.txt format and the persistent 3–16 character offline player name; this
+name is **not** a Microsoft login and does not prove game ownership.
+
 The SwiftUI screen offers a limited subset of Horizon's game settings. Full
 account sign-in, entitlement verification, legal provisioning of Java Edition
 game data, all gameplay features and on-device performance are **not yet

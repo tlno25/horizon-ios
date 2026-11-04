@@ -323,6 +323,7 @@ struct GameLauncherView: View {
 
 private struct NativeSettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var playerName = ""
     @State private var renderDistance = 8
     @State private var simulationDistance = 8
     @State private var maxFps = 60
@@ -335,6 +336,13 @@ private struct NativeSettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("プレイヤー") {
+                    TextField("オフラインプレイヤー名", text: $playerName)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Text("半角英数字とアンダースコアで3〜16文字。Microsoftアカウントでのログインとは別です。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 Section("グラフィックス") {
                     Stepper("描画距離: \(renderDistance)", value: $renderDistance, in: 2...24)
                     Stepper("シミュレーション距離: \(simulationDistance)", value: $simulationDistance, in: 5...16)
@@ -363,6 +371,8 @@ private struct NativeSettingsView: View {
     }
 
     private func load() async {
+        let profile = await Bridge.send("launcher-player-get")
+        if let name = profile["name"] as? String { playerName = name }
         let options = await Bridge.send("launcher-settings")
         if let error = options.error { message = error; return }
         renderDistance = options["renderDistance"] as? Int ?? renderDistance
@@ -375,6 +385,16 @@ private struct NativeSettingsView: View {
     }
 
     private func save() async {
+        guard (3...16).contains(playerName.utf8.count),
+              playerName.utf8.allSatisfy({
+                  ($0 >= 48 && $0 <= 57) || ($0 >= 65 && $0 <= 90) ||
+                  ($0 >= 97 && $0 <= 122) || $0 == 95
+              }) else {
+            message = "プレイヤー名は3〜16文字の半角英数字・アンダースコアで入力してください。"
+            return
+        }
+        let playerReply = await Bridge.send("launcher-player \(playerName)")
+        if let error = playerReply.error { message = error; return }
         let values: [(String, String)] = [
             ("renderDistance", "\(renderDistance)"),
             ("simulationDistance", "\(simulationDistance)"),

@@ -39,10 +39,38 @@ private func presentLauncher(tries: Int) {
         }
         return
     }
-    let host = UIHostingController(rootView: GameLauncherView(onPlay: {
-        root.dismiss(animated: true)
+    let host = GameLauncherHostingController(rootView: GameLauncherView(onPlay: { [weak root] in
+        guard let root else { return }
+        let scene = root.view.window?.windowScene
+        root.dismiss(animated: true) {
+            updateOrientation(in: scene, to: .landscape)
+        }
     }))
     host.view.backgroundColor = .systemBackground
     host.modalPresentationStyle = .fullScreen
-    root.present(host, animated: false)
+    root.present(host, animated: false) {
+        updateOrientation(in: host.view.window?.windowScene,
+                          to: UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait)
+    }
+}
+
+@MainActor
+private func updateOrientation(in scene: UIWindowScene?, to orientations: UIInterfaceOrientationMask) {
+    guard let scene else { return }
+    for window in scene.windows {
+        window.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        window.rootViewController?.presentedViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+    }
+    scene.requestGeometryUpdate(.iOS(interfaceOrientations: orientations)) { error in
+        NSLog("Horizon orientation change failed: %@", error.localizedDescription)
+    }
+}
+
+private final class GameLauncherHostingController: UIHostingController<GameLauncherView> {
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait
+    }
+    override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation {
+        .portrait
+    }
 }

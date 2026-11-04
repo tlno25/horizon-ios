@@ -32,6 +32,23 @@ class SingleAppLauncherTests(unittest.TestCase):
         self.assertNotIn('fileImporter(', source)
         self.assertNotIn('フォルダを選択', source)
 
+    def test_launcher_supports_portrait_then_returns_to_landscape(self):
+        game = GAME.read_text()
+        presenter = (ROOT / 'packaging/ios/GameLauncher/Sources/Present.swift').read_text()
+        plist = (ROOT / 'packaging/ios/GameInfo.plist').read_text()
+        self.assertIn('ValidOrientations::LandscapeAndPortrait', game)
+        self.assertIn('ValidOrientations::Landscape', LAUNCH.read_text())
+        self.assertIn('requestGeometryUpdate', presenter)
+        self.assertIn('UIInterfaceOrientationPortrait', plist)
+
+    def test_offline_player_name_can_be_edited_in_swiftui(self):
+        native = LAUNCH.read_text()
+        swift = (ROOT / 'packaging/ios/GameLauncher/Sources/GameLauncherView.swift').read_text()
+        self.assertIn('"launcher-player-get"', native)
+        self.assertIn('"launcher-player"', native)
+        self.assertIn('TextField("オフラインプレイヤー名"', swift)
+        self.assertIn('Bridge.send("launcher-player ', swift)
+
     def test_game_action_bundles_swiftui_framework(self):
         workflow = WORKFLOW.read_text()
         self.assertIn('HorizonLauncherKit.framework', workflow)

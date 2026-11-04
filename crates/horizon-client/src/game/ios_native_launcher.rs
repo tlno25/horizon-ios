@@ -103,6 +103,15 @@ impl Loading {
                         Err(error) => request.answer(&json!({"error":error}).to_string()),
                     }
                 }
+                "launcher-player-get" => {
+                    let name = std::env::current_dir()
+                        .map_err(|e| e.to_string())
+                        .map(|home| horizon_client::offline_name::load_or_create(&home));
+                    match name {
+                        Ok(name) => request.answer(&json!({"name": name}).to_string()),
+                        Err(error) => request.answer(&json!({"error": error}).to_string()),
+                    }
+                }
                 "launcher-player" => {
                     let name = line.strip_prefix("launcher-player ").unwrap_or_default();
                     let result =
@@ -173,6 +182,11 @@ impl Loading {
                                 options.resources = root;
                             }
                             self.settings = Settings::load(&home.join("options.txt"));
+                            #[cfg(target_os = "ios")]
+                            if let Some(window) = self.window.as_deref() {
+                                use winit::platform::ios::{ValidOrientations, WindowExtIOS};
+                                window.set_valid_orientations(ValidOrientations::Landscape);
+                            }
                             horizon_ios_launcher::start();
                             request.answer(r#"{"ok":true}"#);
                         }

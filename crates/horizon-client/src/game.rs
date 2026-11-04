@@ -16015,7 +16015,13 @@ impl ApplicationHandler for Game<'_> {
         #[cfg(target_os = "ios")]
         let attributes = winit::platform::ios::WindowAttributesExtIOS::with_valid_orientations(
             attributes,
-            winit::platform::ios::ValidOrientations::Landscape,
+            if horizon_ios_launcher::waiting() {
+                // The SwiftUI launcher is portrait on phones. Permit it before
+                // it covers the same Winit window; Play restores landscape.
+                winit::platform::ios::ValidOrientations::LandscapeAndPortrait
+            } else {
+                winit::platform::ios::ValidOrientations::Landscape
+            },
         );
         let attributes =
             match horizon_client::ios_paths::preferred_window_size(size, cfg!(target_os = "ios")) {

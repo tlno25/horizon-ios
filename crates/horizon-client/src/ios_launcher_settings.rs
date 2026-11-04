@@ -143,6 +143,33 @@ mod tests {
     }
 
     #[test]
+    fn every_swiftui_launcher_option_round_trips_through_horizons_parser() {
+        let d = dir("swiftui-all-settings");
+        let values = [
+            ("renderDistance", "8"),
+            ("simulationDistance", "8"),
+            ("maxFps", "60"),
+            ("fov", "95"),
+            ("soundCategory_master", "0.75"),
+            ("autoJump", "true"),
+            ("enableVsync", "false"),
+        ];
+        for (key, value) in values {
+            set_game_setting(&d, key, value).unwrap_or_else(|e| panic!("{key} {value}: {e}"));
+        }
+        let output = game_settings_json(&d).unwrap();
+        let options: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(options["renderDistance"], 8);
+        assert_eq!(options["simulationDistance"], 8);
+        assert_eq!(options["maxFps"], 60);
+        assert_eq!(options["fov"], 95);
+        assert_eq!(options["soundCategory_master"], 0.75);
+        assert_eq!(options["autoJump"], true);
+        assert_eq!(options["enableVsync"], false);
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
     fn rejects_unknown_or_invalid_values_without_writing() {
         let d = dir("invalid");
         let existing = "renderDistance:12\n";

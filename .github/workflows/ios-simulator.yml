@@ -197,7 +197,7 @@ jobs:
   # binary and still needs the player's prepared assets and mobile inputs.
   game-build:
     if: ${{ inputs.build_target == 'game' }}
-    runs-on: macos-15-intel
+    runs-on: macos-15
     timeout-minutes: 90
     env:
       IPHONEOS_DEPLOYMENT_TARGET: "16.0"

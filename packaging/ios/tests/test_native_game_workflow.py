@@ -16,6 +16,16 @@ class NativeGameWorkflowTests(unittest.TestCase):
         self.assertIn("package_native_game_ipa.py", workflow)
         self.assertIn("name: horizon-ios-native-game-ipa", workflow)
 
+    def test_device_game_uses_available_arm64_mac_runner(self):
+        import yaml
+        workflow = yaml.safe_load(WORKFLOW.read_text())
+        job = workflow["jobs"]["game-build"]
+        self.assertEqual(job["runs-on"], "macos-15")
+        steps = str(job["steps"])
+        self.assertIn("--target aarch64-apple-ios", steps)
+        self.assertIn("build_game_launcher.sh iphoneos arm64", steps)
+        self.assertIn("Horizon-game-unsigned.ipa", steps)
+
     def test_launcher_only_ci_validates_swift_without_recompiling_all_rust(self):
         workflow = WORKFLOW.read_text()
         self.assertIn("- game-launcher", workflow)

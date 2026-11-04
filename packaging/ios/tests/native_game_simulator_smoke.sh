@@ -46,10 +46,11 @@ xcrun simctl install "$udid" "$app"
 # Play. Check UIKit presentation instead of timing out on the old frame signal.
 launcher_bundle="$app/Frameworks/HorizonLauncherKit.framework"
 launcher_marker="Library/Caches/horizon-ios-launcher-presented"
+bridge_marker="Library/Caches/horizon-ios-launcher-bridge-ready"
 if [[ -d "$launcher_bundle" ]]; then
     container="$(xcrun simctl get_app_container "$udid" com.example.horizonios.game data 2>/dev/null || true)"
     if [[ -n "$container" ]]; then
-        rm -f "$container/$launcher_marker"
+        rm -f "$container/$launcher_marker" "$container/$bridge_marker"
     fi
 fi
 # Disable telemetry for a CI run, and never synthesize proprietary game files.
@@ -71,11 +72,17 @@ while true; do
     if [[ -d "$launcher_bundle" ]]; then
         if [[ -n "$container" && -f "$container/$launcher_marker" ]] \
             && grep -Fxq 'presented' "$container/$launcher_marker"; then
-            sleep "${HORIZON_IOS_GAME_SIMULATOR_SETTLE_SECONDS:-2}"
-            echo "Native Horizon SwiftUI launcher presented; capturing screenshot for review."
-            break
-        fi
-        if (( SECONDS >= deadline )); then
+            if [[ -f "$container/$bridge_marker" ]] \
+                && grep -Fxq 'ready' "$container/$bridge_marker"; then
+                sleep "${HORIZON_IOS_GAME_SIMULATOR_SETTLE_SECONDS:-2}"
+                echo "Native Horizon SwiftUI launcher presented and Rust bridge verified; capturing screenshot for review."
+                break
+            fi
+            if (( SECONDS >= deadline )); then
+                echo "Native Horizon SwiftUI launcher appeared, but its Rust bridge did not respond within ${ready_timeout}s; capturing diagnostics." >&2
+                exit 1
+            fi
+        elif (( SECONDS >= deadline )); then
             echo "Native Horizon SwiftUI launcher did not appear within ${ready_timeout}s; capturing diagnostics." >&2
             exit 1
         fi

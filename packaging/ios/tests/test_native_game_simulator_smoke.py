@@ -14,7 +14,8 @@ FIRST_FRAME = "[12:01:01] [Render thread/INFO]: Horizon renderer: presenting the
 
 class NativeGameSimulatorSmokeTests(unittest.TestCase):
     def run_smoke(self, root: Path, *, log: str, delay_marker: bool = False,
-                  launcher: bool = False, launcher_ready: bool = False, timeout: int = 2):
+                  launcher: bool = False, launcher_ready: bool = False,
+                  bridge_ready: bool = False, timeout: int = 2):
         app = root / "HorizonGame.app"
         app.mkdir()
         if launcher:
@@ -41,6 +42,9 @@ class NativeGameSimulatorSmokeTests(unittest.TestCase):
             'if [[ "$1 $2" == "simctl launch" && "$FAKE_SWIFTUI_PRESENT" == "1" ]]; then\n'
             '  mkdir -p "$FAKE_SIM_CONTAINER/Library/Caches"\n'
             '  printf "presented" > "$FAKE_SIM_CONTAINER/Library/Caches/horizon-ios-launcher-presented"\n'
+            '  if [[ "$FAKE_SWIFTUI_BRIDGE" == "1" ]]; then\n'
+            '    printf "ready" > "$FAKE_SIM_CONTAINER/Library/Caches/horizon-ios-launcher-bridge-ready"\n'
+            '  fi\n'
             'fi\n'
             'if [[ "$1 $2" == "simctl spawn" ]]; then printf "HorizonGame started\\n"; exit 0; fi\n'
             'exit 0\n',
@@ -57,6 +61,7 @@ class NativeGameSimulatorSmokeTests(unittest.TestCase):
             "HORIZON_IOS_GAME_SIMULATOR_SETTLE_SECONDS": "0",
             "FAKE_SIM_CONTAINER": str(container),
             "FAKE_SWIFTUI_PRESENT": "1" if launcher_ready else "0",
+            "FAKE_SWIFTUI_BRIDGE": "1" if bridge_ready else "0",
         }
         timer = None
         if delay_marker:
@@ -102,9 +107,18 @@ class NativeGameSimulatorSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             result = self.run_smoke(root, log="Horizon iOS launcher startup\n",
-                                    launcher=True, launcher_ready=True, timeout=2)
+                                    launcher=True, launcher_ready=True, bridge_ready=True, timeout=2)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("SwiftUI launcher", result.stdout)
+            self.assertTrue((root / "horizon-ios-game-simulator-screen.png").exists())
+
+    def test_swiftui_presented_but_unresponsive_rust_bridge_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = self.run_smoke(root, log="SwiftUI only\n",
+                                    launcher=True, launcher_ready=True, bridge_ready=False, timeout=0)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("bridge", result.stderr.lower())
             self.assertTrue((root / "horizon-ios-game-simulator-screen.png").exists())
 
     def test_unpresented_swiftui_launcher_fails_instead_of_claiming_success(self):

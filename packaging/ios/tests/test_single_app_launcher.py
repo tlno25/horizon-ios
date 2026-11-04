@@ -49,6 +49,16 @@ class SingleAppLauncherTests(unittest.TestCase):
         self.assertIn('TextField("オフラインプレイヤー名"', swift)
         self.assertIn('Bridge.send("launcher-player ', swift)
 
+    def test_simulator_end_to_end_probe_checks_native_callbacks_not_just_presentation(self):
+        presenter = (ROOT / 'packaging/ios/GameLauncher/Sources/Present.swift').read_text()
+        self.assertIn('verifyNativeLauncherBridge', presenter)
+        for command in ('launcher-state', 'launcher-settings', 'launcher-player-get',
+                        'launcher-option', 'launcher-start'):
+            self.assertIn('Bridge.send("' + command, presenter)
+        self.assertIn('horizon-ios-launcher-bridge-ready', presenter)
+        smoke = (ROOT / 'packaging/ios/tests/native_game_simulator_smoke.sh').read_text()
+        self.assertIn('horizon-ios-launcher-bridge-ready', smoke)
+
     def test_game_action_bundles_swiftui_framework(self):
         workflow = WORKFLOW.read_text()
         self.assertIn('HorizonLauncherKit.framework', workflow)

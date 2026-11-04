@@ -59,8 +59,45 @@ private func presentLauncher(tries: Int) {
                                                   in: .userDomainMask).first {
             let marker = caches.appendingPathComponent("horizon-ios-launcher-presented")
             try? "presented".write(to: marker, atomically: true, encoding: .utf8)
+            Task { await verifyNativeLauncherBridge(in: caches) }
         }
         NSLog("Horizon iOS SwiftUI launcher presented")
+    }
+}
+
+/// CI-only end-to-end probe. It exercises Swift -> Rust -> Swift callbacks
+/// for status, options and offline identity while the actual gameplay renderer
+/// is deliberately idle. No copyrighted game assets or credentials are used.
+@MainActor
+private func verifyNativeLauncherBridge(in caches: URL) async {
+    let state = await Bridge.send("launcher-state")
+    let options = await Bridge.send("launcher-settings")
+    let player = await Bridge.send("launcher-player-get")
+    // A fresh Simulator sandbox has no game resources: Play must be rejected
+    // until a validated ZIP has been installed.
+    let premature = await Bridge.send("launcher-start")
+    let set = await Bridge.send("launcher-option {\"key\":\"renderDistance\",\"value\":\"8\"}")
+    let updated = await Bridge.send("launcher-settings")
+    let statusOk = state["version"] as? String == "26.3"
+        && state["ready"] as? Bool == false
+        && state["phase"] as? String == "waiting"
+    let settingsOk = options["renderDistance"] is Int
+        && set.error == nil
+        && updated["renderDistance"] as? Int == 8
+    let identityOk = player["name"] is String
+    let deniedUnpreparedStart = premature.error != nil
+    let valid = statusOk && settingsOk && identityOk && deniedUnpreparedStart
+    let marker = caches.appendingPathComponent("horizon-ios-launcher-bridge-ready")
+    if valid {
+        do {
+            try "ready".write(to: marker, atomically: true, encoding: .utf8)
+            NSLog("Horizon native launcher Rust bridge round-trip verified")
+        } catch {
+            NSLog("Horizon native launcher smoke marker could not be saved: %@", error.localizedDescription)
+        }
+    } else {
+        NSLog("Horizon native launcher bridge smoke failed (status=%@, options=%@, player=%@)",
+              state.error ?? "ok", options.error ?? "ok", player.error ?? "ok")
     }
 }
 

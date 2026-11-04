@@ -16,8 +16,13 @@ on:
           - both
           - game
           - game-simulator
+          - game-smoke
         required: true
         default: device
+      source_game_simulator_run:
+        description: 'For game-smoke only: successful game-simulator workflow run ID to reuse'
+        type: string
+        required: false
       simulator_smoke:
         description: 'Launch Simulator and test Metal (slower; skip for compile-only checks)'
         type: boolean
@@ -275,6 +280,49 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Launch actual game executable and capture iOS runtime diagnostics
+        timeout-minutes: 8
+        env:
+          HORIZON_NATIVE_SIMULATOR_APP: ${{ runner.temp }}/horizon-ios-game-artifacts/HorizonGame.app
+        run: bash packaging/ios/tests/native_game_simulator_smoke.sh
+      - name: Upload game Simulator screenshot and native logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-ios-game-simulator-diagnostics
+          path: |
+            ${{ runner.temp }}/horizon-ios-game-simulator-screen.png
+            ${{ runner.temp }}/horizon-ios-game-simulator-console.log
+            ${{ runner.temp }}/horizon-ios-game-simulator-game.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Re-run only the expensive-to-inspect native Simulator startup, reusing a
+  # previous binary. This avoids rebuilding the whole Rust game (20+ minutes)
+  # when testing screenshot timing and diagnosing the first displayed frame.
+  game-simulator-smoke:
+    if: ${{ inputs.build_target == 'game-smoke' }}
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download native game bundle from the requested successful run
+        uses: actions/download-artifact@v4
+        with:
+          name: horizon-ios-game-simulator-app
+          run-id: ${{ inputs.source_game_simulator_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/horizon-ios-game-artifacts
+      - name: Unpack existing native game Simulator executable
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/horizon-ios-game-artifacts/HorizonGame-simulator-unsigned.zip"
+          test -s "$archive"
+          ditto -x -k "$archive" "$RUNNER_TEMP/horizon-ios-game-artifacts"
+          test -x "$RUNNER_TEMP/horizon-ios-game-artifacts/HorizonGame.app/HorizonGame"
+      - name: Launch existing game executable and capture post-render diagnostics
         timeout-minutes: 8
         env:
           HORIZON_NATIVE_SIMULATOR_APP: ${{ runner.temp }}/horizon-ios-game-artifacts/HorizonGame.app

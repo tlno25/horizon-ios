@@ -20,8 +20,11 @@ class NativeGameWorkflowTests(unittest.TestCase):
         workflow = WORKFLOW.read_text()
         self.assertIn("- game-launcher", workflow)
         self.assertIn("launcher-only-build:", workflow)
-        self.assertIn('build_game_launcher.sh iphonesimulator x86_64', workflow)
+        self.assertIn('build_game_launcher.sh iphonesimulator arm64', workflow)
         self.assertIn('_horizon_launcher_present', workflow)
+        import yaml
+        launcher = yaml.safe_load(workflow)['jobs']['launcher-only-build']
+        self.assertEqual(launcher['runs-on'], 'macos-15')
 
     def test_default_device_build_remains_unchanged_and_game_never_autoruns(self):
         workflow = WORKFLOW.read_text()

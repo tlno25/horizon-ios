@@ -16,6 +16,13 @@ class NativeGameWorkflowTests(unittest.TestCase):
         self.assertIn("package_native_game_ipa.py", workflow)
         self.assertIn("name: horizon-ios-native-game-ipa", workflow)
 
+    def test_launcher_only_ci_validates_swift_without_recompiling_all_rust(self):
+        workflow = WORKFLOW.read_text()
+        self.assertIn("- game-launcher", workflow)
+        self.assertIn("launcher-only-build:", workflow)
+        self.assertIn('build_game_launcher.sh iphonesimulator x86_64', workflow)
+        self.assertIn('_horizon_launcher_present', workflow)
+
     def test_default_device_build_remains_unchanged_and_game_never_autoruns(self):
         workflow = WORKFLOW.read_text()
         self.assertIn("default: device", workflow)

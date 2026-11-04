@@ -29,10 +29,19 @@ pub fn default_log_home(
 /// legacy .local imports remain usable without silently migrating game data.
 pub fn game_resources_dir(documents: &Path, version: &str) -> PathBuf {
     let visible = documents.join("resources");
-    if visible.join("horizon-resources.json").is_file() {
+    let installed = documents.join(".local/horizon-client").join(version);
+    if validate_prepared_resources(&visible, version).is_ok() {
+        visible
+    } else if validate_prepared_resources(&installed, version).is_ok() {
+        // A failed Files.app import must never mask a later successful
+        // launcher download. Both live in this game's Documents container.
+        installed
+    } else if visible.join("horizon-resources.json").is_file() {
+        // Retain the visible location for a useful error when neither copy
+        // is complete; this is not a signal that the resources are valid.
         visible
     } else {
-        documents.join(".local/horizon-client").join(version)
+        installed
     }
 }
 
@@ -135,6 +144,40 @@ mod tests {
         );
         std::fs::write(dir.join("resources/horizon-resources.json"), "{}").unwrap();
         assert_eq!(game_resources_dir(&dir, "26.3"), dir.join("resources"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn native_downloaded_resources_take_priority_over_an_incomplete_visible_copy() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-ios-import-precedence-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let visible = dir.join("resources");
+        let installed = dir.join(".local/horizon-client/26.3");
+        std::fs::create_dir_all(&visible).unwrap();
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(visible.join("horizon-resources.json"), "{}").unwrap();
+        std::fs::write(
+            installed.join("horizon-resources.json"),
+            r#"{"schema": 4, "minecraft": "26.3"}"#,
+        )
+        .unwrap();
+        for name in [
+            "facts.json",
+            "block-tags.json",
+            "registries.json",
+            "commands.json",
+        ] {
+            std::fs::write(installed.join(name), "{}").unwrap();
+        }
+        for name in ["assets/minecraft/font", "assets/minecraft/textures"] {
+            let path = installed.join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("fixture"), "asset").unwrap();
+        }
+        assert_eq!(game_resources_dir(&dir, "26.3"), installed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

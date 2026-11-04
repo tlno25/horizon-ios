@@ -77,6 +77,12 @@ without one, Download reports the missing configuration instead of guessing
 an untrusted mirror. That is a distributor setup issue, **not a step required
 of the player** after a correctly configured app is installed.
 
+For fast compiler feedback on Windows/Linux development, manually select
+`build_target=game-launcher` in the `Horizon iOS Manual Build` workflow. This
+compiles the SwiftUI framework alone on the macOS runner and checks the C ABI
+entrypoint, without rebuilding the expensive Rust client. The `game` and
+`game-simulator` targets remain the actual integrated binary checks.
+
 The SwiftUI screen now displays in portrait on iPhone (all orientations on
 iPad), then requests landscape when Play begins. The underlying Winit window
 changes its supported orientation mask to match. Settings expose the game's

@@ -15,6 +15,7 @@ on:
           - simulator
           - both
           - game
+          - game-launcher
           - game-simulator
           - game-smoke
         required: true
@@ -41,6 +42,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Short macOS feedback cycle: check native SwiftUI independently of the
+  # 20+ minute Rust game build. This catches XcodeGen and Swift compiler errors
+  # before requesting a full native game IPA.
+  launcher-only-build:
+    if: ${{ inputs.build_target == 'game-launcher' }}
+    runs-on: macos-15-intel
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile native SwiftUI game launcher (iOS Simulator)
+        run: |
+          bash packaging/ios/build_game_launcher.sh iphonesimulator x86_64 "$RUNNER_TEMP/HorizonGameLauncherOnly"
+      - name: Verify SwiftUI launcher C ABI symbol and architecture
+        run: |
+          set -euo pipefail
+          framework="$RUNNER_TEMP/HorizonGameLauncherOnly/Build/Products/Release-iphonesimulator/HorizonLauncherKit.framework"
+          test -f "$framework/Info.plist"
+          xcrun lipo -archs "$framework/HorizonLauncherKit" | grep -qw x86_64
+          xcrun nm -g "$framework/HorizonLauncherKit" | grep -Fq _horizon_launcher_present
+          echo 'iOS SwiftUI launcher framework and Rust bridge entrypoint validated.'
+
   simulator-build:
     if: ${{ inputs.build_target == 'simulator' || inputs.build_target == 'both' }}
     # Intel macOS runners are usually available even when macOS arm64 workers

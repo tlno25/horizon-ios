@@ -145,6 +145,10 @@ mod integrated;
 mod interactions;
 #[cfg(target_os = "ios")]
 mod ios_input;
+// Compile the iOS launcher protocol in host-side binary tests too. The UIKit
+// presentation is platform-gated separately in horizon-ios-launcher.
+#[cfg(any(target_os = "ios", test))]
+mod ios_native_launcher;
 mod item_draw;
 mod item_particles;
 mod item_use;
@@ -19814,6 +19818,8 @@ struct Loading {
     menu: startup_menu::StartupMenu,
     #[cfg(target_os = "ios")]
     ime_allowed: bool,
+    #[cfg(any(target_os = "ios", test))]
+    native_imports: Vec<ios_native_launcher::ImportJob>,
     error: Option<Box<dyn std::error::Error>>,
 }
 impl Loading {
@@ -19948,6 +19954,12 @@ impl Loading {
             }
         };
         horizon_client::telemetry::note_display(&window);
+        #[cfg(target_os = "ios")]
+        if horizon_ios_launcher::waiting() {
+            self.window = Some(window);
+            horizon_ios_launcher::present();
+            return;
+        }
         // The renderer takes seconds to build and winit's window sits white
         // until the first frame presents, so paint the boot screen on it and
         // keep repainting it as the console's lines arrive; the wgpu frames
@@ -20062,6 +20074,58 @@ impl Loading {
             // No world is open yet: nothing to save.
             crate::game::exit_app(event_loop);
             return;
+        }
+        #[cfg(target_os = "ios")]
+        {
+            self.poll_native_launcher();
+            if horizon_ios_launcher::waiting() {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    Instant::now() + Duration::from_millis(100),
+                ));
+                return;
+            }
+            // The app's first window existed beneath the SwiftUI launcher, but
+            // no Metal renderer or game loader ran while files were downloaded.
+            if self.handle.is_none() && !self.delivered {
+                if self.renderer.is_none() {
+                    let Some(window) = self.window.clone() else {
+                        return;
+                    };
+                    match loading_renderer(
+                        window.clone(),
+                        false,
+                        Some(&self.boot),
+                        None,
+                        None,
+                        rendering_api(&self.settings),
+                    ) {
+                        Ok(renderer) => self.renderer = Some(renderer),
+                        Err(error) => {
+                            self.error = Some(error);
+                            crate::game::exit_app(event_loop);
+                            return;
+                        }
+                    }
+                }
+                let options = self.options.as_ref().expect("loading options before game");
+                match startup_menu::spawn_loader(
+                    options,
+                    &self.settings,
+                    &self.vanilla_root,
+                    self.started,
+                    &self.progress,
+                ) {
+                    Ok((receiver, handle)) => {
+                        self.receiver = receiver;
+                        self.handle = Some(handle);
+                    }
+                    Err(error) => {
+                        self.error = Some(error);
+                        crate::game::exit_app(event_loop);
+                        return;
+                    }
+                }
+            }
         }
         if let Err(error) = self.poll_menu_resources() {
             self.error = Some(error);
@@ -20395,8 +20459,13 @@ fn loading_app(
     started: Instant,
 ) -> Result<App> {
     let progress = Progress::new();
-    let (receiver, loader) =
-        startup_menu::spawn_loader(&options, &settings, &vanilla_root, started, &progress)?;
+    let (receiver, loader) = if cfg!(target_os = "ios") && horizon_ios_launcher::waiting() {
+        (std::sync::mpsc::channel::<LoaderMsg>().1, None)
+    } else {
+        let (receiver, handle) =
+            startup_menu::spawn_loader(&options, &settings, &vanilla_root, started, &progress)?;
+        (receiver, Some(handle))
+    };
     let menu = startup_menu::StartupMenu::new(&options, pack_error.as_deref())?;
     let loading = Loading {
         window: None,
@@ -20417,11 +20486,13 @@ fn loading_app(
         renderer_job: None,
         prepared_renderer: None,
         delivered: false,
-        handle: Some(loader),
+        handle: loader,
         shown: false,
         menu,
         #[cfg(target_os = "ios")]
         ime_allowed: false,
+        #[cfg(any(target_os = "ios", test))]
+        native_imports: Vec::new(),
         error: None,
     };
     Ok(App::Loading(Box::new(loading)))
@@ -20530,7 +20601,11 @@ pub fn run() -> Result<()> {
     .err();
     #[cfg(not(target_os = "ios"))]
     let resource_problem = missing_resources(&vanilla_root);
-    if let Some(error) = resource_problem {
+    let launcher_supplies_resources = cfg!(target_os = "ios")
+        && !options.offscreen
+        && !synchronous_startup(&options)
+        && horizon_ios_launcher::waiting();
+    if let Some(error) = resource_problem.filter(|_| !launcher_supplies_resources) {
         // The game build started by hand (the release's zip), not by the
         // launcher: a window says where to get it. Scripts and servers get
         // the error.

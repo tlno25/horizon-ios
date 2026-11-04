@@ -198,6 +198,16 @@ jobs:
       - name: Compile the real Horizon client executable for iPhoneOS
         run: |
           cargo build --release --locked --target aarch64-apple-ios -p horizon-client --no-default-features --features audio --bin horizon-client
+      - name: Build SwiftUI launcher in the native game bundle
+        run: bash packaging/ios/build_game_launcher.sh iphoneos arm64 "$RUNNER_TEMP/HorizonGameLauncherDerived"
+      - name: Prepare native game resource manifest config
+        env:
+          HORIZON_IOS_RESOURCES_MANIFEST_URL: ${{ vars.HORIZON_IOS_RESOURCES_MANIFEST_URL }}
+        run: |
+          python3 packaging/ios/configure_game_plist.py \
+            --source packaging/ios/GameInfo.plist \
+            --output "$RUNNER_TEMP/HorizonGameInfo.plist" \
+            --manifest-url "$HORIZON_IOS_RESOURCES_MANIFEST_URL"
       - name: Verify arm64 executable and package native game IPA
         run: |
           set -euo pipefail
@@ -206,6 +216,8 @@ jobs:
           xcrun lipo -archs "$binary" | grep -qw arm64
           python3 packaging/ios/package_native_game_ipa.py \
             --binary "$binary" \
+            --plist "$RUNNER_TEMP/HorizonGameInfo.plist" \
+            --launcher-framework "$RUNNER_TEMP/HorizonGameLauncherDerived/Build/Products/Release-iphoneos/HorizonLauncherKit.framework" \
             --output "$RUNNER_TEMP/horizon-ios-artifacts/Horizon-game-unsigned.ipa"
       - name: Verify the unsigned native IPA and its app metadata
         run: |
@@ -217,8 +229,9 @@ jobs:
           ipa = Path(__import__('os').environ['RUNNER_TEMP']) / 'horizon-ios-artifacts/Horizon-game-unsigned.ipa'
           with zipfile.ZipFile(ipa) as archive:
               entries = archive.namelist()
-              assert len(entries) == 3, entries
               prefix = 'Payload/HorizonGame.app/'
+              assert prefix + 'HorizonGame' in entries
+              assert prefix + 'Frameworks/HorizonLauncherKit.framework/HorizonLauncherKit' in entries
               info = plistlib.loads(archive.read(prefix + 'Info.plist'))
               assert info['CFBundleExecutable'] == 'HorizonGame'
               assert info['UIFileSharingEnabled']
@@ -261,6 +274,16 @@ jobs:
       - name: Build real Horizon game for iPhone Simulator (x86_64)
         run: |
           cargo build --release --locked --target x86_64-apple-ios -p horizon-client --no-default-features --features audio --bin horizon-client
+      - name: Build SwiftUI launcher for the game Simulator
+        run: bash packaging/ios/build_game_launcher.sh iphonesimulator x86_64 "$RUNNER_TEMP/HorizonGameLauncherDerived"
+      - name: Prepare native Simulator game resource manifest config
+        env:
+          HORIZON_IOS_RESOURCES_MANIFEST_URL: ${{ vars.HORIZON_IOS_RESOURCES_MANIFEST_URL }}
+        run: |
+          python3 packaging/ios/configure_game_plist.py \
+            --source packaging/ios/GameInfo.plist \
+            --output "$RUNNER_TEMP/HorizonGameInfo.plist" \
+            --manifest-url "$HORIZON_IOS_RESOURCES_MANIFEST_URL"
       - name: Package native game Simulator .app without Minecraft resources
         run: |
           set -euo pipefail
@@ -268,6 +291,8 @@ jobs:
           xcrun lipo -archs "$target" | grep -qw x86_64
           python3 packaging/ios/package_native_game_simulator.py \
             --binary "$target" \
+            --plist "$RUNNER_TEMP/HorizonGameInfo.plist" \
+            --launcher-framework "$RUNNER_TEMP/HorizonGameLauncherDerived/Build/Products/Release-iphonesimulator/HorizonLauncherKit.framework" \
             --output-app "$RUNNER_TEMP/horizon-ios-game-artifacts/HorizonGame.app"
           ditto -c -k --keepParent \
             "$RUNNER_TEMP/horizon-ios-game-artifacts/HorizonGame.app" \

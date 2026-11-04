@@ -1731,6 +1731,7 @@ dependencies = [
  "horizon-dualsense",
  "horizon-friends",
  "horizon-hdr",
+ "horizon-ios-launcher",
  "horizon-items",
  "horizon-mods",
  "horizon-narrator",
@@ -1895,6 +1896,14 @@ dependencies = [
  "raw-window-handle",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "horizon-ios-launcher"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "log",
 ]
 
 [[package]]

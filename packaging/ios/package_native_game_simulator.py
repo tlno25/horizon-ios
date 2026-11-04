@@ -12,7 +12,8 @@ import struct
 from pathlib import Path
 
 
-def package_simulator_app(binary: Path, template: Path, bundle: Path) -> None:
+def package_simulator_app(binary: Path, template: Path, bundle: Path,
+                          launcher_framework: Path | None = None) -> None:
     binary, template, bundle = Path(binary), Path(template), Path(bundle)
     with binary.open("rb") as source:
         header = source.read(28)
@@ -41,6 +42,12 @@ def package_simulator_app(binary: Path, template: Path, bundle: Path) -> None:
         with (bundle / "Info.plist").open("wb") as file:
             plistlib.dump(info, file)
         (bundle / "PkgInfo").write_bytes(b"APPL????")
+        if launcher_framework is not None:
+            source = Path(launcher_framework)
+            if source.name != "HorizonLauncherKit.framework" or not (source / "HorizonLauncherKit").is_file():
+                raise ValueError("Invalid SwiftUI launcher framework")
+            destination = bundle / "Frameworks" / source.name
+            shutil.copytree(source, destination, symlinks=False)
     except BaseException:
         shutil.rmtree(bundle)
         raise
@@ -51,8 +58,9 @@ def main() -> None:
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--output-app", type=Path, required=True)
     parser.add_argument("--plist", type=Path, default=Path(__file__).with_name("GameInfo.plist"))
+    parser.add_argument("--launcher-framework", type=Path)
     options = parser.parse_args()
-    package_simulator_app(options.binary, options.plist, options.output_app)
+    package_simulator_app(options.binary, options.plist, options.output_app, options.launcher_framework)
     print(f"Created Horizon native Simulator app: {options.output_app}")
 
 

@@ -14,8 +14,25 @@ import zipfile
 from pathlib import Path
 
 
-def package(binary: Path, info_plist: Path, output: Path) -> None:
+def package(binary: Path, info_plist: Path, output: Path,
+            launcher_framework: Path | None = None) -> None:
     binary, info_plist, output = Path(binary), Path(info_plist), Path(output)
+    # The game and its SwiftUI launcher must ship in the *same* app bundle.
+    # Source assets are never copied here, even when a manifest URL is set.
+    if launcher_framework is not None:
+        launcher_framework = Path(launcher_framework)
+        if launcher_framework.name != "HorizonLauncherKit.framework" or not launcher_framework.is_dir():
+            raise ValueError("Invalid launcher framework path")
+        executable = launcher_framework / "HorizonLauncherKit"
+        info_file = launcher_framework / "Info.plist"
+        if not executable.is_file() or not info_file.is_file():
+            raise ValueError("Missing launcher framework binary or Info.plist")
+        with info_file.open("rb") as source:
+            info = plistlib.load(source)
+        if info.get("CFBundleExecutable") != "HorizonLauncherKit" or info.get("CFBundlePackageType") != "FMWK":
+            raise ValueError("Invalid launcher framework bundle metadata")
+        if not executable.stat().st_mode & stat.S_IXUSR:
+            raise ValueError("Launcher framework binary is not executable")
     with binary.open("rb") as source:
         header = source.read(28)
     # Reject host/simulator binaries, dylibs, fat binaries and invalid headers.
@@ -56,6 +73,16 @@ def package(binary: Path, info_plist: Path, output: Path) -> None:
                     dest.write(data)
             ipa.writestr(prefix + "Info.plist", info_bytes)
             ipa.writestr(prefix + "PkgInfo", b"APPL????")
+            if launcher_framework is not None:
+                for file in launcher_framework.rglob("*"):
+                    if file.is_symlink():
+                        raise ValueError("Launcher framework must not contain symlinks")
+                    if not file.is_file():
+                        continue
+                    if file.name == "horizon-resources.json":
+                        raise ValueError("Cannot ship private Minecraft game resources")
+                    subpath = file.relative_to(launcher_framework).as_posix()
+                    ipa.write(file, prefix + "Frameworks/HorizonLauncherKit.framework/" + subpath)
         os.replace(temporary, output)
     finally:
         if temporary is not None:
@@ -67,8 +94,10 @@ def main() -> None:
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--plist", type=Path, default=Path(__file__).with_name("GameInfo.plist"))
+    parser.add_argument("--launcher-framework", type=Path,
+                        help="HorizonLauncherKit.framework compiled by Xcode")
     args = parser.parse_args()
-    package(args.binary, args.plist, args.output)
+    package(args.binary, args.plist, args.output, args.launcher_framework)
     print(f"Created unsigned native-game IPA: {args.output}")
 
 

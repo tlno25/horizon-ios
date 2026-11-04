@@ -13,6 +13,8 @@
     <key>LSRequiresIPhoneOS</key><true/>
     <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
     <key>UILaunchScreen</key><dict/>
+    <!-- Publisher configures a legally authorized, HTTPS manifest of prepared assets. -->
+    <key>HorizonResourcesManifestURL</key><string></string>
     <key>UIFileSharingEnabled</key><true/>
     <key>LSSupportsOpeningDocumentsInPlace</key><true/>
     <key>UISupportedInterfaceOrientations</key><array>

@@ -40,6 +40,30 @@ class NativeGameIpaTests(unittest.TestCase):
             self.assertTrue((ipa.getinfo(prefix + "HorizonGame").external_attr >> 16) & 0o111)
             self.assertNotIn("horizon-resources.json", "".join(ipa.namelist()))
 
+    def test_embeds_native_swiftui_launcher_without_resources(self):
+        framework = self.root / "HorizonLauncherKit.framework"
+        framework.mkdir()
+        library = framework / "HorizonLauncherKit"
+        library.write_bytes(b"synthetic Mach-O dylib")
+        library.chmod(0o755)
+        (framework / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleExecutable": "HorizonLauncherKit", "CFBundlePackageType": "FMWK"}))
+        package(self.binary, IOS / "GameInfo.plist", self.output, launcher_framework=framework)
+        with zipfile.ZipFile(self.output) as ipa:
+            base = "Payload/HorizonGame.app/Frameworks/HorizonLauncherKit.framework/"
+            self.assertIn(base + "HorizonLauncherKit", ipa.namelist())
+            self.assertIn(base + "Info.plist", ipa.namelist())
+            self.assertTrue((ipa.getinfo(base + "HorizonLauncherKit").external_attr >> 16) & 0o111)
+            self.assertNotIn("horizon-resources.json", "".join(ipa.namelist()))
+
+    def test_rejects_framework_with_invalid_bundle_metadata(self):
+        framework = self.root / "HorizonLauncherKit.framework"
+        framework.mkdir()
+        (framework / "HorizonLauncherKit").write_bytes(b"dylib")
+        with self.assertRaisesRegex(ValueError, "launcher framework"):
+            package(self.binary, IOS / "GameInfo.plist", self.output, launcher_framework=framework)
+        self.assertFalse(self.output.exists())
+
     def test_rejects_wrong_architecture_and_incomplete_binary(self):
         for contents in (b"", b"MZ" + b"\0" * 30,
                          struct.pack("<IIIIIII", 0xFEEDFACF, 0x01000007, 0, 2, 0, 0, 0)):

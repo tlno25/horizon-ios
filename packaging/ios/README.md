@@ -34,6 +34,56 @@ verification, automatic private resource provisioning, and device gameplay
 are subsequent integration tasks. The launcher doesn't claim to start Minecraft
 or distribute Mojang files. The game IPA remains unsigned.
 
+## Single-app SwiftUI launcher and one-tap resource install (experimental)
+
+The `build_target=game` **native game IPA** now embeds
+`HorizonLauncherKit.framework` next to the Rust `HorizonGame` executable.
+Unlike the older diagnostic shell, this framework uses the **game's own**
+Documents sandbox, so an installation and game startup share the same files.
+The Rust Winit event loop presents the SwiftUI screen before initializing
+Metal or loading Minecraft resources. After pressing Download, the launcher:
+
+1. Fetches the app publisher's HTTPS manifest, validates the required
+   Minecraft version, ZIP size (up to 2 GiB), and SHA-256 checksum.
+2. Downloads the prepared ZIP with progress and cancellation, checks its
+   complete byte size and SHA-256, then asks the Rust game to import it.
+3. Rust extracts the ZIP into a staging directory, verifies core resources,
+   and atomically installs it before the SwiftUI launcher requests game start.
+4. The launcher asks the native game loader to start in the **same UIWindow
+   and sandbox**. No second install or folder manipulation is required from
+   the end user in a publisher-configured build. This runtime handoff still
+   needs iPhone and Simulator validation.
+
+**Publisher setup is still required:** Set the Actions repository variable
+`HORIZON_IOS_RESOURCES_MANIFEST_URL` to an HTTPS JSON file you are authorized
+to distribute. The release workflow writes it into the generated game's
+`Info.plist` as `HorizonResourcesManifestURL`. It must contain:
+
+```json
+{
+  "minecraft": "26.3",
+  "url": "https://your-authorized-server.example/horizon-26.3.zip",
+  "sha256": "<64-hex-character archive SHA-256>",
+  "size": 123456789
+}
+```
+
+Use a **genuine hash and byte size** from the ZIP actually served. The ZIP
+needs the core files that `horizon-prepare` generates (root
+`horizon-resources.json` and the supporting files). Do not upload or publicly
+redistribute Mojang's proprietary assets unless you have authorization.
+There is **no verified publisher manifest configured in this repository**;
+without one, Download reports the missing configuration instead of guessing
+an untrusted mirror. That is a distributor setup issue, **not a step required
+of the player** after a correctly configured app is installed.
+
+The SwiftUI screen offers a limited subset of Horizon's game settings. Full
+account sign-in, entitlement verification, legal provisioning of Java Edition
+game data, all gameplay features and on-device performance are **not yet
+verified**. The signed, combined IPA still needs a legitimate Apple signing
+process to install on an actual iPhone. The `device` target continues to
+produce the separate diagnostic shell; use `game` for this integrated app.
+
 ## Experimental native game executable (separate IPA)
 
 The manual GitHub Actions **Horizon iOS Manual Build** workflow now also offers

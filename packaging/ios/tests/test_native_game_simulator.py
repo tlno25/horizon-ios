@@ -37,6 +37,14 @@ class NativeGameSimulatorTests(unittest.TestCase):
         self.assertFalse((self.bundle / "horizon-resources.json").exists())
         self.assertTrue((self.bundle / "HorizonGame").stat().st_mode & 0o111)
 
+    def test_swiftui_launcher_installed_in_same_simulator_app_container(self):
+        framework = self.root / "HorizonLauncherKit.framework"
+        framework.mkdir()
+        (framework / "HorizonLauncherKit").write_bytes(b"mock framework")
+        package_simulator_app(self.binary, IOS / "GameInfo.plist", self.bundle, framework)
+        self.assertTrue((self.bundle / "Frameworks/HorizonLauncherKit.framework/HorizonLauncherKit").is_file())
+        self.assertFalse((self.bundle / "resources").exists())
+
     def test_cannot_use_a_device_arm64_executable_in_intel_simulator(self):
         self.binary.write_bytes(struct.pack("<IIIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 0, 0, 0) + bytes(60))
         with self.assertRaisesRegex(ValueError, "x86_64.*Simulator"):

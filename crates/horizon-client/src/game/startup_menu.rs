@@ -1944,6 +1944,10 @@ mod tests {
             handle: None,
             shown: false,
             menu: StartupMenu::default(),
+            #[cfg(target_os = "ios")]
+            ime_allowed: false,
+            #[cfg(any(target_os = "ios", test))]
+            native_imports: Vec::new(),
             error: None,
         }
     }

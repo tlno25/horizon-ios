@@ -8,6 +8,7 @@ on:
     branches: [ios]
     paths:
       - 'crates/horizon-ios/**'
+      - 'crates/horizon-ios-launcher/**'
       - 'crates/horizon-apple-open/**'
       - 'crates/horizon-core/**'
       - 'crates/horizon-hdr/**'
@@ -24,6 +25,7 @@ on:
     branches: [ios]
     paths:
       - 'crates/horizon-ios/**'
+      - 'crates/horizon-ios-launcher/**'
       - 'crates/horizon-apple-open/**'
       - 'crates/horizon-core/**'
       - 'crates/horizon-hdr/**'

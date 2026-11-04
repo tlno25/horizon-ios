@@ -8,6 +8,7 @@ on:
     branches: [ios]
     paths:
       - 'crates/horizon-ios/**'
+      - 'crates/horizon-apple-open/**'
       - 'crates/horizon-core/**'
       - 'crates/horizon-hdr/**'
       - 'crates/horizon-client-input/**'
@@ -23,6 +24,7 @@ on:
     branches: [ios]
     paths:
       - 'crates/horizon-ios/**'
+      - 'crates/horizon-apple-open/**'
       - 'crates/horizon-core/**'
       - 'crates/horizon-hdr/**'
       - 'crates/horizon-client-input/**'
@@ -49,6 +51,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.95.0'
+          targets: aarch64-apple-ios
       - name: Cache Linux Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
@@ -56,6 +59,10 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
       - name: Run Rust bridge and shared input tests
         run: |
+          # Validates UIKit Objective-C bindings cheaply; the full client
+          # still needs a macOS runner with the Apple SDK for native links.
+          cargo test --locked -p horizon-apple-open
+          cargo check --locked -p horizon-apple-open --target aarch64-apple-ios
           cargo test --locked -p horizon-ios
           cargo test --locked -p horizon-client-input --lib
           cargo test --locked -p horizon-client-render --lib indirect_execution

@@ -114,6 +114,16 @@ pub fn install(bundle: &Bundle, home: &Path, progress: impl Fn(u64, u64)) -> Res
 /// but never contacts a network endpoint or overwrites an installed version.
 /// The caller owns and retains the original archive.
 pub fn import_archive(archive: &Path, home: &Path) -> Result<()> {
+    import_archive_impl(archive, home, false)
+}
+
+/// iOS launcher import: reject a partial or wrong-version preparation before
+/// making its destination permanent, so the user can retry with a valid ZIP.
+pub fn import_archive_checked(archive: &Path, home: &Path) -> Result<()> {
+    import_archive_impl(archive, home, true)
+}
+
+fn import_archive_impl(archive: &Path, home: &Path, check_core: bool) -> Result<()> {
     let meta = fs::metadata(archive)?;
     if !meta.is_file() || meta.len() == 0 || meta.len() > 4 * 1024 * 1024 * 1024 {
         return Err("Prepared resources ZIP must be a nonempty file of at most 4 GiB".into());
@@ -133,6 +143,10 @@ pub fn import_archive(archive: &Path, home: &Path) -> Result<()> {
         extract(archive, &staging)?;
         if !staging.join("horizon-resources.json").is_file() {
             return Err("Prepared resources ZIP has no root horizon-resources.json".into());
+        }
+        if check_core {
+            crate::ios_paths::validate_prepared_resources(&staging, horizon_core::VANILLA_VERSION)
+                .map_err(|message| format!("Incomplete prepared resources ZIP: {message}"))?;
         }
         if fs::symlink_metadata(&target).is_ok() {
             return Err("Prepared resources already exist; refusing to overwrite".into());
@@ -291,6 +305,50 @@ mod tests {
             import_archive(&archive, &home).is_err(),
             "must not replace an existing installation"
         );
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn ios_checked_import_rejects_incomplete_archives_without_blocking_retry() {
+        let home = temporary("ios-checked");
+        fs::create_dir_all(&home).unwrap();
+        let archive = home.join("prepared.zip");
+        fs::write(&archive, fixture()).unwrap();
+        assert!(import_archive_checked(&archive, &home).is_err());
+        assert!(!ready(&home), "Invalid bundles must not become installed");
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let mut put = |name: &str, body: &[u8]| {
+            writer
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(body).unwrap();
+        };
+        put(
+            "horizon-resources.json",
+            format!(
+                r#"{{"schema":7,"minecraft":"{}"}}"#,
+                horizon_core::VANILLA_VERSION
+            )
+            .as_bytes(),
+        );
+        for name in [
+            "facts.json",
+            "block-tags.json",
+            "registries.json",
+            "commands.json",
+        ] {
+            put(name, b"{}");
+        }
+        for name in [
+            "assets/minecraft/font/fixture",
+            "assets/minecraft/textures/fixture",
+        ] {
+            put(name, b"private resource");
+        }
+        fs::write(&archive, writer.finish().unwrap().into_inner()).unwrap();
+        import_archive_checked(&archive, &home).unwrap();
+        assert!(ready(&home));
         fs::remove_dir_all(home).unwrap();
     }
 

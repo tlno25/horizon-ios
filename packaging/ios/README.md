@@ -1,5 +1,39 @@
 # Horizon iOS development shell (vertical slice in progress)
 
+## SwiftUI launcher (existing development shell)
+
+The `device` build now opens a **SwiftUI launcher** in the original HorizonIOS
+shell. It can import an archive from Files or download a privately prepared
+resource ZIP over HTTPS, with live byte progress, cancellation, a 2 GiB transfer
+limit, mandatory SHA-256 verification, and the existing Rust ZIP extractor's
+path/symlink/unpacked-size checks. The native importer now checks required
+files and Minecraft version **before** installing a downloaded or Files ZIP;
+a partial archive does not block retry. Redirects to insecure HTTP are refused.
+
+The download address is intentionally **not** a public Mojang asset mirror. For
+this milestone the user prepares resources on Windows using their own licensed
+Minecraft Java Edition (see below), creates a ZIP with the manifest at its root,
+keeps it in private HTTPS storage, and provides its exact URL and SHA-256:
+
+```powershell
+Get-FileHash -Algorithm SHA256 .\Horizon-iOS-prepared.zip
+```
+
+The SwiftUI settings sheet writes Horizon's actual `options.txt` format via the
+shared Rust parser, rather than inventing a second options format. It currently
+exposes render and simulation distance, FPS cap, FOV, VSync, auto-jump, master
+volume and offline name. Edits are validated and existing unknown lines are
+preserved. Restart the shell to load changes.
+
+**Important limitation:** the SwiftUI launcher lives in the diagnostic shell's
+app sandbox. The native-game `game` build is currently another app with a
+**different sandbox and executable**. Installing resources or changing settings
+in the shell does **not** make the separate HorizonGame IPA ready to play.
+A single bundled launcher + real-game event loop, Microsoft sign-in / ownership
+verification, automatic private resource provisioning, and device gameplay
+are subsequent integration tasks. The launcher doesn't claim to start Minecraft
+or distribute Mojang files. The game IPA remains unsigned.
+
 ## Experimental native game executable (separate IPA)
 
 The manual GitHub Actions **Horizon iOS Manual Build** workflow now also offers

@@ -600,7 +600,7 @@ pub unsafe extern "C" fn horizon_ios_import_resources(path: *const u8, length: u
         }
         let home = ENGINE_HOME.get().ok_or("Engine home was not prepared")?;
         let _guard = RESOURCE_IMPORT.lock().map_err(|e| e.to_string())?;
-        horizon_client::resource_install::import_archive(archive, home)
+        horizon_client::resource_install::import_archive_checked(archive, home)
             .map_err(|e| e.to_string())?;
         if !horizon_client::resource_install::ready(home) {
             return Err("Imported resources manifest was not found".into());
@@ -623,6 +623,85 @@ pub unsafe extern "C" fn horizon_ios_import_resources(path: *const u8, length: u
             -1
         }
     }
+}
+
+/// Copy a JSON dictionary of launcher settings into a Swift-owned buffer.
+/// A nil destination/zero capacity asks for the required byte length.
+/// Returns -1 on failure; no Rust allocation crosses the ABI.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn horizon_ios_launcher_settings_json(
+    destination: *mut u8,
+    capacity: usize,
+) -> isize {
+    let result = std::panic::catch_unwind(|| -> Result<isize, String> {
+        let home = ENGINE_HOME
+            .get()
+            .ok_or("Launcher engine was not prepared")?;
+        let json = horizon_client::ios_launcher_settings::game_settings_json(home)?;
+        let bytes = json.as_bytes();
+        if bytes.len() > 8192 || capacity > 8192 {
+            return Err("Unexpected launcher settings size".into());
+        }
+        if capacity >= bytes.len() && !destination.is_null() {
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()) };
+        }
+        Ok(bytes.len() as isize)
+    });
+    result.ok().and_then(Result::ok).unwrap_or(-1)
+}
+
+/// Change only validated, launcher-exposed settings using the game's own
+/// options.txt encoding. Re-entering the game is needed to apply changes.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn horizon_ios_launcher_set_setting(
+    key: *const u8,
+    key_length: usize,
+    value: *const u8,
+    value_length: usize,
+) -> i32 {
+    let result = std::panic::catch_unwind(|| -> Result<(), String> {
+        if key.is_null()
+            || value.is_null()
+            || key_length == 0
+            || key_length > 64
+            || value_length > 64
+        {
+            return Err("Invalid setting input".into());
+        }
+        let key = std::str::from_utf8(unsafe { std::slice::from_raw_parts(key, key_length) })
+            .map_err(|e| e.to_string())?;
+        let value = std::str::from_utf8(unsafe { std::slice::from_raw_parts(value, value_length) })
+            .map_err(|e| e.to_string())?;
+        let home = ENGINE_HOME
+            .get()
+            .ok_or("Launcher engine was not prepared")?;
+        horizon_client::ios_launcher_settings::set_game_setting(home, key, value)
+    });
+    if matches!(result, Ok(Ok(()))) { 0 } else { -1 }
+}
+
+/// Set an offline identity for the next launch. Does not mutate an already
+/// running Rust profile or an authenticated Microsoft account.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn horizon_ios_launcher_set_player_name(
+    value: *const u8,
+    length: usize,
+) -> i32 {
+    let result = std::panic::catch_unwind(|| -> Result<(), String> {
+        if value.is_null() || length == 0 || length > 16 {
+            return Err("Invalid offline player name length".into());
+        }
+        let name = std::str::from_utf8(unsafe { std::slice::from_raw_parts(value, length) })
+            .map_err(|e| e.to_string())?;
+        let home = ENGINE_HOME
+            .get()
+            .ok_or("Launcher engine was not prepared")?;
+        horizon_client::ios_launcher_settings::set_offline_name(home, name)
+    });
+    if matches!(result, Ok(Ok(()))) { 0 } else { -1 }
 }
 
 // Winit owns UIApplicationMain; Swift does not declare an @main entry point.

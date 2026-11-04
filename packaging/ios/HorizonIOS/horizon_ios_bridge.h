@@ -58,6 +58,16 @@ const char *horizon_ios_player_name(void);
 int32_t horizon_ios_prepare_engine(const uint8_t *home_utf8, size_t home_bytes);
 /* Must run off the main thread. The caller retains the selected ZIP. */
 int32_t horizon_ios_import_resources(const uint8_t *archive_utf8, size_t archive_bytes);
+/* Read JSON settings from the native shell's engine home (on main thread).
+   Returns required UTF-8 bytes, or -1; out may be NULL when capacity is 0.
+   Game settings apply after relaunch, not while a renderer is active. */
+ptrdiff_t horizon_ios_launcher_settings_json(uint8_t *out, size_t capacity);
+/* Validated game option name and string value, borrowed for the call. */
+int32_t horizon_ios_launcher_set_setting(const uint8_t *key, size_t key_bytes,
+                                         const uint8_t *value, size_t value_bytes);
+/* Offline player name: 3–16 ASCII alnum/underscore, next launch. */
+int32_t horizon_ios_launcher_set_player_name(const uint8_t *name, size_t name_bytes);
+
 /* Block registry load: 0=idle, 1=loading, 2=ready, 3=failed.
    Calls are synchronous and must run on a worker, not the UIKit thread. */
 uint32_t horizon_ios_core_load_state(void);

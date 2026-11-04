@@ -193,6 +193,7 @@ private struct HomeView: View {
     @State private var activeTouchCount = horizon_ios_touch_count()
     @State private var touchEventCount = horizon_ios_touch_events()
     @State private var diagnosticFingerDown = false
+    @State private var showDeveloperDiagnostics = false
 
     private var stateLabel: String {
         switch bridgeState {
@@ -415,12 +416,14 @@ private struct HomeView: View {
             Color.clear.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Horizon")
-                        .font(.largeTitle.bold())
-                    Text("iOS integration preview")
-                        .foregroundStyle(.secondary)
-
+                    LauncherView(
+                        version: String(cString: horizon_ios_game_version()),
+                        installed: engineState == 2,
+                        importFromFiles: { showResourceImporter = true }
+                    )
                     Divider()
+                    DisclosureGroup("開発者向け診断", isExpanded: $showDeveloperDiagnostics) {
+                    VStack(alignment: .leading, spacing: 12) {
                     LabeledContent("Game version", value: String(cString: horizon_ios_game_version()))
                     LabeledContent("Rust ABI", value: String(horizon_ios_abi_version()))
                     LabeledContent("App shell", value: stateLabel)
@@ -571,6 +574,8 @@ private struct HomeView: View {
                     Text("Load game data, open the native title, then select a saved world. Up to 3×3 existing chunks render read-only. The opt-in 20 TPS movement preview has a left thumbstick, sprint, gravity and jumping, with native block speed/jump factors and no world ticks or saving.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                    }
+                    }
                 }
                 .padding(20)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))

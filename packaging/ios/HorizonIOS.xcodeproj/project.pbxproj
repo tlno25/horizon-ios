@@ -33,6 +33,7 @@
             children = (
                 AA0000000000000000000006,
                 AA0000000000000000000007,
+                AA0000000000000000000018,
                 AA0000000000000000000008,
                 AA0000000000000000000009,
                 AA000000000000000000000A,
@@ -64,16 +65,18 @@
         };
         AA0000000000000000000006 /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
         AA0000000000000000000007 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+        AA0000000000000000000018 /* LauncherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherView.swift; sourceTree = "<group>"; };
         AA0000000000000000000008 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
         AA0000000000000000000009 /* C bridge */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = horizon_ios_bridge.h; sourceTree = "<group>"; };
         AA000000000000000000000A /* Swift bridging header */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "HorizonIOS-Bridging-Header.h"; sourceTree = "<group>"; };
         AA000000000000000000000B /* HorizonIOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HorizonIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
         AA000000000000000000000C /* main.m build */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000006; };
         AA000000000000000000000D /* Swift build */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000007; };
+        AA0000000000000000000019 /* LauncherView.swift build */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000018; };
         AA000000000000000000000E /* Sources */ = {
             isa = PBXSourcesBuildPhase;
             buildActionMask = 2147483647;
-            files = (AA000000000000000000000C, AA000000000000000000000D);
+            files = (AA000000000000000000000C, AA000000000000000000000D, AA0000000000000000000019);
             runOnlyForDeploymentPostprocessing = 0;
         };
         AA000000000000000000000F /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };

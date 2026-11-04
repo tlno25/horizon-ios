@@ -7,11 +7,11 @@ WORKFLOW = ROOT / ".github/workflows/ios-simulator.yml"
 
 
 class GameSimulatorWorkflowTests(unittest.TestCase):
-    def test_opt_in_target_compiles_true_game_for_intel_simulator(self):
+    def test_opt_in_target_compiles_true_game_for_arm_simulator(self):
         body = WORKFLOW.read_text()
         self.assertIn("- game-simulator", body)
         self.assertIn("if: ${{ inputs.build_target == 'game-simulator' }}", body)
-        self.assertIn("--target x86_64-apple-ios -p horizon-client", body)
+        self.assertIn("--target aarch64-apple-ios-sim -p horizon-client", body)
         self.assertIn("package_native_game_simulator.py", body)
         self.assertIn("name: horizon-ios-game-simulator-app", body)
         self.assertIn("native_game_simulator_smoke.sh", body)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wrap Horizon's actual Rust game binary in an unsigned Intel iOS Simulator .app.
+"""Wrap Horizon's actual Rust game binary in an unsigned iOS Simulator .app.
 
 Builds a minimally sufficient UIKit app without embedding Minecraft assets.
 This is a diagnostic/debug bundle, NOT an iPhone-installable device IPA.
@@ -13,14 +13,18 @@ from pathlib import Path
 
 
 def package_simulator_app(binary: Path, template: Path, bundle: Path,
-                          launcher_framework: Path | None = None) -> None:
+                          launcher_framework: Path | None = None,
+                          architecture: str = "x86_64") -> None:
     binary, template, bundle = Path(binary), Path(template), Path(bundle)
+    cpu_types = {"x86_64": 0x01000007, "arm64": 0x0100000C}
+    if architecture not in cpu_types:
+        raise ValueError(f"Unsupported iOS Simulator architecture: {architecture}")
     with binary.open("rb") as source:
         header = source.read(28)
     if (len(header) != 28 or
-            struct.unpack("<III", header[:12])[:2] != (0xFEEDFACF, 0x01000007) or
+            struct.unpack("<III", header[:12])[:2] != (0xFEEDFACF, cpu_types[architecture]) or
             struct.unpack("<I", header[12:16])[0] != 2):
-        raise ValueError("Expected an x86_64 Mach-O executable for the iOS Simulator")
+        raise ValueError(f"Expected an {architecture} Mach-O executable for the iOS Simulator")
     if not binary.stat().st_mode & 0o111:
         raise ValueError("Simulator game binary must be executable")
 
@@ -59,8 +63,10 @@ def main() -> None:
     parser.add_argument("--output-app", type=Path, required=True)
     parser.add_argument("--plist", type=Path, default=Path(__file__).with_name("GameInfo.plist"))
     parser.add_argument("--launcher-framework", type=Path)
+    parser.add_argument("--architecture", choices=("x86_64", "arm64"), default="x86_64")
     options = parser.parse_args()
-    package_simulator_app(options.binary, options.plist, options.output_app, options.launcher_framework)
+    package_simulator_app(options.binary, options.plist, options.output_app,
+                          options.launcher_framework, architecture=options.architecture)
     print(f"Created Horizon native Simulator app: {options.output_app}")
 
 

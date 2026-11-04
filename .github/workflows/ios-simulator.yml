@@ -269,11 +269,11 @@ jobs:
           retention-days: 7
 
 
-  # Distinct x86_64 Simulator app for runtime inspection of the actual Rust
+  # Distinct arm64 Simulator app for runtime inspection of the actual Rust
   # gameplay executable. Does not imply a working game without player assets.
   game-simulator-build:
     if: ${{ inputs.build_target == 'game-simulator' }}
-    runs-on: macos-15-intel
+    runs-on: macos-15
     timeout-minutes: 90
     env:
       IPHONEOS_DEPLOYMENT_TARGET: "16.0"
@@ -283,21 +283,21 @@ jobs:
       CARGO_PROFILE_RELEASE_LTO: "false"
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust target for Intel iOS Simulator
+      - name: Install Rust target for Apple Silicon iOS Simulator
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.95.0'
-          targets: x86_64-apple-ios
+          targets: aarch64-apple-ios-sim
       - name: Cache native game Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: horizon-ios-game-simulator
           cache-on-failure: true
-      - name: Build real Horizon game for iPhone Simulator (x86_64)
+      - name: Build real Horizon game for iPhone Simulator (arm64)
         run: |
-          cargo build --release --locked --target x86_64-apple-ios -p horizon-client --no-default-features --features audio --bin horizon-client
+          cargo build --release --locked --target aarch64-apple-ios-sim -p horizon-client --no-default-features --features audio --bin horizon-client
       - name: Build SwiftUI launcher for the game Simulator
-        run: bash packaging/ios/build_game_launcher.sh iphonesimulator x86_64 "$RUNNER_TEMP/HorizonGameLauncherDerived"
+        run: bash packaging/ios/build_game_launcher.sh iphonesimulator arm64 "$RUNNER_TEMP/HorizonGameLauncherDerived"
       - name: Prepare native Simulator game resource manifest config
         env:
           HORIZON_IOS_RESOURCES_MANIFEST_URL: ${{ vars.HORIZON_IOS_RESOURCES_MANIFEST_URL }}
@@ -309,10 +309,11 @@ jobs:
       - name: Package native game Simulator .app without Minecraft resources
         run: |
           set -euo pipefail
-          target="target/x86_64-apple-ios/release/horizon-client"
-          xcrun lipo -archs "$target" | grep -qw x86_64
+          target="target/aarch64-apple-ios-sim/release/horizon-client"
+          xcrun lipo -archs "$target" | grep -qw arm64
           python3 packaging/ios/package_native_game_simulator.py \
             --binary "$target" \
+            --architecture arm64 \
             --plist "$RUNNER_TEMP/HorizonGameInfo.plist" \
             --launcher-framework "$RUNNER_TEMP/HorizonGameLauncherDerived/Build/Products/Release-iphonesimulator/HorizonLauncherKit.framework" \
             --output-app "$RUNNER_TEMP/horizon-ios-game-artifacts/HorizonGame.app"
@@ -348,7 +349,7 @@ jobs:
   # when testing screenshot timing and diagnosing the first displayed frame.
   game-simulator-smoke:
     if: ${{ inputs.build_target == 'game-smoke' }}
-    runs-on: macos-15-intel
+    runs-on: macos-15
     timeout-minutes: 20
     permissions:
       contents: read

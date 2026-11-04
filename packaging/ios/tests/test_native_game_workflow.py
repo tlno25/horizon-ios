@@ -26,6 +26,18 @@ class NativeGameWorkflowTests(unittest.TestCase):
         launcher = yaml.safe_load(workflow)['jobs']['launcher-only-build']
         self.assertEqual(launcher['runs-on'], 'macos-15')
 
+    def test_native_game_simulator_uses_available_apple_silicon_runner(self):
+        import yaml
+        workflow = yaml.safe_load(WORKFLOW.read_text())
+        simulator = workflow["jobs"]["game-simulator-build"]
+        self.assertEqual(simulator["runs-on"], "macos-15")
+        job = str(simulator["steps"])
+        self.assertIn("aarch64-apple-ios-sim", job)
+        self.assertIn("iphonesimulator arm64", job)
+        self.assertIn("--architecture arm64", job)
+        smoke = workflow["jobs"]["game-simulator-smoke"]
+        self.assertEqual(smoke["runs-on"], "macos-15")
+
     def test_default_device_build_remains_unchanged_and_game_never_autoruns(self):
         workflow = WORKFLOW.read_text()
         self.assertIn("default: device", workflow)

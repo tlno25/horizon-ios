@@ -45,6 +45,17 @@ class NativeGameSimulatorTests(unittest.TestCase):
         self.assertTrue((self.bundle / "Frameworks/HorizonLauncherKit.framework/HorizonLauncherKit").is_file())
         self.assertFalse((self.bundle / "resources").exists())
 
+    def test_packages_native_arm64_for_apple_silicon_simulator(self):
+        self.binary.write_bytes(struct.pack("<IIIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 0, 0, 0) + bytes(60))
+        package_simulator_app(self.binary, IOS / "GameInfo.plist", self.bundle, architecture="arm64")
+        self.assertTrue((self.bundle / "HorizonGame").is_file())
+        self.assertEqual(plistlib.loads((self.bundle / "Info.plist").read_bytes())["CFBundleSupportedPlatforms"], ["iPhoneSimulator"])
+
+    def test_arm64_simulator_build_rejects_x86_binary(self):
+        with self.assertRaisesRegex(ValueError, "arm64.*Simulator"):
+            package_simulator_app(self.binary, IOS / "GameInfo.plist", self.bundle, architecture="arm64")
+        self.assertFalse(self.bundle.exists())
+
     def test_cannot_use_a_device_arm64_executable_in_intel_simulator(self):
         self.binary.write_bytes(struct.pack("<IIIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 0, 0, 0) + bytes(60))
         with self.assertRaisesRegex(ValueError, "x86_64.*Simulator"):

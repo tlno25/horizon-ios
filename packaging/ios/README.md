@@ -108,8 +108,8 @@ existing meaning (device shell + Simulator shell). None of the expensive macOS
 workflows run automatically after each push.
 
 The same manual workflow also offers `build_target=game-simulator`.
-This separately compiles **the real game executable** for Intel iPhone
-Simulator (`x86_64-apple-ios`), uploads
+This separately compiles **the real game executable** for an Apple Silicon
+iPhone Simulator (`aarch64-apple-ios-sim`) on macOS arm64, uploads
 `horizon-ios-game-simulator-app`, then attempts a boot/install/launch with
 no prepared Minecraft resources. It uploads an image and native logs in
 `horizon-ios-game-simulator-diagnostics` for inspection. A successful launch

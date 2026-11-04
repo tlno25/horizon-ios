@@ -276,17 +276,41 @@ probe clears the background blue behind the SwiftUI panel.
 
 The **Horizon iOS Quick Checks** workflow runs Rust, Python,
 C ABI and portability tests automatically on Ubuntu for relevant `ios` pushes.
+
+### Native controllers and game audio (experimental)
+
+The native-game target now reads Apple **GameController** snapshots on iPhone
+and iPad even when built with `--no-default-features --features audio` (the
+existing iPhoneOS game CI flags). Xbox, DualSense and compatible controllers
+feed their face buttons, shoulders, D-pad, sticks and triggers into Horizon's
+existing `PadState`, `keybinds` and movement logic; there is no second input
+engine. Touch and controller input merge through the same pad processing path.
+No native haptics, rumble or adaptive triggers are claimed on iOS. Physical
+controller pairing, input latency and button layouts still require device tests.
+
+The SwiftUI game overlay also activates an iOS `AVAudioSession` when Play
+succeeds, using `.playback` and `.mixWithOthers` so the device's silent switch
+does not mute game audio and other audio is not forcibly interrupted. It
+handles interruption-ended notifications and deactivates the session when the
+launcher is presented again. This is session policy, not proof that every
+CoreAudio output device or Bluetooth routing scenario has been validated.
+Both improvements adapt the MIT-licensed reference implementation from
+[heyskylo/horizon-ios](https://github.com/heyskylo/horizon-ios).
+
+Swift audio/controller integration is **not** verified by the Linux Python or
+Rust tests alone. Rebuild the `game`/`game-simulator` manual workflows on macOS
+and test a signed build on an iPhone before calling it supported.
+
 It does **not** build a macOS/iOS app or use a macOS runner.
 
 To produce an iPhone/iPad app, open
 [Horizon iOS Manual Build](https://github.com/tlno25/horizon-ios/actions/workflows/ios-simulator.yml),
-select **Run workflow**, choose branch **ios** for the existing diagnostic
-targets, and select `build_target`. The experimental native game builds are
-currently on branch **`agent/ios-preview-crouch`**, not yet merged into
-`ios`; dispatch them explicitly with GitHub CLI using
-`gh workflow run ios-simulator.yml --repo tlno25/horizon-ios --ref agent/ios-preview-crouch -f build_target=game`
-(or `game-simulator`). The UI's available choices may reflect the default
-branch until the feature is merged.
+select **Run workflow**, choose the **ios** branch, and select
+`build_target`. The experimental native-game build targets were merged into
+`ios` in PR #2. To validate the current game, choose `game` for iPhoneOS or
+`game-simulator` for the Apple Silicon Simulator. Neither target bundles
+proprietary Minecraft data, and an unsigned IPA cannot be installed without
+signing.
 
 
 - **device** (default): build an unsigned arm64 iPhone/iPad IPA with Xcode.

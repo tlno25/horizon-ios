@@ -44,8 +44,14 @@ pub(super) struct Pads {
     /// Splitscreen: this player's pad, read by `PadRouter` for every game, instead of the pads.
     pub(super) feed: Option<PadState>,
     /// The real controllers and the DualSense's output.
-    #[cfg(all(feature = "controllers", not(target_os = "android")))]
+    #[cfg(all(
+        feature = "controllers",
+        not(any(target_os = "android", target_os = "ios"))
+    ))]
     devices: hardware::Devices,
+    /// Number of Apple GameController devices seen on the previous poll.
+    #[cfg(target_os = "ios")]
+    ios_connected: usize,
     /// The virtual pad of `horizon-ctl pad`.
     injected: PadState,
     /// The virtual pad was in use at the last poll.
@@ -71,7 +77,12 @@ pub(super) struct Pads {
     health: HealthWatch,
 }
 
-#[cfg(all(feature = "controllers", not(target_os = "android")))]
+// Apple GameController works even for the --no-default-features game build.
+// gilrs/HID are desktop-specific and must never replace it on iOS.
+#[cfg(all(
+    feature = "controllers",
+    not(any(target_os = "android", target_os = "ios"))
+))]
 mod hardware;
 pub(super) use hardware::{PadId, PadRouter};
 
@@ -89,7 +100,7 @@ pub(in crate::game) enum PadEvent {
 
 /// A build without the `controllers` feature (the server build, which must not need libudev): no
 /// hardware pads, only `horizon-ctl pad`'s virtual one.
-#[cfg(any(not(feature = "controllers"), target_os = "android"))]
+#[cfg(any(not(feature = "controllers"), target_os = "android", target_os = "ios"))]
 mod hardware {
     use super::{super::Game, Pads};
     use horizon_client::gamepad::{PadState, Pulse, Rumble};
@@ -100,7 +111,32 @@ mod hardware {
             #[cfg(target_os = "android")]
             return horizon_client::android_runtime::keypad_state()
                 .merge(&horizon_client::android_runtime::gamepad_state());
-            #[cfg(not(target_os = "android"))]
+            #[cfg(target_os = "ios")]
+            {
+                let controllers = horizon_gamecontroller::controllers();
+                if controllers.len() != self.ios_connected {
+                    for controller in &controllers {
+                        let name = controller.name.as_deref().unwrap_or(&controller.category);
+                        log::info!("iOS controller available: {name}");
+                    }
+                    self.ios_connected = controllers.len();
+                }
+                if let Some(snapshot) = horizon_gamecontroller::active() {
+                    let category = &snapshot.category;
+                    let vendor = if category.contains("DualSense") || category.contains("DualShock")
+                    {
+                        Some(0x054c)
+                    } else if category.contains("Switch") || category.contains("Joy-Con") {
+                        Some(0x057e)
+                    } else {
+                        None
+                    };
+                    self.style = horizon_client::gamepad::GlyphStyle::of_vendor(vendor);
+                    return super::ios_snapshot_state(&snapshot);
+                }
+                return PadState::default();
+            }
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             PadState::default()
         }
         pub(in crate::game) fn release_hardware(&mut self) {}
@@ -153,8 +189,79 @@ mod hardware {
             let _ = pulse;
         }
         pub(super) fn pad_devices_status(&self) -> Value {
+            #[cfg(target_os = "ios")]
+            return json!({
+                "backend": true,
+                "controllers": horizon_gamecontroller::controllers().into_iter().map(|c| {
+                    json!({ "name": c.name, "category": c.category, "gamepad": c.gamepad })
+                }).collect::<Vec<_>>()
+            });
+            #[cfg(not(target_os = "ios"))]
             json!({ "backend": cfg!(target_os = "android"), "controllers": [], "android_native_input": cfg!(target_os = "android") })
         }
+    }
+}
+
+/// Convert an Apple GameController snapshot to the existing common controller
+/// mappings. This is pure so the iPhone controller layout is testable on Linux.
+#[cfg(any(target_os = "ios", test))]
+fn ios_snapshot_state(pad: &horizon_gamecontroller::Snapshot) -> PadState {
+    let mut state = PadState::default();
+    for (button, down) in [
+        (Button::South, pad.a),
+        (Button::East, pad.b),
+        (Button::West, pad.x),
+        (Button::North, pad.y),
+        (Button::LeftBumper, pad.left_shoulder),
+        (Button::RightBumper, pad.right_shoulder),
+        (Button::Select, pad.options),
+        (Button::Start, pad.menu),
+        (Button::LeftStick, pad.left_stick_button),
+        (Button::RightStick, pad.right_stick_button),
+        (Button::DPadUp, pad.dpad_up),
+        (Button::DPadDown, pad.dpad_down),
+        (Button::DPadLeft, pad.dpad_left),
+        (Button::DPadRight, pad.dpad_right),
+    ] {
+        state.set(button, down);
+    }
+    state.left = pad.left_stick;
+    state.right = pad.right_stick;
+    state.triggers = pad.triggers;
+    state
+}
+
+#[cfg(test)]
+mod ios_controller_tests {
+    use super::*;
+
+    #[test]
+    fn apple_gamepad_maps_to_shared_buttons_and_analog_sticks() {
+        let apple = horizon_gamecontroller::Snapshot {
+            a: true,
+            left_shoulder: true,
+            dpad_left: true,
+            menu: true,
+            left_stick: [-0.75, 0.25],
+            right_stick: [0.5, -0.25],
+            triggers: [0.6, 0.9],
+            ..Default::default()
+        };
+        let state = ios_snapshot_state(&apple);
+        assert!(state.held(Button::South));
+        assert!(state.held(Button::LeftBumper));
+        assert!(state.held(Button::DPadLeft));
+        assert!(state.held(Button::Start));
+        assert!(!state.held(Button::East));
+        assert_eq!(state.left, apple.left_stick);
+        assert_eq!(state.right, apple.right_stick);
+        assert_eq!(state.triggers, apple.triggers);
+    }
+
+    #[test]
+    fn disconnected_apple_gamepad_has_no_pressed_buttons() {
+        let state = ios_snapshot_state(&horizon_gamecontroller::Snapshot::default());
+        assert_eq!(state, PadState::default());
     }
 }
 

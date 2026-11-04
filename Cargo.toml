@@ -5,6 +5,7 @@ members = [
     "crates/horizon-ios",
     "crates/horizon-ios-launcher",
     "crates/horizon-apple-open",
+    "crates/horizon-gamecontroller",
     "crates/horizon-core",
     "crates/horizon-dualsense",
     "crates/horizon-narrator",

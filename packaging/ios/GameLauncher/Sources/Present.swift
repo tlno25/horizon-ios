@@ -11,6 +11,11 @@ public func horizonLauncherPresent(_ submit: HorizonSubmit?) -> Bool {
     return true
 }
 
+/// UIKit can receive duplicate present requests while a previous request is
+/// still being installed. Never report such a request as a launcher failure.
+@MainActor
+private var launcherPresentationPending = false
+
 @MainActor
 private func presentLauncher(tries: Int) {
     let windows = UIApplication.shared.connectedScenes
@@ -29,6 +34,9 @@ private func presentLauncher(tries: Int) {
         }
         return
     }
+    if root.presentedViewController is GameLauncherHostingController || launcherPresentationPending {
+        return
+    }
     if root.presentedViewController != nil {
         if tries > 0 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -39,8 +47,12 @@ private func presentLauncher(tries: Int) {
         }
         return
     }
+    // The Rust renderer is idle while the native launcher is visible.
+    GameAudio.stop()
+    launcherPresentationPending = true
     let host = GameLauncherHostingController(rootView: GameLauncherView(onPlay: { [weak root] in
         guard let root else { return }
+        GameAudio.start()
         let scene = root.view.window?.windowScene
         root.dismiss(animated: true) {
             updateOrientation(in: scene, to: .landscape)
@@ -49,6 +61,7 @@ private func presentLauncher(tries: Int) {
     host.view.backgroundColor = .systemBackground
     host.modalPresentationStyle = .fullScreen
     root.present(host, animated: false) {
+        launcherPresentationPending = false
         updateOrientation(in: host.view.window?.windowScene,
                           to: UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait)
         // Only Simulator smoke jobs request a small readiness marker. This

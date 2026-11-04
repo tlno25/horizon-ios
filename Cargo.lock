@@ -1661,6 +1661,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-apple-open"
+version = "0.1.0"
+dependencies = [
+ "objc2 0.5.3",
+ "objc2-foundation 0.2.2",
+ "objc2-ui-kit",
+ "url",
+]
+
+[[package]]
 name = "horizon-assets"
 version = "0.1.0"
 dependencies = [
@@ -1709,6 +1719,7 @@ dependencies = [
  "gilrs",
  "glam",
  "horizon-anticheat",
+ "horizon-apple-open",
  "horizon-assets",
  "horizon-bench",
  "horizon-chat-filter",

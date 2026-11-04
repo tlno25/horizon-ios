@@ -144,15 +144,26 @@ The Simulator smoke also generates a tiny **synthetic, non-playable ZIP** in
 the simulator app's `Documents/` directory; SwiftUI calls
 `launcher-import horizon-download-CIRESOURCE.zip` and Rust verifies the
 structure/version and installs it. A second marker is written only if the
-installed resources become `ready`. Neither test ZIP nor marker is embedded
-in IPA artifacts, and the test intentionally does not start gameplay using
-fake Minecraft data. Actual licensed assets and gameplay remain unverified.
+installed resources become `ready`. The smoke then sends a second
+`launcher-start` **without any Minecraft account**, and requires Rust to
+reject it with the ownership prompt while leaving the native launcher in its
+waiting state. A third CI-only marker confirms the result; the smoke fails if
+that ownership gate is bypassed or unresponsive. Neither test ZIP nor marker
+is embedded in IPA artifacts, and the test intentionally does not start
+gameplay using fake Minecraft data. Actual licensed assets and gameplay
+remain unverified.
 
 The SwiftUI screen now displays in portrait on iPhone (all orientations on
 iPad), then requests landscape when Play begins. The underlying Winit window
 changes its supported orientation mask to match. Settings expose the game's
 options.txt format and the persistent 3–16 character offline player name; this
 name is **not** a Microsoft login and does not prove game ownership.
+
+The native game currently has no iOS text-to-speech narrator backend, so it
+reports the narrator as **unavailable** rather than trying to spawn an
+unsupported platform backend and writing an ERROR at every successful game
+startup. This does not disable sound effects, music or the iOS `AVAudioSession`
+used for game audio. Narration is still a future accessibility task.
 
 The SwiftUI screen offers a limited subset of Horizon's game settings. Full
 account sign-in, entitlement verification, legal provisioning of Java Edition

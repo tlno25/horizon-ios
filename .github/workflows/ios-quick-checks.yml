@@ -11,6 +11,7 @@ on:
       - 'crates/horizon-ios-launcher/**'
       - 'crates/horizon-apple-open/**'
       - 'crates/horizon-gamecontroller/**'
+      - 'crates/horizon-narrator/**'
       - 'crates/horizon-core/**'
       - 'crates/horizon-hdr/**'
       - 'crates/horizon-client-input/**'
@@ -29,6 +30,7 @@ on:
       - 'crates/horizon-ios-launcher/**'
       - 'crates/horizon-apple-open/**'
       - 'crates/horizon-gamecontroller/**'
+      - 'crates/horizon-narrator/**'
       - 'crates/horizon-core/**'
       - 'crates/horizon-hdr/**'
       - 'crates/horizon-client-input/**'
@@ -71,6 +73,10 @@ jobs:
           # Xcode; the full Rust game and SwiftUI framework still need macOS.
           cargo test --locked -p horizon-gamecontroller --lib
           cargo check --locked -p horizon-gamecontroller --target aarch64-apple-ios
+          # On iOS there is no narrator backend; it must be inactive without
+          # a failed speech thread or an ERROR at every app launch.
+          cargo test --locked -p horizon-narrator --lib
+          cargo check --locked -p horizon-narrator --target aarch64-apple-ios
           cargo test --locked --no-default-features -p horizon-client --bin horizon-client ios_controller_tests::
           cargo test --locked -p horizon-ios
           cargo test --locked -p horizon-client-input --lib

@@ -70,6 +70,16 @@ class SingleAppLauncherTests(unittest.TestCase):
         self.assertLess(presenter.index('Bridge.send("launcher-start")'),
                         presenter.index('Bridge.send("launcher-import horizon-download-CIRESOURCE.zip")'))
 
+    def test_simulator_refuses_play_after_import_without_minecraft_session(self):
+        presenter = (ROOT / 'packaging/ios/GameLauncher/Sources/Present.swift').read_text()
+        smoke = (ROOT / 'packaging/ios/tests/native_game_simulator_smoke.sh').read_text()
+        self.assertIn('let deniedWithoutAccount = await Bridge.send("launcher-start")', presenter)
+        self.assertIn('Sign in with an owning Minecraft account first', presenter)
+        self.assertIn('stateAfterDenial["phase"] as? String == "waiting"', presenter)
+        self.assertIn('horizon-ios-launcher-auth-guard-ready', presenter)
+        self.assertIn('horizon-ios-launcher-auth-guard-ready', smoke)
+        self.assertIn('Microsoft ownership gate', smoke)
+
     def test_game_action_bundles_swiftui_framework(self):
         workflow = WORKFLOW.read_text()
         self.assertIn('HorizonLauncherKit.framework', workflow)

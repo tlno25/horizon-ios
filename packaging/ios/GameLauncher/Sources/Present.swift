@@ -115,6 +115,21 @@ private func verifyNativeLauncherBridge(in caches: URL) async {
                 let importedMarker = caches.appendingPathComponent("horizon-ios-launcher-import-ready")
                 try "ready".write(to: importedMarker, atomically: true, encoding: .utf8)
                 NSLog("Horizon native launcher checked ZIP importer verified")
+                // The synthetic resources are structurally valid, but they are
+                // deliberately unlicensed placeholders. Even with a complete
+                // resource tree, Play MUST refuse to run without the verified
+                // Keychain-backed Minecraft session. Never send test tokens.
+                let deniedWithoutAccount = await Bridge.send("launcher-start")
+                let stateAfterDenial = await Bridge.send("launcher-state")
+                if deniedWithoutAccount.error == "Sign in with an owning Minecraft account first"
+                    && stateAfterDenial["phase"] as? String == "waiting" {
+                    let guardMarker = caches.appendingPathComponent("horizon-ios-launcher-auth-guard-ready")
+                    try "ready".write(to: guardMarker, atomically: true, encoding: .utf8)
+                    NSLog("Horizon native launcher account ownership gate verified")
+                } else {
+                    NSLog("Horizon native launcher rejected ownership-gate smoke check (error=%@)",
+                          deniedWithoutAccount.error ?? "Play unexpectedly accepted")
+                }
             } else {
                 NSLog("Horizon native launcher checked ZIP importer failed: %@",
                       imported.error ?? afterImport.error ?? "resources did not become ready")

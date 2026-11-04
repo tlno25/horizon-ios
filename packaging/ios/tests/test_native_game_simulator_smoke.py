@@ -15,7 +15,8 @@ FIRST_FRAME = "[12:01:01] [Render thread/INFO]: Horizon renderer: presenting the
 class NativeGameSimulatorSmokeTests(unittest.TestCase):
     def run_smoke(self, root: Path, *, log: str, delay_marker: bool = False,
                   launcher: bool = False, launcher_ready: bool = False,
-                  bridge_ready: bool = False, import_ready: bool = False, timeout: int = 2):
+                  bridge_ready: bool = False, import_ready: bool = False,
+                  auth_guard_ready: bool = False, timeout: int = 2):
         app = root / "HorizonGame.app"
         app.mkdir()
         if launcher:
@@ -47,6 +48,9 @@ class NativeGameSimulatorSmokeTests(unittest.TestCase):
             '  fi\n'
             '  if [[ "$FAKE_SWIFTUI_IMPORT" == "1" && -f "$FAKE_SIM_CONTAINER/Documents/horizon-download-CIRESOURCE.zip" ]]; then\n'
             '    printf "ready" > "$FAKE_SIM_CONTAINER/Library/Caches/horizon-ios-launcher-import-ready"\n'
+            '    if [[ "$FAKE_SWIFTUI_AUTH_GUARD" == "1" ]]; then\n'
+            '      printf "ready" > "$FAKE_SIM_CONTAINER/Library/Caches/horizon-ios-launcher-auth-guard-ready"\n'
+            '    fi\n'
             '  fi\n'
             'fi\n'
             'if [[ "$1 $2" == "simctl spawn" ]]; then printf "HorizonGame started\\n"; exit 0; fi\n'
@@ -66,6 +70,7 @@ class NativeGameSimulatorSmokeTests(unittest.TestCase):
             "FAKE_SWIFTUI_PRESENT": "1" if launcher_ready else "0",
             "FAKE_SWIFTUI_BRIDGE": "1" if bridge_ready else "0",
             "FAKE_SWIFTUI_IMPORT": "1" if import_ready else "0",
+            "FAKE_SWIFTUI_AUTH_GUARD": "1" if auth_guard_ready else "0",
         }
         timer = None
         if delay_marker:
@@ -112,7 +117,7 @@ class NativeGameSimulatorSmokeTests(unittest.TestCase):
             root = Path(temp)
             result = self.run_smoke(root, log="Horizon iOS launcher startup\n",
                                     launcher=True, launcher_ready=True, bridge_ready=True,
-                                    import_ready=True, timeout=2)
+                                    import_ready=True, auth_guard_ready=True, timeout=2)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("SwiftUI launcher", result.stdout)
             self.assertTrue((root / "horizon-ios-game-simulator-screen.png").exists())
@@ -127,6 +132,16 @@ class NativeGameSimulatorSmokeTests(unittest.TestCase):
             self.assertIn("ZIP", result.stderr)
             self.assertTrue((root / "horizon-ios-game-simulator-screen.png").exists())
 
+    def test_valid_prepared_zip_still_rejects_play_without_microsoft_ownership(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = self.run_smoke(root, log="SwiftUI bridge and ZIP ready\n",
+                                    launcher=True, launcher_ready=True, bridge_ready=True,
+                                    import_ready=True, auth_guard_ready=False, timeout=0)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("ownership gate", result.stderr)
+            self.assertTrue((root / "horizon-ios-game-simulator-screen.png").exists())
+
     def test_simulator_import_fixture_contains_only_synthetic_resources(self):
         import zipfile
         from io import BytesIO
@@ -134,7 +149,7 @@ class NativeGameSimulatorSmokeTests(unittest.TestCase):
             root = Path(temp)
             result = self.run_smoke(root, log="Bridge and synthetic ZIP\n",
                                     launcher=True, launcher_ready=True, bridge_ready=True,
-                                    import_ready=True, timeout=1)
+                                    import_ready=True, auth_guard_ready=True, timeout=1)
             self.assertEqual(result.returncode, 0, result.stderr)
             archive = root / "simulator-container/Documents/horizon-download-CIRESOURCE.zip"
             self.assertTrue(archive.exists(), "Simulator test must create a ZIP inside the app sandbox")

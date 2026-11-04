@@ -15,6 +15,9 @@
 //! `getFinalSoundSourceVolume(VOICE)`.
 
 pub mod screen;
+// The game has no native iOS narrator backend yet. Keep Narrator.EMPTY
+// inactive without linking an unused speech thread or logging startup errors.
+#[cfg(not(target_os = "ios"))]
 mod speech;
 
 use std::collections::VecDeque;
@@ -220,11 +223,18 @@ fn narrator() -> MutexGuard<'static, GameNarrator> {
 /// `HORIZON_NO_AUDIO` set the narrator is active but silent, so scripted runs
 /// still narrate into [`recent`]. Calling it again does nothing.
 pub fn init() {
-    let mut narrator = narrator();
-    if narrator.sink.is_none() {
-        narrator.sink = Some(Box::new(speech::Thread::spawn(
-            std::env::var_os("HORIZON_NO_AUDIO").is_some(),
-        )));
+    // iOS does not have a speech backend yet. Leave Narrator.EMPTY inactive
+    // rather than spawning a thread that inevitably logs an ERROR on every
+    // successful native-game launch. This does not affect game audio (cpal).
+    // A future AVSpeechSynthesizer adapter can replace this guard.
+    #[cfg(not(target_os = "ios"))]
+    {
+        let mut narrator = narrator();
+        if narrator.sink.is_none() {
+            narrator.sink = Some(Box::new(speech::Thread::spawn(
+                std::env::var_os("HORIZON_NO_AUDIO").is_some(),
+            )));
+        }
     }
 }
 

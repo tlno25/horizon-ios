@@ -18,8 +18,10 @@ and profile. The sign-in page opens in the external browser, and only the
 Microsoft public **application ID** is embedded in the app (never a client
 secret). The refresh token and short-lived Minecraft token are kept in the
 **iOS Keychain**, with `ThisDeviceOnly/WhenUnlocked` access. The app rechecks
-ownership before Play or downloading original game files. It passes only a
-short-lived Minecraft session over the local in-process Swift-to-Rust bridge,
+ownership before Play; the main installer can fetch Mojang's publicly available
+files without signing in. The optional legacy diagnostic download still checks
+ownership. Only Play passes a short-lived Minecraft session over the local
+in-process Swift-to-Rust bridge,
 not via logs, command-line arguments, or Documents.
 
 **The distributor must register and obtain authorization for its own Microsoft

@@ -423,6 +423,7 @@ struct GameLauncherView: View {
     @StateObject private var official = OfficialMinecraftDownload()
     @State private var hasResources = false
     @State private var hasEngineData = false
+    @State private var didLoadInstallState = false
     @State private var version = "26.3"
     @State private var notice = ""
     @State private var showSettings = false
@@ -430,6 +431,7 @@ struct GameLauncherView: View {
     @State private var customLink = ""
     @State private var customSHA256 = ""
     @State private var showPersonalLink = false
+    @State private var showDiagnosticDownload = false
     @State private var nativeDownloading = false
     @State private var nativeDownloadStage = ""
     @State private var nativeDownloadDone: Int64 = 0
@@ -471,7 +473,7 @@ struct GameLauncherView: View {
                                 .buttonStyle(.borderedProminent)
                                 .disabled(!account.configured)
                             if !account.configured {
-                                Text("このビルドにはMicrosoftのクライアントIDが未設定です。")
+                                Text("Microsoft認証の設定が未完了です。公式ゲームデータはダウンロードできますが、プレイには認証の設定とJava Editionの所有権確認が必要です。")
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
                         }
@@ -492,8 +494,12 @@ struct GameLauncherView: View {
                                 .frame(maxWidth: .infinity, minHeight: 40)
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(starting || !account.hasAccount)
+                        .disabled(starting || !account.hasAccount || !account.configured)
                         .horizonGlassPanel()
+                        if !account.hasAccount {
+                            Text("プレイにはMicrosoftアカウントへのログインとMinecraft: Java Editionの所有権確認が必要です。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
                     } else {
                         VStack(alignment: .leading, spacing: 12) {
                         Text("ゲームファイルのセットアップ").font(.title3.bold())
@@ -518,11 +524,15 @@ struct GameLauncherView: View {
                                 Label("Mojang公式からダウンロードしてインストール", systemImage: "arrow.down.circle")
                                     .frame(maxWidth: .infinity, minHeight: 40)
                             }.buttonStyle(.borderedProminent)
-                                .disabled(!account.hasAccount || !hasEngineData || download.busy || official.busy)
-                            if !hasEngineData {
-                                Text("このビルドには生成済みエンジンテーブルが含まれていません。作成者が対応したIPAをビルドする必要があります。")
+                                .disabled(download.busy || official.busy)
+                            if didLoadInstallState && !hasEngineData {
+                                Text("このビルドには生成済みエンジンテーブルが含まれていません。ダウンロード時にエラーが出る場合は、最新のgame IPAを使用してください。")
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
+                        }
+                        if !account.hasAccount {
+                            Text("公式データの取得にMicrosoftログインや配布先URLの設定は不要です。プレイする際に正規ライセンスの確認が必要です。")
+                                .font(.footnote).foregroundStyle(.secondary)
                         }
                         // Optional publisher-provided ZIP source: it is not required
                         // for the built-in Mojang installer above. Do not suggest
@@ -542,21 +552,22 @@ struct GameLauncherView: View {
                                 .disabled(!account.hasAccount)
                         }
                         Divider()
-                        Text("元の公式ファイルだけを取得（診断用）").font(.subheadline.bold())
-                        Text("上のインストーラーはAndroid版と共通のRust処理を利用します。こちらの診断用ダウンロードで取得した元ファイルのみでは起動できず、JDK 25搭載PCでのhorizon-prepare処理が別途必要です。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                        if official.busy {
-                            ProgressView()
-                            Text(official.progress).font(.caption.monospacedDigit())
-                            Button("公式データ取得を中止") { official.cancel() }
-                        } else {
-                            Button("Mojang公式ゲームデータを取得") {
-                                official.start(version: version, account: account)
+                        DisclosureGroup("元の公式ファイルだけを取得（診断用）", isExpanded: $showDiagnosticDownload) {
+                            Text("上のインストーラーはAndroid版と共通のRust処理を利用します。こちらの診断用ダウンロードで取得した元ファイルのみでは起動できず、JDK 25搭載PCでのhorizon-prepare処理が別途必要です。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            if official.busy {
+                                ProgressView()
+                                Text(official.progress).font(.caption.monospacedDigit())
+                                Button("公式データ取得を中止") { official.cancel() }
+                            } else {
+                                Button("Mojang公式ゲームデータを取得（診断用）") {
+                                    official.start(version: version, account: account)
+                                }
+                                .disabled(!account.hasAccount)
                             }
-                            .disabled(!account.hasAccount)
-                        }
-                        if !official.message.isEmpty {
-                            Text(official.message).font(.footnote).foregroundStyle(.secondary)
+                            if !official.message.isEmpty {
+                                Text(official.message).font(.footnote).foregroundStyle(.secondary)
+                            }
                         }
                         DisclosureGroup("自分で用意したZIPからインストール", isExpanded: $showPersonalLink) {
                             Text("自分のMinecraft Java Editionから正規に準備したZIPを、HTTPSで公開された個人用リンクから取得できます。フォルダ操作は不要です。")
@@ -604,13 +615,10 @@ struct GameLauncherView: View {
     }
 
     private func downloadFromMojang() async {
-        guard !nativeDownloading else { return }
-        do {
-            _ = try await account.sessionForLaunch() // Verify ownership before starting the native fetch.
-        } catch {
-            notice = error.localizedDescription
-            return
-        }
+        guard !nativeDownloading && !download.busy && !official.busy else { return }
+        // Mojang publishes these immutable files over HTTPS. Downloading them
+        // does not require OAuth; playing still requires an ownership-checked
+        // session, enforced independently by launcher-start in Rust.
         notice = ""
         nativeDownloading = true
         nativeDownloadDone = 0
@@ -639,6 +647,7 @@ struct GameLauncherView: View {
         hasResources = status["ready"] as? Bool ?? false
         hasEngineData = status["engine_data"] as? Bool ?? false
         if let issue = status.error { notice = issue }
+        else { didLoadInstallState = true }
     }
 
     private func startGame() async {

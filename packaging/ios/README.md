@@ -769,16 +769,18 @@ in `engine-data.zip`. Minecraft's original JARs, asset textures, and sounds are
 files. Inspect the generated-only allowlist and permission to distribute the
 derived tables before publishing an IPA outside your own testing.
 
-On first launch, sign into a licensed Java Edition Microsoft account and use
-**Mojang公式からダウンロードしてインストール**. The Rust installer shared with
+On first launch, use **Mojang公式からダウンロードしてインストール**.
+The download requires neither an account login nor a publisher manifest URL;
+**Play still requires Microsoft sign-in with verified Java Edition ownership**. The Rust installer shared with
 Android downloads version-pinned client files and asset objects from Mojang,
 verifies hashes, merges the packaged generated tables, and commits the finished
 resources to the Documents sandbox. Progress is shown in SwiftUI. An interrupted
 attempt may reuse verified downloads. This does not require a private HTTPS ZIP
 mirror or a PC at installation time. The legacy private ZIP import remains
 available as a fallback. If a locally packaged IPA lacks engine-data.zip,
-the direct install button is disabled with an explanation; use the `game`
-Actions build or pass `--engine-data` to `package_native_game_ipa.py`.
+the installer reports an actionable error instead of silently refusing taps;
+use the `game` Actions build or pass `--engine-data` to
+`package_native_game_ipa.py`.
 
 Liquid Glass panels are shown with iOS 26's native SwiftUI `glassEffect` API;
 iOS 16–25 use native `regularMaterial` instead. The launcher must be compiled

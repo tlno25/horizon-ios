@@ -38,6 +38,26 @@ class NativeGameDownloadContractTests(unittest.TestCase):
         self.assertIn('if download.busy {\n                            if download.pausing {', swift)
         self.assertNotIn('このビルドには自動配信先が設定されていません', swift)
 
+    def test_builtin_official_download_does_not_require_microsoft_app_registration(self):
+        swift = VIEW.read_text()
+        main = swift.index('Label("Mojang公式からダウンロードしてインストール"')
+        next_section = swift.index('// Optional publisher-provided ZIP source:', main)
+        button = swift[main:next_section]
+        self.assertIn('.disabled(download.busy || official.busy)', button)
+        self.assertNotIn('!account.hasAccount', button.split('.disabled(', 1)[1].split(')', 1)[0])
+        self.assertNotIn('!hasEngineData', button.split('.disabled(', 1)[1].split(')', 1)[0])
+        self.assertNotIn('hasConfiguredPublisher', button)
+
+        download = swift.split('private func downloadFromMojang() async {', 1)[1].split('private func refresh() async {', 1)[0]
+        self.assertIn('Bridge.send("launcher-download")', download)
+        self.assertNotIn('sessionForLaunch()', download)
+        self.assertNotIn('verifyForDownload()', download)
+        # Installing public files must not weaken ownership checks for Play.
+        launch = swift.split('private func startGame() async {', 1)[1]
+        self.assertIn('try await account.sessionForLaunch()', launch)
+        native = (ROOT / 'crates/horizon-client/src/game/ios_native_launcher.rs').read_text()
+        self.assertIn('Ok(()) if self.native_session.is_some()', native)
+
     def test_interrupted_download_can_resume_without_redownloading_entire_archive(self):
         swift = VIEW.read_text()
         self.assertIn('cancel(byProducingResumeData:', swift)

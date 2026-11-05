@@ -524,22 +524,22 @@ struct GameLauncherView: View {
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
                         }
-                        if !download.busy && !nativeDownloading {
-                            if hasConfiguredPublisher {
-                                Button { Task { await download.begin(version: version) } } label: {
-                                    Label("ゲームファイルをダウンロード", systemImage: "arrow.down.circle")
-                                        .frame(maxWidth: .infinity, minHeight: 40)
-                                }.buttonStyle(.borderedProminent)
-                                    .disabled(!account.hasAccount)
-                            } else {
-                                Text("このビルドには自動配信先が設定されていません。自分で準備したZIPのリンクを下に入力できます。")
-                                    .font(.footnote).foregroundStyle(.secondary)
+                        // Optional publisher-provided ZIP source: it is not required
+                        // for the built-in Mojang installer above. Do not suggest
+                        // that the app is unconfigured when engine-data.zip exists.
+                        if download.busy {
+                            if download.pausing {
+                                Button("中断中…") {}.disabled(true)
+                            } else if !download.installing {
+                                Button("キャンセル", role: .cancel) { download.cancel() }
+                                    .buttonStyle(.bordered)
                             }
-                        } else if download.pausing {
-                            Button("中断中…") {}.disabled(true)
-                        } else if !download.installing {
-                            Button("キャンセル", role: .cancel) { download.cancel() }
-                                .buttonStyle(.bordered)
+                        } else if !nativeDownloading && hasConfiguredPublisher {
+                            Button { Task { await download.begin(version: version) } } label: {
+                                Label("配布元の準備済みZIPをダウンロード", systemImage: "archivebox")
+                                    .frame(maxWidth: .infinity, minHeight: 40)
+                            }.buttonStyle(.bordered)
+                                .disabled(!account.hasAccount)
                         }
                         Divider()
                         Text("元の公式ファイルだけを取得（診断用）").font(.subheadline.bold())
@@ -595,7 +595,8 @@ struct GameLauncherView: View {
         .sheet(isPresented: $showSettings) { NativeSettingsView() }
         .task {
             await refresh()
-            if !hasConfiguredPublisher { showPersonalLink = true }
+            // Show the manual ZIP fallback only when neither automatic route exists.
+            if !hasEngineData && !hasConfiguredPublisher { showPersonalLink = true }
         }
         .onChange(of: download.installed) { installed in
             if installed { Task { await refresh() } }

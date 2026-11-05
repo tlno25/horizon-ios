@@ -22,8 +22,21 @@ class NativeGameDownloadContractTests(unittest.TestCase):
         swift = VIEW.read_text()
         self.assertIn('private var hasConfiguredPublisher: Bool', swift)
         self.assertIn('isExpanded: $showPersonalLink', swift)
-        self.assertIn('if !hasConfiguredPublisher { showPersonalLink = true }', swift)
-        self.assertIn('if hasConfiguredPublisher {', swift)
+        self.assertIn('if !hasEngineData && !hasConfiguredPublisher { showPersonalLink = true }', swift)
+        self.assertIn('} else if !nativeDownloading && hasConfiguredPublisher {', swift)
+        self.assertNotIn('このビルドには自動配信先が設定されていません', swift)
+
+    def test_builtin_mojang_download_is_independent_of_publisher_manifest(self):
+        swift = VIEW.read_text()
+        self.assertIn('Label("Mojang公式からダウンロードしてインストール"', swift)
+        self.assertIn('Task { await downloadFromMojang() }', swift)
+        self.assertIn('Bridge.send("launcher-download")', swift)
+        self.assertIn('hasEngineData = status["engine_data"] as? Bool ?? false', swift)
+        main = swift.index('Label("Mojang公式からダウンロードしてインストール"')
+        optional = swift.index('} else if !nativeDownloading && hasConfiguredPublisher {')
+        self.assertLess(main, optional)
+        self.assertIn('if download.busy {\n                            if download.pausing {', swift)
+        self.assertNotIn('このビルドには自動配信先が設定されていません', swift)
 
     def test_interrupted_download_can_resume_without_redownloading_entire_archive(self):
         swift = VIEW.read_text()

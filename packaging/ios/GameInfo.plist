@@ -2,12 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleDisplayName</key><string>Horizon Game (Experimental)</string>
+    <key>CFBundleDisplayName</key><string>Horizon</string>
     <key>CFBundleExecutable</key><string>HorizonGame</string>
     <key>CFBundleIdentifier</key><string>com.example.horizonios.game</string>
-    <key>CFBundleName</key><string>HorizonGame</string>
+    <key>CFBundleName</key><string>Horizon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleShortVersionString</key><string>0.2.0</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>MinimumOSVersion</key><string>16.0</string>
     <key>LSRequiresIPhoneOS</key><true/>

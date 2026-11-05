@@ -20,6 +20,11 @@ class GameManifestConfigurationTests(unittest.TestCase):
             info = plistlib.loads(target.read_bytes())
             self.assertEqual(info['HorizonResourcesManifestURL'], 'https://assets.example.org/26.3/game-files.json')
             self.assertEqual(info['HorizonMicrosoftClientID'], '11111111-2222-4333-8444-555555555555')
+            self.assertEqual(info['CFBundleShortVersionString'], '0.2.0')
+            self.assertEqual(info['CFBundleDisplayName'], 'Horizon')
+            self.assertEqual(info['CFBundleName'], 'Horizon')
+            # An in-place update must preserve the existing app sandbox.
+            self.assertEqual(info['CFBundleIdentifier'], 'com.example.horizonios.game')
             self.assertEqual(source.read_bytes(), original)
             self.assertFalse(any(name.name.startswith('horizon-resources') for name in target.parent.iterdir()))
 

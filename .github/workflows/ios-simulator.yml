@@ -260,6 +260,10 @@ jobs:
               assert prefix + 'Frameworks/HorizonLauncherKit.framework/HorizonLauncherKit' in entries
               info = plistlib.loads(archive.read(prefix + 'Info.plist'))
               assert info['CFBundleExecutable'] == 'HorizonGame'
+              assert info['CFBundleDisplayName'] == 'Horizon'
+              assert info['CFBundleName'] == 'Horizon'
+              assert info['CFBundleShortVersionString'] == '0.2.0'
+              assert info['CFBundleIdentifier'] == 'com.example.horizonios.game'
               assert info['CFBundleVersion'] == __import__('os').environ['GITHUB_RUN_NUMBER']
               assert info['UIFileSharingEnabled']
               assert not any('horizon-resources.json' in entry for entry in entries)

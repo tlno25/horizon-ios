@@ -23,9 +23,13 @@ replaced with the freshly signed IPA to receive this code change.
    `Frameworks/HorizonLauncherKit.framework` **must remain present, be signed
    correctly, and retain its iPhoneOS arm64 binary**. An unsigned IPA cannot
    be installed directly on a standard iPhone. Reinstall the signed game app.
-   New CI builds use a unique, increasing `CFBundleVersion` (the Actions run
-   number) to distinguish them from previous launcher-less installations.
-4. The expected app is named **Horizon Game (Experimental)** and has bundle ID
+   Starting with version **0.2.0**, the home-screen name is **Horizon**
+   (`CFBundleDisplayName`); the bundle identifier stays
+   `com.example.horizonios.game` so an existing game install can be updated.
+   Each CI build also uses an increasing `CFBundleVersion` (Actions run
+   number). The IPA archive filename still contains `game` to distinguish it
+   from the separate legacy diagnostics IPA.
+4. The expected app is named **Horizon** and has bundle ID
    `com.example.horizonios.game`. It should open the SwiftUI native launcher
    first, including when no personal game data exists. If you need to delete
    an older installation, back up any existing Documents/game saves first;
@@ -281,20 +285,19 @@ tar -a -cf Horizon-iOS-prepared.zip -C ".local\horizon-client\26.3" .
 **Keep this ZIP private**; it contains game files prepared from your
 own Minecraft copy, not open-source Horizon code. Transfer it through the
 iPhone Files app, iCloud Drive or iOS file sharing; extract it in Files
-and make the resulting folder **`On My iPhone > Horizon Game (Experimental)
-> resources`**. The `horizon-resources.json` file must be immediately
+and make the resulting folder **`On My iPhone > Horizon > resources`**.
+The `horizon-resources.json` file must be immediately
 inside `resources/`, not inside another nested ZIP folder. Completely quit
 and reopen the iOS app. This transfer path has not yet been validated on a
 physical iPhone. The separate SwiftUI shell has its own ZIP importer.
 
 **Do not mistake this build target for a finished, playable mobile client.**
-An app launched without prepared resources now shows a native, touch-enabled
-first-run screen telling the player to copy the legally prepared assets to
-`Documents/resources/horizon-resources.json`. The first-run screen uses the
-device viewport and survives iOS surface suspension/resume. The loading/title
-stage requests the native UIKit keyboard when a text field receives focus;
-committed Unicode input uses Horizon's existing title edit path. Exact keyboard
-and orientation behavior still need physical iPhone verification.
+The modern game app shows its bundled SwiftUI launcher when prepared resources
+are missing. The old native first-run screen is excluded from the iOS game
+binary. The loading/title stage requests the native UIKit keyboard when a text
+field receives focus; committed Unicode input uses Horizon's existing title
+edit path. Exact keyboard and orientation behavior still need physical iPhone
+verification.
 
 The native game and the loading window now request the device's own
 landscape viewport instead of a desktop-sized (1280×720 point) UIKit window.

@@ -11,11 +11,12 @@ import stat
 import struct
 import tempfile
 import zipfile
+import sys
 from pathlib import Path
 
 
 def package(binary: Path, info_plist: Path, output: Path,
-            launcher_framework: Path | None = None) -> None:
+            launcher_framework: Path | None = None, engine_data: Path | None = None) -> None:
     binary, info_plist, output = Path(binary), Path(info_plist), Path(output)
     # The game and its SwiftUI launcher must ship in the *same* app bundle.
     # Source assets are never copied here, even when a manifest URL is set.
@@ -64,6 +65,20 @@ def package(binary: Path, info_plist: Path, output: Path,
             info.get("UIFileSharingEnabled") is not True):
         raise ValueError("Invalid iOS game bundle metadata")
 
+    if engine_data is not None:
+        # Only derived engine tables are permitted. Reject the original Mojang
+        # assets, JARs and sounds before writing any IPA.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+        from android_build import generated_engine_file
+        engine_data = Path(engine_data)
+        with zipfile.ZipFile(engine_data) as source:
+            names = source.namelist()
+            if (not names or len(names) != len(set(names)) or
+                    not all(generated_engine_file(name) and not source.getinfo(name).is_dir()
+                            for name in names) or
+                    not all(name in names for name in
+                            ("horizon-resources.json", "facts.json", "registries.json", "commands.json"))):
+                raise ValueError("iOS engine tables must be generated-only; no vanilla game files")
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
@@ -84,6 +99,8 @@ def package(binary: Path, info_plist: Path, output: Path,
                     dest.write(data)
             ipa.writestr(prefix + "Info.plist", info_bytes)
             ipa.writestr(prefix + "PkgInfo", b"APPL????")
+            if engine_data is not None:
+                ipa.write(engine_data, prefix + "engine-data.zip")
             for file in launcher_framework.rglob("*"):
                 if file.is_symlink():
                     raise ValueError("Launcher framework must not contain symlinks")
@@ -106,8 +123,10 @@ def main() -> None:
     parser.add_argument("--plist", type=Path, default=Path(__file__).with_name("GameInfo.plist"))
     parser.add_argument("--launcher-framework", type=Path, required=True,
                         help="Required: HorizonLauncherKit.framework compiled by Xcode")
+    parser.add_argument("--engine-data", type=Path,
+                        help="Optional generated-only engine-data ZIP from your authorized preparation")
     args = parser.parse_args()
-    package(args.binary, args.plist, args.output, args.launcher_framework)
+    package(args.binary, args.plist, args.output, args.launcher_framework, args.engine_data)
     print(f"Created unsigned native-game IPA: {args.output}")
 
 

@@ -217,9 +217,31 @@ jobs:
         with:
           prefix-key: horizon-ios-native-game
           cache-on-failure: true
+      - name: Select Xcode 26 for Liquid Glass
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26'
       - name: Compile the real Horizon client executable for iPhoneOS
         run: |
           cargo build --release --locked --target aarch64-apple-ios -p horizon-client --no-default-features --features audio --bin horizon-client
+      - name: Install JDK 25 for Minecraft data preparation
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Prepare generated-only engine tables from official Minecraft files
+        run: |
+          set -euo pipefail
+          # Android and iOS share this pinned exporter. The source JARs and
+          # licensed textures remain in the runner's unuploaded .local cache.
+          java --version
+          python3 tools/android_prepare.py --java-home "$JAVA_HOME"
+          python3 - <<'PYTABLES'
+          import sys
+          sys.path.insert(0, 'tools')
+          from android_build import engine_data
+          print('Generated-only engine data:', engine_data(public=True))
+          PYTABLES
       - name: Build SwiftUI launcher in the native game bundle
         run: bash packaging/ios/build_game_launcher.sh iphoneos arm64 "$RUNNER_TEMP/HorizonGameLauncherDerived"
       - name: Prepare native game resource manifest config
@@ -244,6 +266,7 @@ jobs:
             --binary "$binary" \
             --plist "$RUNNER_TEMP/HorizonGameInfo.plist" \
             --launcher-framework "$RUNNER_TEMP/HorizonGameLauncherDerived/Build/Products/Release-iphoneos/HorizonLauncherKit.framework" \
+            --engine-data .local/android/engine-data-generated.zip \
             --output "$RUNNER_TEMP/horizon-ios-artifacts/Horizon-game-unsigned.ipa"
       - name: Verify the unsigned native IPA and its app metadata
         run: |

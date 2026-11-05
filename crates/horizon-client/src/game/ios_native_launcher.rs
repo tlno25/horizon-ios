@@ -2,9 +2,20 @@
 //! Never create a second UIApplicationMain, never block UIKit for a ZIP import.
 use super::*;
 use serde_json::{Value, json};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{
+    Arc, Mutex,
+    mpsc::{self, Receiver, TryRecvError},
+};
+
+#[derive(Clone, Copy, Default)]
+struct DownloadProgress {
+    stage: horizon_client::official_install::InstallStage,
+    done: u64,
+    total: u64,
+}
 
 pub(super) struct ImportJob {
+    progress: Option<Arc<Mutex<DownloadProgress>>>,
     result: Receiver<std::result::Result<(), String>>,
     response: horizon_ios_launcher::Request,
 }
@@ -64,10 +75,97 @@ impl Loading {
                     let state = json!({
                         "phase": if horizon_ios_launcher::waiting() { "waiting" } else { "loading" },
                         "ready": ready,
+                        "engine_data": std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.join("engine-data.zip"))).is_some_and(|p| p.is_file()),
                         "version": horizon_core::VANILLA_VERSION,
                         "progress": self.progress.fraction(),
                     });
                     request.answer(&state.to_string());
+                }
+                "launcher-download-state" => {
+                    let status = self
+                        .native_imports
+                        .iter()
+                        .find_map(|job| job.progress.as_ref());
+                    let value =
+                        status.map(|status| *status.lock().unwrap_or_else(|e| e.into_inner()));
+                    request.answer(
+                        &json!({
+                            "busy": value.is_some(),
+                            "stage": value.map(|p| p.stage.label()).unwrap_or(""),
+                            "done": value.map(|p| p.done).unwrap_or(0),
+                            "total": value.map(|p| p.total).unwrap_or(0),
+                        })
+                        .to_string(),
+                    );
+                }
+                "launcher-download" => {
+                    if !self.native_imports.is_empty() {
+                        request.answer(r#"{"error":"Another resource operation is in progress"}"#);
+                        continue;
+                    }
+                    let home = match std::env::current_dir() {
+                        Ok(path) => path,
+                        Err(error) => {
+                            request.answer(&json!({"error":error.to_string()}).to_string());
+                            continue;
+                        }
+                    };
+                    let bundle = std::env::current_exe()
+                        .ok()
+                        .and_then(|p| p.parent().map(|p| p.join("engine-data.zip")));
+                    if !bundle.as_ref().is_some_and(|p| p.is_file()) {
+                        request.answer(r#"{"error":"This build has no generated engine tables (engine-data.zip). Prepare and package the generated-only engine data before downloading."}"#);
+                        continue;
+                    }
+                    let progress = Arc::new(Mutex::new(DownloadProgress::default()));
+                    let progress_worker = Arc::clone(&progress);
+                    let (tx, rx) = mpsc::channel();
+                    match std::thread::Builder::new()
+                        .name("ios-mojang-download".into())
+                        .spawn(move || {
+                            let result = (|| -> horizon_client::Result<()> {
+                                // The original immutable bundle is never modified or published.
+                                std::fs::copy(
+                                    bundle.expect("checked above"),
+                                    home.join("engine-data.zip"),
+                                )?;
+                                horizon_client::official_install::install_with_progress(
+                                    &home,
+                                    |p| {
+                                        *progress_worker
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner()) =
+                                            DownloadProgress {
+                                                stage: p.stage,
+                                                done: p.done,
+                                                total: p.total,
+                                            };
+                                    },
+                                )?;
+                                let installed = horizon_client::ios_paths::game_resources_dir(
+                                    &home,
+                                    horizon_core::VANILLA_VERSION,
+                                );
+                                horizon_client::ios_paths::validate_prepared_resources(
+                                    &installed,
+                                    horizon_core::VANILLA_VERSION,
+                                )
+                                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+                                Ok(())
+                            })()
+                            .map_err(|e| e.to_string());
+                            let _ = std::fs::remove_file(home.join("engine-data.zip"));
+                            let _ = tx.send(result);
+                        }) {
+                        Ok(_) => self.native_imports.push(ImportJob {
+                            result: rx,
+                            response: request,
+                            progress: Some(progress),
+                        }),
+                        Err(error) => {
+                            request.answer(&json!({"error":error.to_string()}).to_string())
+                        }
+                    }
                 }
                 "launcher-settings" => {
                     let answer =
@@ -155,6 +253,7 @@ impl Loading {
                         }) {
                         Ok(_) => self.native_imports.push(ImportJob {
                             result: rx,
+                            progress: None,
                             response: request,
                         }),
                         Err(error) => {

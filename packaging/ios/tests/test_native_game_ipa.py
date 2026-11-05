@@ -57,6 +57,28 @@ class NativeGameIpaTests(unittest.TestCase):
             self.assertTrue((ipa.getinfo(prefix + "HorizonGame").external_attr >> 16) & 0o111)
             self.assertNotIn("horizon-resources.json", "".join(ipa.namelist()))
 
+    def test_generated_engine_tables_can_be_packaged_without_mojang_assets(self):
+        engine = self.root / "engine.zip"
+        with zipfile.ZipFile(engine, "w") as z:
+            for name in ("horizon-resources.json", "facts.json", "registries.json", "commands.json"):
+                z.writestr(name, "{}")
+        package(self.binary, IOS / "GameInfo.plist", self.output,
+                launcher_framework=self.launcher, engine_data=engine)
+        with zipfile.ZipFile(self.output) as ipa:
+            self.assertEqual(ipa.read("Payload/HorizonGame.app/engine-data.zip"), engine.read_bytes())
+            self.assertNotIn("horizon-resources.json", ipa.namelist())
+
+    def test_rejects_original_game_assets_in_engine_tables(self):
+        engine = self.root / "bad-engine.zip"
+        with zipfile.ZipFile(engine, "w") as z:
+            for name in ("horizon-resources.json", "facts.json", "registries.json", "commands.json"):
+                z.writestr(name, "{}")
+            z.writestr("assets/minecraft/textures/block/stone.png", b"not allowed")
+        with self.assertRaisesRegex(ValueError, "generated-only"):
+            package(self.binary, IOS / "GameInfo.plist", self.output,
+                    launcher_framework=self.launcher, engine_data=engine)
+        self.assertFalse(self.output.exists())
+
     def test_never_packages_an_ios_game_without_the_swiftui_launcher(self):
         with self.assertRaisesRegex(ValueError, "requires a SwiftUI launcher"):
             package(self.binary, IOS / "GameInfo.plist", self.output)

@@ -8,6 +8,10 @@ case "$sdk/$arch" in
     iphoneos/arm64|iphonesimulator/x86_64|iphonesimulator/arm64) ;;
     *) echo "Unsupported iOS launcher target: $sdk/$arch" >&2; exit 2 ;;
 esac
+# Liquid Glass APIs require an iOS 26 SDK, even with an iOS 16 deployment target.
+if [ -z "${DEVELOPER_DIR:-}" ] && [ -d /Applications/Xcode_26.3.app/Contents/Developer ]; then
+    export DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer
+fi
 if ! command -v xcodegen >/dev/null 2>&1; then
     command -v brew >/dev/null 2>&1 || { echo 'XcodeGen is required' >&2; exit 2; }
     brew install xcodegen

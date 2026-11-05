@@ -759,3 +759,27 @@ frame was presented; `4` indicates a failed attempt. See the uploaded
 `horizon-ios-boot-renderer-status` artifact for the captured evidence. The
 normal screenshot and successful `simctl launch` alone do **not** prove
 correct game pixels, multitouch gameplay, background recovery or iPad support.
+
+## One-tap Mojang installation (native game IPA)
+
+The `game` Actions job now invokes the existing Android `tools/android_prepare.py`
+with JDK 25 and includes only `engine_data(public=True)` generated engine tables
+in `engine-data.zip`. Minecraft's original JARs, asset textures, and sounds are
+**not** embedded in the IPA. The repository does not contain any prepared game
+files. Inspect the generated-only allowlist and permission to distribute the
+derived tables before publishing an IPA outside your own testing.
+
+On first launch, sign into a licensed Java Edition Microsoft account and use
+**Mojang公式からダウンロードしてインストール**. The Rust installer shared with
+Android downloads version-pinned client files and asset objects from Mojang,
+verifies hashes, merges the packaged generated tables, and commits the finished
+resources to the Documents sandbox. Progress is shown in SwiftUI. An interrupted
+attempt may reuse verified downloads. This does not require a private HTTPS ZIP
+mirror or a PC at installation time. The legacy private ZIP import remains
+available as a fallback. If a locally packaged IPA lacks engine-data.zip,
+the direct install button is disabled with an explanation; use the `game`
+Actions build or pass `--engine-data` to `package_native_game_ipa.py`.
+
+Liquid Glass panels are shown with iOS 26's native SwiftUI `glassEffect` API;
+iOS 16–25 use native `regularMaterial` instead. The launcher must be compiled
+with Xcode 26 or newer, even though the deployment minimum remains iOS 16.

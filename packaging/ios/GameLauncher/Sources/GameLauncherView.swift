@@ -404,12 +404,25 @@ extension NativeGameDownload: URLSessionDownloadDelegate {
     }
 }
 
+/// iOS 26 uses the system Liquid Glass material; older OS versions retain
+/// the native translucent material instead of a custom fake glass shader.
+private extension View {
+    @ViewBuilder func horizonGlassPanel() -> some View {
+        if #available(iOS 26.0, *) {
+            self.padding(18).glassEffect(.regular, in: .rect(cornerRadius: 26))
+        } else {
+            self.padding(18).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26))
+        }
+    }
+}
+
 struct GameLauncherView: View {
     let onPlay: () -> Void
     @StateObject private var download = NativeGameDownload()
     @StateObject private var account = MinecraftAccount()
     @StateObject private var official = OfficialMinecraftDownload()
     @State private var hasResources = false
+    @State private var hasEngineData = false
     @State private var version = "26.3"
     @State private var notice = ""
     @State private var showSettings = false
@@ -417,6 +430,10 @@ struct GameLauncherView: View {
     @State private var customLink = ""
     @State private var customSHA256 = ""
     @State private var showPersonalLink = false
+    @State private var nativeDownloading = false
+    @State private var nativeDownloadStage = ""
+    @State private var nativeDownloadDone: Int64 = 0
+    @State private var nativeDownloadTotal: Int64 = 0
 
     private var hasConfiguredPublisher: Bool {
         guard let text = Bundle.main.object(forInfoDictionaryKey: "HorizonResourcesManifestURL") as? String,
@@ -441,7 +458,6 @@ struct GameLauncherView: View {
                             Label("設定", systemImage: "gearshape")
                         }.buttonStyle(.bordered)
                     }
-                    Divider()
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Microsoftアカウント").font(.title3.bold())
                         if let name = account.name {
@@ -467,8 +483,7 @@ struct GameLauncherView: View {
                         if !account.status.isEmpty {
                             Text(account.status).font(.footnote).foregroundStyle(.secondary)
                         }
-                    }
-                    Divider()
+                    }.horizonGlassPanel()
                     if hasResources {
                         Label("ゲームファイルを準備できました", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(.green)
@@ -478,7 +493,9 @@ struct GameLauncherView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(starting || !account.hasAccount)
+                        .horizonGlassPanel()
                     } else {
+                        VStack(alignment: .leading, spacing: 12) {
                         Text("ゲームファイルのセットアップ").font(.title3.bold())
                         Text("このアプリから必要なデータをダウンロードしてインストールします。フォルダ操作は不要です。")
                             .font(.subheadline).foregroundStyle(.secondary)
@@ -489,7 +506,25 @@ struct GameLauncherView: View {
                         } else if download.busy {
                             ProgressView()
                         }
-                        if !download.busy {
+                        if nativeDownloading {
+                            ProgressView(nativeDownloadStage.isEmpty ? "準備中…" : nativeDownloadStage)
+                            if nativeDownloadTotal > 0 {
+                                ProgressView(value: Double(nativeDownloadDone), total: Double(nativeDownloadTotal))
+                                Text("\(nativeDownloadDone / 1_048_576) / \(nativeDownloadTotal / 1_048_576) MiB")
+                                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Button { Task { await downloadFromMojang() } } label: {
+                                Label("Mojang公式からダウンロードしてインストール", systemImage: "arrow.down.circle")
+                                    .frame(maxWidth: .infinity, minHeight: 40)
+                            }.buttonStyle(.borderedProminent)
+                                .disabled(!account.hasAccount || !hasEngineData || download.busy || official.busy)
+                            if !hasEngineData {
+                                Text("このビルドには生成済みエンジンテーブルが含まれていません。作成者が対応したIPAをビルドする必要があります。")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                        if !download.busy && !nativeDownloading {
                             if hasConfiguredPublisher {
                                 Button { Task { await download.begin(version: version) } } label: {
                                     Label("ゲームファイルをダウンロード", systemImage: "arrow.down.circle")
@@ -507,8 +542,8 @@ struct GameLauncherView: View {
                                 .buttonStyle(.bordered)
                         }
                         Divider()
-                        Text("Mojang公式から元のゲームデータを取得").font(.subheadline.bold())
-                        Text("公式クライアント・サーバーJAR・ライブラリ・アセットを自分のiPhoneの書類に保存します。Horizonが動かすためのデータ生成にはJDK 25のPCでhorizon-prepareが必要です。取得しただけではゲームを起動できません。")
+                        Text("元の公式ファイルだけを取得（診断用）").font(.subheadline.bold())
+                        Text("上のインストーラーはAndroid版と共通のRust処理を利用します。こちらの診断用ダウンロードで取得した元ファイルのみでは起動できず、JDK 25搭載PCでのhorizon-prepare処理が別途必要です。")
                             .font(.footnote).foregroundStyle(.secondary)
                         if official.busy {
                             ProgressView()
@@ -538,6 +573,7 @@ struct GameLauncherView: View {
                             }
                             .disabled(download.busy || !account.hasAccount || customLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
+                        }.horizonGlassPanel()
                     }
                     if !download.message.isEmpty {
                         Text(download.message).font(.footnote).foregroundStyle(.secondary)
@@ -566,10 +602,41 @@ struct GameLauncherView: View {
         }
     }
 
+    private func downloadFromMojang() async {
+        guard !nativeDownloading else { return }
+        do {
+            _ = try await account.sessionForLaunch() // Verify ownership before starting the native fetch.
+        } catch {
+            notice = error.localizedDescription
+            return
+        }
+        notice = ""
+        nativeDownloading = true
+        nativeDownloadDone = 0
+        nativeDownloadTotal = 0
+        let pending = Task { await Bridge.send("launcher-download") }
+        // Keep UI polling asynchronous: the installer runs on a Rust worker.
+        let poller = Task {
+            while !Task.isCancelled {
+                let state = await Bridge.send("launcher-download-state")
+                nativeDownloadStage = state["stage"] as? String ?? ""
+                nativeDownloadDone = (state["done"] as? NSNumber)?.int64Value ?? 0
+                nativeDownloadTotal = (state["total"] as? NSNumber)?.int64Value ?? 0
+                try? await Task.sleep(nanoseconds: 350_000_000)
+            }
+        }
+        let reply = await pending.value
+        poller.cancel()
+        nativeDownloading = false
+        if let error = reply.error { notice = error }
+        else { await refresh() }
+    }
+
     private func refresh() async {
         let status = await Bridge.send("launcher-state")
         if let version = status["version"] as? String { self.version = version }
         hasResources = status["ready"] as? Bool ?? false
+        hasEngineData = status["engine_data"] as? Bool ?? false
         if let issue = status.error { notice = issue }
     }
 

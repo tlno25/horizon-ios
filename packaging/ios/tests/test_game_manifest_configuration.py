@@ -23,6 +23,18 @@ class GameManifestConfigurationTests(unittest.TestCase):
             self.assertEqual(source.read_bytes(), original)
             self.assertFalse(any(name.name.startswith('horizon-resources') for name in target.parent.iterdir()))
 
+    def test_manual_game_build_has_unique_numeric_bundle_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'Configured.plist'
+            prepare(IOS / 'GameInfo.plist', target, '', build_number='1234')
+            self.assertEqual(plistlib.loads(target.read_bytes())['CFBundleVersion'], '1234')
+            for invalid in ('0', '-1', '1.2', 'abc', '1234567890'):
+                with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'build number'):
+                    prepare(IOS / 'GameInfo.plist', target, '', build_number=invalid)
+            # Developer builds without a CI number retain the template version.
+            prepare(IOS / 'GameInfo.plist', target, '')
+            self.assertEqual(plistlib.loads(target.read_bytes())['CFBundleVersion'], '1')
+
     def test_empty_configuration_is_explicitly_allowed_but_unsafe_links_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / 'Configured.plist'

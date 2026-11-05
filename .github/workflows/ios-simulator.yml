@@ -8,18 +8,18 @@ on:
   workflow_dispatch:
     inputs:
       build_target:
-        description: 'Which artifact to build?'
+        description: 'game = actual iPhone game with SwiftUI launcher; device = legacy diagnostics ONLY'
         type: choice
         options:
+          - game
+          - game-simulator
+          - game-launcher
+          - game-smoke
           - device
           - simulator
           - both
-          - game
-          - game-launcher
-          - game-simulator
-          - game-smoke
         required: true
-        default: device
+        default: game
       source_game_simulator_run:
         description: 'For game-smoke only: successful game-simulator workflow run ID to reuse'
         type: string
@@ -184,10 +184,10 @@ jobs:
         env:
           DERIVED_DATA: ${{ runner.temp }}/HorizonDerivedData
         run: packaging/ios/package_unsigned_ipa.sh
-      - name: Upload horizon-ios-unsigned.ipa
+      - name: Upload legacy diagnostic-shell IPA (not playable Minecraft)
         uses: actions/upload-artifact@v4
         with:
-          name: horizon-ios-unsigned-ipa
+          name: horizon-ios-diagnostic-shell-ipa
           path: ${{ runner.temp }}/horizon-ios-artifacts/horizon-ios-unsigned.ipa
           if-no-files-found: error
           retention-days: 7
@@ -231,7 +231,8 @@ jobs:
             --source packaging/ios/GameInfo.plist \
             --output "$RUNNER_TEMP/HorizonGameInfo.plist" \
             --manifest-url "$HORIZON_IOS_RESOURCES_MANIFEST_URL" \
-            --microsoft-client-id "$HORIZON_MSA_CLIENT_ID"
+            --microsoft-client-id "$HORIZON_MSA_CLIENT_ID" \
+            --build-number "$GITHUB_RUN_NUMBER"
       - name: Verify arm64 executable and package native game IPA
         run: |
           set -euo pipefail
@@ -258,6 +259,7 @@ jobs:
               assert prefix + 'Frameworks/HorizonLauncherKit.framework/HorizonLauncherKit' in entries
               info = plistlib.loads(archive.read(prefix + 'Info.plist'))
               assert info['CFBundleExecutable'] == 'HorizonGame'
+              assert info['CFBundleVersion'] == __import__('os').environ['GITHUB_RUN_NUMBER']
               assert info['UIFileSharingEnabled']
               assert not any('horizon-resources.json' in entry for entry in entries)
           print('Native game IPA archive verified (assets excluded).')
@@ -309,7 +311,8 @@ jobs:
             --source packaging/ios/GameInfo.plist \
             --output "$RUNNER_TEMP/HorizonGameInfo.plist" \
             --manifest-url "$HORIZON_IOS_RESOURCES_MANIFEST_URL" \
-            --microsoft-client-id "$HORIZON_MSA_CLIENT_ID"
+            --microsoft-client-id "$HORIZON_MSA_CLIENT_ID" \
+            --build-number "$GITHUB_RUN_NUMBER"
       - name: Package native game Simulator .app without Minecraft resources
         run: |
           set -euo pipefail

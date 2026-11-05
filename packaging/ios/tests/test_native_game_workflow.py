@@ -1,4 +1,4 @@
-"""Ensure native game builds stay opt-in and never change the default shell IPA."""
+"""Ensure manual game IPA builds include SwiftUI and cannot default to legacy shell."""
 import re
 import unittest
 from pathlib import Path
@@ -48,9 +48,12 @@ class NativeGameWorkflowTests(unittest.TestCase):
         smoke = workflow["jobs"]["game-simulator-smoke"]
         self.assertEqual(smoke["runs-on"], "macos-15")
 
-    def test_default_device_build_remains_unchanged_and_game_never_autoruns(self):
+    def test_default_manual_target_is_game_and_diagnostics_are_explicit(self):
         workflow = WORKFLOW.read_text()
-        self.assertIn("default: device", workflow)
+        self.assertIn("default: game", workflow)
+        self.assertIn("device = legacy diagnostics ONLY", workflow)
+        self.assertIn("name: horizon-ios-diagnostic-shell-ipa", workflow)
+        self.assertIn("name: horizon-ios-native-game-ipa", workflow)
         self.assertNotRegex(workflow, r"(?m)^\s+push:\s*$")
         self.assertRegex(workflow, r"(?m)^  game-build:\s*$")
 

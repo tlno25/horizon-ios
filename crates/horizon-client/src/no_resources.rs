@@ -1,11 +1,17 @@
-//! The screen of a game started without its prepared files: the game build
-//! run by hand (the release's game zip) instead of through the launcher. It
-//! says where to get the launcher, and quits. Drawn in Horizon's design
-//! language with the bundled fonts: none of Minecraft's files are there.
+//! Recovery screen for a standalone game missing prepared files or a bundled
+//! native iOS SwiftUI launcher. A correct iOS game IPA shows SwiftUI before it
+//! asks for any Minecraft resources. Drawn without Minecraft's assets.
 use crate::ui_theme::{self, Face, Ui, color};
 
 /// The launcher's download page.
 pub const DOWNLOAD_URL: &str = "https://playhorizon.dev";
+/// Download the complete native iOS game IPA, not the older diagnostics shell.
+pub const IOS_DOWNLOAD_URL: &str =
+    "https://github.com/tlno25/horizon-ios/actions/workflows/ios-simulator.yml";
+
+pub fn download_url(ios: bool) -> &'static str {
+    if ios { IOS_DOWNLOAD_URL } else { DOWNLOAD_URL }
+}
 
 const TITLE: &str = "Start Horizon from the launcher";
 const PARAGRAPHS: [&str; 3] = [
@@ -15,17 +21,17 @@ const PARAGRAPHS: [&str; 3] = [
      prepares the game files from it.",
     "Download the launcher at playhorizon.dev, then press Play there.",
 ];
-const IOS_TITLE: &str = "Horizon on iPhone needs game files";
+const IOS_TITLE: &str = "Horizon launcher is missing";
 const IOS_PARAGRAPHS: [&str; 3] = [
-    "Prepare resources from a Minecraft: Java Edition copy you own.",
-    "Use Files or Finder to put the prepared data in Documents/resources, including horizon-resources.json.",
-    "Close Horizon completely and reopen it after copying the files.",
+    "This app cannot find its SwiftUI launcher. Copying Minecraft files alone will not fix it.",
+    "Install Horizon-game-unsigned.ipa from GitHub Actions: Horizon iOS Manual Build (game).",
+    "When signing the IPA, keep Frameworks/HorizonLauncherKit.framework inside the app.",
 ];
 
 /// Platform-specific first-run guidance; the iPhone has no desktop launcher.
 fn copy_for_platform(ios: bool) -> (&'static str, &'static [&'static str], &'static str) {
     if ios {
-        (IOS_TITLE, &IOS_PARAGRAPHS, "Horizon website")
+        (IOS_TITLE, &IOS_PARAGRAPHS, "GitHub Actions")
     } else {
         (TITLE, &PARAGRAPHS, "Download the launcher")
     }
@@ -51,7 +57,8 @@ impl NoResources {
         let shown = std::path::absolute(looked_in).unwrap_or_else(|_| looked_in.to_path_buf());
         Self {
             looked_in: if cfg!(target_os = "ios") {
-                "Missing: Documents/resources/horizon-resources.json".to_owned()
+                "Missing native SwiftUI launcher: Frameworks/HorizonLauncherKit.framework"
+                    .to_owned()
             } else {
                 format!("No prepared game files in {}", shown.display())
             },
@@ -279,13 +286,15 @@ mod tests {
     }
 
     #[test]
-    fn ios_first_run_instructions_point_to_visible_documents_resources() {
+    fn ios_first_run_instructions_identify_missing_launcher_and_correct_ipa() {
         let (title, messages, button) = copy_for_platform(true);
-        assert!(title.contains("iPhone"));
-        assert!(messages.join(" ").contains("Documents/resources"));
-        assert!(messages.join(" ").contains("horizon-resources.json"));
-        assert!(messages.join(" ").contains("Java Edition"));
-        assert!(!button.contains("launcher"));
+        assert!(title.contains("launcher"));
+        assert!(messages.join(" ").contains("Horizon-game-unsigned.ipa"));
+        assert!(messages.join(" ").contains("HorizonLauncherKit.framework"));
+        assert!(messages.join(" ").contains("game"));
+        assert_eq!(button, "GitHub Actions");
+        assert!(download_url(true).contains("tlno25/horizon-ios/actions/workflows/"));
+        assert_eq!(download_url(false), DOWNLOAD_URL);
         let (desktop_title, desktop_messages, desktop_button) = copy_for_platform(false);
         assert_eq!(desktop_title, TITLE);
         assert_eq!(desktop_messages, &PARAGRAPHS);

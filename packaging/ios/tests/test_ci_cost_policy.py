@@ -30,7 +30,9 @@ class CIWorkflowsDoNotRunMacOSAutomatically(unittest.TestCase):
 
     def test_manual_build_does_not_default_to_two_macos_jobs(self):
         text = (WORKFLOWS / 'ios-simulator.yml').read_text()
-        self.assertIn('default: device', text)
+        # One game build by default, never both costly macOS jobs or a
+        # misleading old diagnostic shell build.
+        self.assertIn('default: game', text)
         self.assertIn('inputs.build_target == \'device\'', text)
         self.assertIn('inputs.build_target == \'simulator\'', text)
         self.assertIn('if: ${{ inputs.renderer_probe }}', text)

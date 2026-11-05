@@ -1,9 +1,8 @@
-//! A game started without its prepared files (the game build run by hand, not
-//! through the launcher): a window that says where to get the launcher
-//! (`horizon_client::no_resources`) and quits when it is closed. No loader, no
-//! crash report: nothing went wrong in the game.
+//! A standalone game without its SwiftUI launcher or prepared resources:
+//! a recovery screen that points to the complete iOS IPA rather than asking
+//! users to copy game files into a bundle missing the launcher.
 use super::*;
-use horizon_client::no_resources::{Action, DOWNLOAD_URL, NoResources};
+use horizon_client::no_resources::{Action, NoResources, download_url};
 use winit::event::MouseButton;
 
 struct Missing {
@@ -23,7 +22,14 @@ struct Missing {
 pub(super) fn show(looked_in: &std::path::Path, settings: &Settings, issue: &str) -> Result<()> {
     let screen = NoResources::new(looked_in);
     #[cfg(target_os = "ios")]
-    let screen = screen.with_import_issue(issue);
+    let screen = if horizon_ios_launcher::waiting() {
+        // Only display a resource-import issue when the native launcher
+        // actually exists. Without it, installing game files cannot fix
+        // the missing SwiftUI screen, and the user must reinstall the IPA.
+        screen.with_import_issue(issue)
+    } else {
+        screen
+    };
     #[cfg(not(target_os = "ios"))]
     let _ = issue;
     let mut app = Missing {
@@ -93,7 +99,7 @@ impl Missing {
     fn click(&mut self, event_loop: &ActiveEventLoop) {
         let mut batch = HudBatch::new(self.size());
         match self.with_ui(&mut batch, |ui| self.screen.click(ui)) {
-            Some(Action::Download) => packs::open_uri(DOWNLOAD_URL),
+            Some(Action::Download) => packs::open_uri(download_url(cfg!(target_os = "ios"))),
             Some(Action::Quit) => event_loop.exit(),
             None => {}
         }

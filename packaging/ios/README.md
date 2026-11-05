@@ -1,5 +1,39 @@
 # Horizon iOS development shell (vertical slice in progress)
 
+## iPhone shows "Horizon on iPhone needs game files" instead of SwiftUI
+
+That black screen is from **an older or incomplete native game build** that
+cannot find the `HorizonLauncherKit.framework` launcher. A modern bundled
+game must show its SwiftUI launcher **before** any Minecraft files have been
+installed. Copying `horizon-resources.json` into Documents is **not the fix**
+for a missing launcher.
+
+1. Open [Horizon iOS Manual Build](https://github.com/tlno25/horizon-ios/actions/workflows/ios-simulator.yml).
+   Select branch `ios`, target **`game`** (now the default), and use a
+   successful run. Or use an existing successful `game` run with the latest
+   code you want to install.
+2. Download the artifact **`horizon-ios-native-game-ipa`**. GitHub gives an
+   outer ZIP; extract **`Horizon-game-unsigned.ipa`** from it. Do **not**
+   install `horizon-ios-unsigned.ipa` / the legacy diagnostic-shell artifact.
+3. Sign the **entire** app with an authorized signing method. The nested
+   `Frameworks/HorizonLauncherKit.framework` **must remain present, be signed
+   correctly, and retain its iPhoneOS arm64 binary**. An unsigned IPA cannot
+   be installed directly on a standard iPhone. Reinstall the signed game app.
+   New CI builds use a unique, increasing `CFBundleVersion` (the Actions run
+   number) to distinguish them from previous launcher-less installations.
+4. The expected app is named **Horizon Game (Experimental)** and has bundle ID
+   `com.example.horizonios.game`. It should open the SwiftUI native launcher
+   first, including when no personal game data exists. If you need to delete
+   an older installation, back up any existing Documents/game saves first;
+   deleting an app can remove its sandbox data.
+
+**Important:** showing the launcher is not the same as starting Minecraft.
+The repository has no configured `HORIZON_MSA_CLIENT_ID` or
+`HORIZON_IOS_RESOURCES_MANIFEST_URL`; real Microsoft sign-in, lawful game-file
+preparation and actual iPhone gameplay remain incomplete. For debugging, the
+latest native-game Simulator run tests the SwiftUI bridge and resource importer
+using synthetic files, not proprietary Minecraft files.
+
 ## SwiftUI launcher (existing development shell)
 
 The `device` build now opens a **SwiftUI launcher** in the original HorizonIOS
@@ -324,10 +358,12 @@ proprietary Minecraft data, and an unsigned IPA cannot be installed without
 signing.
 
 
-- **device** (default): build an unsigned arm64 iPhone/iPad IPA with Xcode.
-  Download the `horizon-ios-unsigned-ipa` artifact, extract GitHub's outer ZIP,
-  and use the enclosed **`horizon-ios-unsigned.ipa`**. The IPA is **unsigned**;
-  signing with your own credentials is required before installing it.
+- **game** (default): build the real Rust game and embedded SwiftUI launcher.
+  Download `horizon-ios-native-game-ipa`, extract `Horizon-game-unsigned.ipa`,
+  and sign the app and nested framework before installing.
+- **device** (legacy diagnostics only): build the separate iOS shell with Xcode.
+  This produces `horizon-ios-diagnostic-shell-ipa` containing
+  `horizon-ios-unsigned.ipa`. It is **not** the native Minecraft game app.
 - **simulator**: build and upload an x86_64 `HorizonIOS.app` without booting
   Simulator by default. This **compile-only** option validates Xcode, Swift
   and iOS-target Rust while avoiding costly `simctl bootstatus` stalls. Enable
@@ -670,10 +706,11 @@ minutes after every small change:
   dependency cache is warmed on trusted `ios` pushes or manual runs.
 - **Horizon iOS Manual Build** (`ios-simulator.yml`) runs **only** from the
   GitHub Actions **Run workflow** button, with a branch and target selected.
-  Its `build_target` input is `device` (default), `simulator`, or `both`.
-  Select `device` to produce the artifact `horizon-ios-unsigned-ipa` containing
-  `horizon-ios-unsigned.ipa` for a real arm64 iPhone or iPad. Select
-  `simulator` to build the x86_64 app **without booting a Simulator** by default.
+  Its `build_target` input defaults to **`game`**, which builds the actual
+  iPhoneOS native game + SwiftUI launcher (`horizon-ios-native-game-ipa`,
+  containing `Horizon-game-unsigned.ipa`). `device` is only the legacy iOS
+  diagnostics shell (`horizon-ios-diagnostic-shell-ipa`). Select
+  `simulator` to build the x86_64 diagnostics app **without booting a Simulator** by default.
   Check `simulator_smoke` only when an actual launch, screenshot and Metal
   health check are needed. The `renderer_probe` checkbox additionally enables
   the smoke step and attempts the

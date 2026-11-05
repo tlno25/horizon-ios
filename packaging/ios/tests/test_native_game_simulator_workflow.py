@@ -16,9 +16,10 @@ class GameSimulatorWorkflowTests(unittest.TestCase):
         self.assertIn("name: horizon-ios-game-simulator-app", body)
         self.assertIn("native_game_simulator_smoke.sh", body)
 
-    def test_device_and_game_defaults_are_not_changed(self):
+    def test_native_game_is_manual_default_and_old_device_target_is_opt_in(self):
         body = WORKFLOW.read_text()
-        self.assertIn("default: device", body)
+        self.assertIn("default: game", body)
+        self.assertIn("- device", body)
         self.assertIn("if: ${{ inputs.build_target == 'game' }}", body)
         self.assertNotIn("  push:", body)
 

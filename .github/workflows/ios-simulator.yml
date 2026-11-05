@@ -224,17 +224,15 @@ jobs:
       - name: Compile the real Horizon client executable for iPhoneOS
         run: |
           cargo build --release --locked --target aarch64-apple-ios -p horizon-client --no-default-features --features audio --bin horizon-client
-      - name: Install JDK 25 for Minecraft data preparation
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '25'
       - name: Prepare generated-only engine tables from official Minecraft files
         run: |
           set -euo pipefail
+          # macos-15 arm64 runners already have JDK 25 preinstalled. Avoid
+          # downloading it from GitHub releases (which can return HTTP 504).
           # Android and iOS share this pinned exporter. The source JARs and
           # licensed textures remain in the runner's unuploaded .local cache.
-          java --version
+          export JAVA_HOME="${JAVA_HOME_25_arm64:-$(/usr/libexec/java_home -v 25)}"
+          "$JAVA_HOME/bin/java" -version
           python3 tools/android_prepare.py --java-home "$JAVA_HOME"
           python3 - <<'PYTABLES'
           import sys

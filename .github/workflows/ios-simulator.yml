@@ -221,9 +221,8 @@ jobs:
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: '26'
-      - name: Compile the real Horizon client executable for iPhoneOS
-        run: |
-          cargo build --release --locked --target aarch64-apple-ios -p horizon-client --no-default-features --features audio --bin horizon-client
+      - name: Build SwiftUI launcher in the native game bundle
+        run: bash packaging/ios/build_game_launcher.sh iphoneos arm64 "$RUNNER_TEMP/HorizonGameLauncherDerived"
       - name: Prepare generated-only engine tables from official Minecraft files
         run: |
           set -euo pipefail
@@ -240,8 +239,9 @@ jobs:
           from android_build import engine_data
           print('Generated-only engine data:', engine_data(public=True))
           PYTABLES
-      - name: Build SwiftUI launcher in the native game bundle
-        run: bash packaging/ios/build_game_launcher.sh iphoneos arm64 "$RUNNER_TEMP/HorizonGameLauncherDerived"
+      - name: Compile the real Horizon client executable for iPhoneOS
+        run: |
+          cargo build --release --locked --target aarch64-apple-ios -p horizon-client --no-default-features --features audio --bin horizon-client
       - name: Prepare native game resource manifest config
         env:
           HORIZON_IOS_RESOURCES_MANIFEST_URL: ${{ vars.HORIZON_IOS_RESOURCES_MANIFEST_URL }}

@@ -52,6 +52,17 @@ def parallel_download(files):
             pass
 
 
+def approved_version_manifest(entry, version, pins):
+    """Pick a Mojang-authored, SHA-1 reviewed manifest for the pinned release."""
+    approved = {pins['manifest_sha1'], *pins.get('accepted_manifest_sha1', [])}
+    if entry['sha1'] in approved:
+        return entry['url'], entry['sha1']
+    manifest_sha1 = pins['manifest_sha1']
+    print(f'Mojang republished {version} version metadata ({entry["sha1"]}); '
+          f'using Horizon-approved official manifest {manifest_sha1}', flush=True)
+    return f'https://piston-meta.mojang.com/v1/packages/{manifest_sha1}/{version}.json', manifest_sha1
+
+
 def download_game(version, directory):
     pins = json.loads((ROOT / 'research-lock.json').read_text())['minecraft']
     if version != pins['version']:
@@ -61,9 +72,15 @@ def download_game(version, directory):
         raise ValueError(f"Mojang does not list Minecraft {version}")
     # Mojang metadata may be republished: lab.download checks the catalog SHA-1,
     # and client/server jar hashes are checked against the engine pins below.
+    # Mojang sometimes republishes version metadata without changing the
+    # pinned client/server binaries. horizon-prepare intentionally requires a
+    # reviewed version manifest, rather than trusting any newly issued JSON.
+    # Prefer today's catalogue when it is already in our accepted allowlist;
+    # otherwise use the immutable, SHA-1 pinned official Mojang copy.
+    manifest_url, manifest_sha1 = approved_version_manifest(entry, version, pins)
     versions = directory / 'versions' / version
     manifest_path = versions / f'{version}.json'
-    lab.download(entry['url'], manifest_path, entry['sha1'])
+    lab.download(manifest_url, manifest_path, manifest_sha1)
     manifest = json.loads(manifest_path.read_text())
     files = []
     for side in ['client', 'server']:

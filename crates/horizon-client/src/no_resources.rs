@@ -1,18 +1,9 @@
-//! Recovery screen for a standalone game missing prepared files or a bundled
-//! native iOS SwiftUI launcher. A correct iOS game IPA shows SwiftUI before it
-//! asks for any Minecraft resources. Drawn without Minecraft's assets.
+//! Desktop/Android-only fallback screen for a standalone game without its
+//! prepared resources. Native iOS apps use the SwiftUI launcher exclusively.
 use crate::ui_theme::{self, Face, Ui, color};
 
 /// The launcher's download page.
 pub const DOWNLOAD_URL: &str = "https://playhorizon.dev";
-/// Download the complete native iOS game IPA, not the older diagnostics shell.
-pub const IOS_DOWNLOAD_URL: &str =
-    "https://github.com/tlno25/horizon-ios/actions/workflows/ios-simulator.yml";
-
-pub fn download_url(ios: bool) -> &'static str {
-    if ios { IOS_DOWNLOAD_URL } else { DOWNLOAD_URL }
-}
-
 const TITLE: &str = "Start Horizon from the launcher";
 const PARAGRAPHS: [&str; 3] = [
     "This is the game the Horizon launcher installs and starts. On its own it has none of \
@@ -21,21 +12,6 @@ const PARAGRAPHS: [&str; 3] = [
      prepares the game files from it.",
     "Download the launcher at playhorizon.dev, then press Play there.",
 ];
-const IOS_TITLE: &str = "Horizon launcher is missing";
-const IOS_PARAGRAPHS: [&str; 3] = [
-    "This app cannot find its SwiftUI launcher. Copying Minecraft files alone will not fix it.",
-    "Install Horizon-game-unsigned.ipa from GitHub Actions: Horizon iOS Manual Build (game).",
-    "When signing the IPA, keep Frameworks/HorizonLauncherKit.framework inside the app.",
-];
-
-/// Platform-specific first-run guidance; the iPhone has no desktop launcher.
-fn copy_for_platform(ios: bool) -> (&'static str, &'static [&'static str], &'static str) {
-    if ios {
-        (IOS_TITLE, &IOS_PARAGRAPHS, "GitHub Actions")
-    } else {
-        (TITLE, &PARAGRAPHS, "Download the launcher")
-    }
-}
 const COLUMN: f32 = 560.0;
 const BUTTON_GAP: f32 = 12.0;
 
@@ -56,33 +32,15 @@ impl NoResources {
     pub fn new(looked_in: &std::path::Path) -> Self {
         let shown = std::path::absolute(looked_in).unwrap_or_else(|_| looked_in.to_path_buf());
         Self {
-            looked_in: if cfg!(target_os = "ios") {
-                "Missing native SwiftUI launcher: Frameworks/HorizonLauncherKit.framework"
-                    .to_owned()
-            } else {
-                format!("No prepared game files in {}", shown.display())
-            },
+            looked_in: format!("No prepared game files in {}", shown.display()),
         }
     }
 
-    /// Present a short import error on the same safe first-run screen, so a
-    /// half-copied or incompatible bundle doesn't terminate at the loader.
-    pub fn with_import_issue(mut self, issue: &str) -> Self {
-        self.looked_in = format!("Resource import problem: {issue}");
-        self
-    }
-
-    /// The buttons' labels, actions and rectangles in dp, and the paragraphs' wrapped
-    /// lines: one layout for drawing and clicks.
+    /// The buttons and text positions for the desktop fallback screen.
     fn layout(&self, ui: &Ui) -> Layout {
-        self.layout_for_platform(ui, cfg!(target_os = "ios"))
-    }
-
-    fn layout_for_platform(&self, ui: &Ui, ios: bool) -> Layout {
         let width = COLUMN.min(ui.w - 64.0).max(160.0);
         let x = ((ui.w - width) / 2.0).round();
-        let (_, paragraphs, download_label) = copy_for_platform(ios);
-        let lines: Vec<Vec<String>> = paragraphs
+        let lines: Vec<Vec<String>> = PARAGRAPHS
             .iter()
             .map(|p| wrap(ui, Face::Regular, BODY, p, width))
             .collect();
@@ -93,7 +51,10 @@ impl NoResources {
         let buttons_y = y + TITLE_LINE + 16.0 + text_h + 28.0;
         let mut buttons = Vec::new();
         let mut bx = x;
-        for (label, action) in [(download_label, Action::Download), ("Quit", Action::Quit)] {
+        for (label, action) in [
+            ("Download the launcher", Action::Download),
+            ("Quit", Action::Quit),
+        ] {
             let w = (ui.measure(Face::Medium, BUTTON_TEXT, label) + 40.0).round();
             buttons.push(Button {
                 label,
@@ -124,7 +85,7 @@ impl NoResources {
             layout.x,
             y,
             color::TEXT,
-            copy_for_platform(cfg!(target_os = "ios")).0,
+            TITLE,
         );
         y += TITLE_LINE + 16.0;
         for paragraph in &layout.lines {
@@ -259,54 +220,6 @@ mod tests {
         let cursor = (cursor.0 / batch.scale, cursor.1 / batch.scale);
         let mut ui = Ui::new(&atlas, &mut batch, cursor);
         f(&mut ui)
-    }
-
-    #[test]
-    fn mobile_first_run_buttons_fit_a_landscape_iphone_screen() {
-        let screen = NoResources::new(std::path::Path::new("resources"));
-        for size in [[844, 390], [932, 430]] {
-            with_ui(size, (0.0, 0.0), |ui| {
-                let layout = screen.layout_for_platform(ui, true);
-                assert!(layout.buttons.iter().all(|button| button.y >= 0.0));
-                assert!(
-                    layout
-                        .buttons
-                        .iter()
-                        .all(|button| button.y + CONTROL < ui.h)
-                );
-                assert!(
-                    layout
-                        .buttons
-                        .iter()
-                        .all(|button| button.x + button.w < ui.w)
-                );
-                assert!(layout.buttons[0].y + CONTROL + 20.0 + SMALL_LINE <= ui.h);
-            });
-        }
-    }
-
-    #[test]
-    fn ios_first_run_instructions_identify_missing_launcher_and_correct_ipa() {
-        let (title, messages, button) = copy_for_platform(true);
-        assert!(title.contains("launcher"));
-        assert!(messages.join(" ").contains("Horizon-game-unsigned.ipa"));
-        assert!(messages.join(" ").contains("HorizonLauncherKit.framework"));
-        assert!(messages.join(" ").contains("game"));
-        assert_eq!(button, "GitHub Actions");
-        assert!(download_url(true).contains("tlno25/horizon-ios/actions/workflows/"));
-        assert_eq!(download_url(false), DOWNLOAD_URL);
-        let (desktop_title, desktop_messages, desktop_button) = copy_for_platform(false);
-        assert_eq!(desktop_title, TITLE);
-        assert_eq!(desktop_messages, &PARAGRAPHS);
-        assert_eq!(desktop_button, "Download the launcher");
-    }
-
-    #[test]
-    fn ios_incomplete_import_shows_the_specific_problem_not_only_missing_manifest() {
-        let screen = NoResources::new(std::path::Path::new("resources"))
-            .with_import_issue("Prepared resources are missing facts.json");
-        assert!(screen.looked_in.contains("facts.json"));
-        assert!(!screen.looked_in.contains(".local/horizon-client"));
     }
 
     #[test]

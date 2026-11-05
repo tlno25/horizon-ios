@@ -96,6 +96,8 @@ pub mod music;
 pub mod native_data;
 pub mod net;
 pub mod nether_portal;
+// A desktop-only fallback: iOS must show its bundled SwiftUI launcher.
+#[cfg(not(target_os = "ios"))]
 pub mod no_resources;
 pub mod official_install;
 pub mod offline_name;

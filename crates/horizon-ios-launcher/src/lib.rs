@@ -124,7 +124,7 @@ pub fn waiting() -> bool {
 }
 
 /// Whether this bundle carries the launcher, which holds the game until it is started.
-fn bundled() -> bool {
+pub fn bundled() -> bool {
     #[cfg(target_os = "ios")]
     return ENABLED && ios::framework().is_some();
     #[cfg(not(target_os = "ios"))]
@@ -133,7 +133,7 @@ fn bundled() -> bool {
 
 /// Load the launcher and show it over the game, once per run: the loading screen's window asks, and so does
 /// the game's when it makes its own. False when this build or bundle has none, or it was already shown. A
-/// launcher that can't be shown can't start the game either, so the game starts by itself then.
+/// A failed iOS presentation must never bypass ownership/resource checks by starting the renderer.
 pub fn present() -> bool {
     static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if SHOWN.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -141,7 +141,10 @@ pub fn present() -> bool {
     }
     let shown = show();
     if !shown {
+        #[cfg(not(target_os = "ios"))]
         start();
+        #[cfg(target_os = "ios")]
+        log::error!("Horizon iOS: cannot load or present the bundled SwiftUI launcher");
     }
     shown
 }

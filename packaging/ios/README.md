@@ -6,7 +6,11 @@ That black screen is from **an older or incomplete native game build** that
 cannot find the `HorizonLauncherKit.framework` launcher. A modern bundled
 game must show its SwiftUI launcher **before** any Minecraft files have been
 installed. Copying `horizon-resources.json` into Documents is **not the fix**
-for a missing launcher.
+for a missing launcher. As of the launcher-only native iOS builds, that
+entire Metal fallback screen is excluded from the iOS binary; a missing or
+broken framework causes an explicit logged launch failure instead of taking
+the user to the old screen. An *already installed* older app must still be
+replaced with the freshly signed IPA to receive this code change.
 
 1. Open [Horizon iOS Manual Build](https://github.com/tlno25/horizon-ios/actions/workflows/ios-simulator.yml).
    Select branch `ios`, target **`game`** (now the default), and use a

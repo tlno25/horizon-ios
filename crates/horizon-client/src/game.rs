@@ -228,6 +228,7 @@ mod natural_spawning;
 mod nautili;
 mod net_harness;
 mod nether_portal;
+#[cfg(not(target_os = "ios"))]
 mod no_resources;
 mod ominous_item_spawner;
 mod options;
@@ -19992,7 +19993,15 @@ impl Loading {
         #[cfg(target_os = "ios")]
         if horizon_ios_launcher::waiting() {
             self.window = Some(window);
-            horizon_ios_launcher::present();
+            if !horizon_ios_launcher::present() {
+                self.error = Some(
+                    std::io::Error::other(
+                        "Horizon iOS: failed to present its bundled SwiftUI launcher",
+                    )
+                    .into(),
+                );
+                crate::game::exit_app(event_loop);
+            }
             return;
         }
         // The renderer takes seconds to build and winit's window sits white
@@ -20469,6 +20478,7 @@ impl ApplicationHandler for App {
 /// Every launch reads the prepared game files (`horizon-prepare`'s output, whose
 /// manifest is `horizon-resources.json`): without them, say where they were
 /// looked for and how to get them, before a window or a loader starts.
+#[cfg(not(target_os = "ios"))]
 fn missing_resources(root: &std::path::Path) -> Option<String> {
     if root.join("horizon-resources.json").is_file() {
         return None;
@@ -20627,6 +20637,17 @@ pub fn run() -> Result<()> {
     let started = Instant::now();
     horizon_client::spans::enable(options.spikes.is_some());
     let vanilla_root = options.resources.clone();
+    // A native iPhone game without its bundled SwiftUI launcher must fail
+    // explicitly. Never start the old missing-resources Metal screen, and
+    // never load an unprepared game in an attempt to hide the problem.
+    #[cfg(target_os = "ios")]
+    if options.execution_role.is_client()
+        && !options.offscreen
+        && !synchronous_startup(&options)
+        && !horizon_ios_launcher::bundled()
+    {
+        return Err("Horizon iOS launch failed: the signed app has no HorizonLauncherKit.framework; install the complete native-game IPA".into());
+    }
     // A manifest may arrive before the rest of the player's files when iOS
     // Files.app copies a folder. Reject incomplete or wrong-version imports
     // before starting a world loader; desktop keeps its existing startup gate.
@@ -20643,18 +20664,16 @@ pub fn run() -> Result<()> {
         && !synchronous_startup(&options)
         && horizon_ios_launcher::waiting();
     if let Some(error) = resource_problem.filter(|_| !launcher_supplies_resources) {
-        // The game build started by hand (the release's zip), not by the
-        // launcher: a window says where to get it. Scripts and servers get
-        // the error.
+        // Only desktop/Android retain the standalone missing-files screen.
+        // iOS shows resource/download errors in the native SwiftUI launcher
+        // and returns a normal startup error for headless/synchronous runs.
+        #[cfg(not(target_os = "ios"))]
         if !options.offscreen && !synchronous_startup(&options) {
             log::error!("Horizon: {error}");
             let settings = Settings::load(&std::env::current_dir()?.join("options.txt"));
-            #[cfg(target_os = "ios")]
-            let missing_location = std::path::Path::new("resources");
-            #[cfg(not(target_os = "ios"))]
-            let missing_location = vanilla_root.as_path();
-            return no_resources::show(missing_location, &settings, &error);
+            return no_resources::show(vanilla_root.as_path(), &settings, &error);
         }
+        log::error!("Horizon: {error}");
         return Err(error.into());
     }
     // Someone is playing: the anonymous ping behind the launcher's "N playing now", and the

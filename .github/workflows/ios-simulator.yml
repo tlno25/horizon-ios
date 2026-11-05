@@ -239,6 +239,7 @@ jobs:
           binary="target/aarch64-apple-ios/release/horizon-client"
           test -f "$binary"
           xcrun lipo -archs "$binary" | grep -qw arm64
+          python3 packaging/ios/tests/assert_no_legacy_ios_screen.py "$binary"
           python3 packaging/ios/package_native_game_ipa.py \
             --binary "$binary" \
             --plist "$RUNNER_TEMP/HorizonGameInfo.plist" \
@@ -318,6 +319,7 @@ jobs:
           set -euo pipefail
           target="target/aarch64-apple-ios-sim/release/horizon-client"
           xcrun lipo -archs "$target" | grep -qw arm64
+          python3 packaging/ios/tests/assert_no_legacy_ios_screen.py "$target"
           python3 packaging/ios/package_native_game_simulator.py \
             --binary "$target" \
             --architecture arm64 \

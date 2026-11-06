@@ -769,9 +769,11 @@ in `engine-data.zip`. Minecraft's original JARs, asset textures, and sounds are
 files. Inspect the generated-only allowlist and permission to distribute the
 derived tables before publishing an IPA outside your own testing.
 
-On first launch, use **Mojang公式からダウンロードしてインストール**.
-The download requires neither an account login nor a publisher manifest URL;
-**Play still requires Microsoft sign-in with verified Java Edition ownership**. The Rust installer shared with
+On first launch, sign in with a licensed Minecraft Java Edition Microsoft account,
+then use **Mojang公式からダウンロードしてインストール**.
+The downloader verifies Java Edition ownership before starting; it does not
+require a publisher manifest URL. **Play also requires Microsoft sign-in and
+verified Java Edition ownership**. The Rust installer shared with
 Android downloads version-pinned client files and asset objects from Mojang,
 verifies hashes, merges the packaged generated tables, and commits the finished
 resources to the Documents sandbox. Progress is shown in SwiftUI. An interrupted

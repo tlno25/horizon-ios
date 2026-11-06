@@ -473,7 +473,7 @@ struct GameLauncherView: View {
                                 .buttonStyle(.borderedProminent)
                                 .disabled(!account.configured)
                             if !account.configured {
-                                Text("Microsoft認証の設定が未完了です。公式ゲームデータはダウンロードできますが、プレイには認証の設定とJava Editionの所有権確認が必要です。")
+                                Text("Microsoft認証の設定が未完了です。ログイン・ゲームデータのダウンロード・プレイには、アプリのクライアントID設定が必要です。")
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
                         }
@@ -524,14 +524,14 @@ struct GameLauncherView: View {
                                 Label("Mojang公式からダウンロードしてインストール", systemImage: "arrow.down.circle")
                                     .frame(maxWidth: .infinity, minHeight: 40)
                             }.buttonStyle(.borderedProminent)
-                                .disabled(download.busy || official.busy)
+                                .disabled(!account.hasAccount || !account.configured || account.busy || download.busy || official.busy)
                             if didLoadInstallState && !hasEngineData {
                                 Text("このビルドには生成済みエンジンテーブルが含まれていません。ダウンロード時にエラーが出る場合は、最新のgame IPAを使用してください。")
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
                         }
                         if !account.hasAccount {
-                            Text("公式データの取得にMicrosoftログインや配布先URLの設定は不要です。プレイする際に正規ライセンスの確認が必要です。")
+                            Text("ダウンロードするにはMicrosoftアカウントでログインし、Minecraft Java Editionの所有権を確認してください。配布先URLの設定は不要です。")
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
                         // Optional publisher-provided ZIP source: it is not required
@@ -616,9 +616,18 @@ struct GameLauncherView: View {
 
     private func downloadFromMojang() async {
         guard !nativeDownloading && !download.busy && !official.busy else { return }
-        // Mojang publishes these immutable files over HTTPS. Downloading them
-        // does not require OAuth; playing still requires an ownership-checked
-        // session, enforced independently by launcher-start in Rust.
+        guard account.hasAccount && account.configured else {
+            notice = "ダウンロードするにはMicrosoftアカウントでログインしてください。"
+            return
+        }
+        // Verify ownership here as well as in Play, not just through the UI
+        // button's disabled state. No access token goes to the downloader.
+        do {
+            _ = try await account.sessionForLaunch()
+        } catch {
+            notice = error.localizedDescription
+            return
+        }
         notice = ""
         nativeDownloading = true
         nativeDownloadDone = 0

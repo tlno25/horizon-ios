@@ -122,9 +122,9 @@ final class MinecraftAccount: ObservableObject {
         status = "ログアウトしました。"
     }
 
-    /// Ownership check for the optional Swift diagnostic download. The main
-    /// Rust Mojang installer only fetches public HTTPS assets without OAuth.
-    /// Game launch still requires an entitlement-checked account session.
+    /// Ownership gate for downloads of original Mojang assets. Both the main
+    /// installer and the optional diagnostic downloader verify the account;
+    /// the downloader itself never receives any access tokens.
     func verifyForDownload() async throws {
         _ = try await sessionForLaunch()
     }
